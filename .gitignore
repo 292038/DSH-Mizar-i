@@ -13,3 +13,6 @@ MizarKit/.build/
 
 # --- macOS ---
 .DS_Store
+
+# --- Node (the mock host needs none, but a stray tree is not source) ---
+node_modules/
