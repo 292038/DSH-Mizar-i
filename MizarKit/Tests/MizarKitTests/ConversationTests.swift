@@ -332,11 +332,17 @@ struct ConversationTests {
 
     @Test("the prompt is paired with the turn it opens")
     func promptBeforeTurnStart() throws {
-        // The order a real session log holds, and the one the host's own tests
-        // pin down: the `user/message` is written **before** the `turn/start` it
-        // caused, and carries no `data.turn` of its own. So the record it is
-        // paired with is the only thing that can place it, and the pairing is by
-        // order rather than by a number.
+        // A page whose *oldest* record is the prompt: its `turn/start` is in the
+        // page before this one, because a page is a window and the window can be
+        // cut anywhere. The prompt carries no `data.turn` of its own, so the
+        // record it is paired with is the only thing that can place it, and the
+        // pairing is by order rather than by a number.
+        //
+        // Not the order the host writes *within* one page, which is the other way
+        // round -- `turn/start` first, the prompt two records later, measured on
+        // the live wire and in the durable log, and pinned by `RunningTurnTests`.
+        // Both shapes have to work: this one is what a page edge produces, and it
+        // is why the pairing cannot simply assume a turn is already open.
         let result = try page("""
         {"sessionId":"s1","asOfSeq":20,"hasMore":false,"records":[
           {"type":"event","event":{"type":"user/message","seq":1,"time":1000,
@@ -959,15 +965,21 @@ struct TurnTests {
         // The row therefore has a count to show and nothing to draw under it,
         // and neither of those is invented here.
         //
-        // The prompt is written *before* the `turn/start` it begins and carries
-        // no turn of its own -- that is the real order in the log, and the
-        // reader pairs the two.
+        // The records are in the order the host writes them, which this fixture
+        // used to get backwards: `turn/start` first, then the markers, and the
+        // operator's prompt **after** them, carrying no turn of its own. Read off
+        // the durable log of a real session (`turn/start` seq 4, `step/start` 6,
+        // the prompt 8) and confirmed on the live wire. With the prompt written
+        // first, this test passed while the screen dropped the prompt entirely --
+        // a running turn has no `assistant/message` to claim it with, so a reader
+        // that only pairs a prompt with a *later* `turn/start` left the turn that
+        // was executing with none.
         let result = try page("""
         {"sessionId":"s1","asOfSeq":20,"hasMore":false,"records":[
-          {"type":"event","event":{"type":"user/message","seq":2,"time":1100,
-            "data":{"content":[{"type":"text","text":"run the suite"}],"source":{"kind":"user"}}}},
           {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
-          {"type":"event","event":{"type":"step/start","seq":3,"time":1200,"data":{"turn":1,"step":1}}},
+          {"type":"event","event":{"type":"step/start","seq":2,"time":1100,"data":{"turn":1,"step":1}}},
+          {"type":"event","event":{"type":"user/message","seq":3,"time":1200,
+            "data":{"content":[{"type":"text","text":"run the suite"}],"source":{"kind":"user"}}}},
           {"type":"event","event":{"type":"step/start","seq":4,"time":1300,"data":{"turn":1,"step":2}}}
         ]}
         """)
@@ -1188,10 +1200,11 @@ struct TurnTests {
 
     @Test("a prompt whose turn never started is not work in progress")
     func unstartedPromptIsNotRunning() throws {
-        // `user/message` is logged before the `turn/start` it begins, so a page
-        // cut in that gap holds a prompt with no turn number. Nothing is working
-        // on it, and drawing it as "正在处理" would claim an agent was thinking
-        // about a message that may be the last thing anybody ever said.
+        // A page edge: the prompt is the oldest record the page holds and the
+        // `turn/start` that claims it is in the page before -- or the session
+        // ended before the turn ever opened. Nothing here says an agent is
+        // working, and drawing it as "正在处理" would claim one was thinking about
+        // a message that may be the last thing anybody ever said.
         let result = try page("""
         {"sessionId":"s1","asOfSeq":9,"hasMore":false,"records":[
           {"type":"event","event":{"type":"user/message","seq":1,"time":1000,

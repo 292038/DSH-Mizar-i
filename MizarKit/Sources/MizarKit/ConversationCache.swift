@@ -393,18 +393,60 @@ public func collapseContinuations(in turns: [ConversationTurn]) -> [Conversation
 /// nothing that claims it. That prompt then formed its own group, which sorted
 /// to the end -- a message sent at 09:57 drawn underneath one sent at 12:01.
 ///
-/// The cure is the pairing rule the grouping already uses, applied one page
-/// later: a group that has prompts and no number belongs to the next turn, when
-/// that turn is positioned after it and came out of its own page without a
-/// prompt.
+/// Two cures, because the prompt can arrive on either side of its turn:
+///
+///   - a group that has prompts and no number belongs to the **next** turn, when
+///     that turn is positioned after it and came out of its own page without a
+///     prompt -- the turn's envelope is in the older page, the prompt in the
+///     newer one;
+///   - and it belongs to the **previous** turn when that turn is still open (no
+///     `turn/end`) and sits before it. That is the shape the host actually
+///     writes -- `turn/start` first, the prompt a couple of records later, both
+///     inside the same turn -- so when the two arrive from different reads the
+///     turn is above the prompt, not below it. Measured on the live wire:
+///     `turn/start` at seq 803, `step/start` at 805, the prompt at 806, with the
+///     turn still running. Without this the prompt stayed a group of its own and
+///     the running turn lost the row the operator opens the app to read.
+///
+/// A prompt is identified by the log position it came from, so a record another
+/// turn already carries is the same prompt read twice: the cache and the page
+/// overlap on every refresh, and a build that grouped a running turn's prompt
+/// into a group of its own left one of those groups behind for every turn that
+/// was executing when the phone last looked. Drawing it twice is a message the
+/// operator never sent twice, so the duplicate is dropped rather than merged.
 ///
 /// - Parameter turns: merged turns, oldest first.
 /// - Returns: the same turns, with page-edge prompts reattached.
 public func reclaimStrandedPrompts(in turns: [ConversationTurn]) -> [ConversationTurn] {
+    // Prompts a numbered turn already carries.
+    let carried = Set(turns.filter { $0.turn != nil }.flatMap { $0.prompts.map(\.id) })
+    // Every group that still holds something no turn has.
+    let groups = turns.compactMap { turn -> ConversationTurn? in
+        guard turn.turn == nil, !turn.prompts.isEmpty else { return turn }
+        let unclaimed = turn.prompts.filter { !carried.contains($0.id) }
+        guard !unclaimed.isEmpty else { return nil }
+        return ConversationTurn(
+            turn: nil,
+            prompts: unclaimed,
+            steps: turn.steps,
+            stepCount: turn.stepCount,
+            startedAt: turn.startedAt,
+            endedAt: turn.endedAt,
+            endedReason: turn.endedReason,
+            firstSeq: turn.firstSeq,
+        )
+    }
+
     var out: [ConversationTurn] = []
     var held: ConversationTurn?
-    for turn in turns {
+    for turn in groups {
         if turn.turn == nil, !turn.prompts.isEmpty {
+            // The turn above it, still open: the prompt was written inside it.
+            if let open = out.last, open.turn != nil, open.endedAt == nil,
+               positioned(turn, atOrAfter: open) {
+                out[out.count - 1] = open.prepending(prompts: turn.prompts)
+                continue
+            }
             // Two unnumbered prompt groups in a row: the first is genuinely on
             // its own, so it is released rather than held indefinitely.
             if let previous = held { out.append(previous) }
@@ -428,6 +470,23 @@ public func reclaimStrandedPrompts(in turns: [ConversationTurn]) -> [Conversatio
     }
     if let held { out.append(held) }
     return out
+}
+
+/// Whether a group's known log position is at or after a turn's.
+///
+/// Unknown positions do not block it. A turn and the prompt that began it
+/// frequently arrive one from the cache and one from the page, so one of the two
+/// is often a copy written before positions were kept at all -- and a turn that
+/// has not ended is the best evidence there is about where a prompt written
+/// after it belongs.
+///
+/// - Parameters:
+///   - group: the prompt group.
+///   - turn: the turn being considered for it.
+/// - Returns: whether the group can belong to that turn.
+private func positioned(_ group: ConversationTurn, atOrAfter turn: ConversationTurn) -> Bool {
+    guard let groupSeq = group.orderSeq, let turnSeq = turn.orderSeq else { return true }
+    return turnSeq <= groupSeq
 }
 
 /// A cache that keeps nothing.

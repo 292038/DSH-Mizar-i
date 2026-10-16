@@ -373,6 +373,11 @@ function answer(frame) {
       // at all; the change was bandwidth-driven, because the full history was
       // too heavy through the relay.
       //
+      // The *order* the records are written in is the host's, which is not the
+      // order a reader assumes: inside a turn it is `turn/start`, then
+      // `step/start`, then the operator's `user/message`. See the note on turn 1
+      // below, which is where the measurement is written down.
+      //
       // This fixture used to carry the old full-fidelity log -- streamed deltas,
       // a message per step, tool activity -- and that made the suite a test of a
       // transport the app no longer talks to. It is the app's fixture, so it
@@ -383,13 +388,12 @@ function answer(frame) {
       //   turn 1   finished, three steps, one summary at the end of them. The
       //            step count comes from the markers, not from the messages: had
       //            it been counted from messages it would read "1 steps".
-      //   turn 2   **no prompt of its own**: the agent carried on. The reader
-      //            folds it into turn 1, so one instruction is one finished row
-      //            rather than two, and its steps are added to that row's count.
-      //   turn 3   ended `error` with nothing to show for it. That is the shape
+      //   turn 2   ended `error` with nothing to show for it. That is the shape
       //            a turn takes on a host with no provider credential, and the
       //            one where a bare "未完成" row would leave the operator to
       //            guess what happened.
+      //   turn 3   asked for, ended badly, and it *did* answer: the row keeps
+      //            its warning and the answer stays.
       //   turn 4   **no `turn/end`**, and two steps with no answer after them.
       //            The running shape, and the one reported broken: the reader
       //            used to invent an end time from the last record it held, so a
@@ -419,28 +423,42 @@ function answer(frame) {
           records: [
             record('permission/preset', { preset: 'workspace-write' }),
 
-            // A prompt is written **before** the `turn/start` it causes and
-            // carries no `data.turn` of its own -- read off a real log, and
-            // pinned by the host's own summary tests. So the record it is paired
-            // with is the only thing that can place it, and each turn's records
-            // are written before the next turn opens.
+            // **The order inside a turn is the host's, and it is not the obvious
+            // one.** Read off the durable log of a real session and confirmed on
+            // the live wire: `turn/start` first, then `step/start`, and the
+            // operator's `user/message` *after* both -- carrying no `data.turn`
+            // of its own:
+            //
+            //     seq=92 turn/start {"turn":11}
+            //     seq=94 step/start {"turn":11,"step":1}
+            //     seq=95 user/message {…"source":{"kind":"user"}}
+            //
+            // This fixture used to write the prompt *before* its `turn/start`,
+            // which is the order a reader assumes and not the one the host
+            // sends. The suite passed while the app lost the newest turn: a
+            // prompt written after its own `turn/start` cannot be paired by a
+            // rule that only looks for a *later* turn, so a running turn -- for
+            // which the host sends no `assistant/message` to claim the prompt
+            // with -- held no prompt at all, and the row drawn over a working
+            // agent read "已完成". The prompt is therefore written where the
+            // host writes it, in every turn below, including the finished ones.
 
             // Turn 1: asked for, finished in three steps. The count comes from
             // the three markers, not from the messages -- the turn carries
             // **one** message, its summary, and a count taken from messages
             // would read "1 steps".
-            record('user/message', {
-              content: [{ type: 'text', text: 'Refactor the parser and run the tests.' }],
-              source: { kind: 'user', rpcId: 'r1' },
-              role: 'user',
-              id: 'm1',
-            }),
             record('turn/start', { turn: 1 }),
             record('step/start', { turn: 1, step: 1 }),
             record('step/end', { turn: 1, step: 1 }),
             record('step/start', { turn: 1, step: 2 }),
             record('step/end', { turn: 1, step: 2 }),
             record('step/start', { turn: 1, step: 3 }),
+            record('user/message', {
+              content: [{ type: 'text', text: 'Refactor the parser and run the tests.' }],
+              source: { kind: 'user', rpcId: 'r1' },
+              role: 'user',
+              id: 'm1',
+            }),
             // The model's *last* message of the turn, and the only one sent:
             // the three steps above are three markers and nothing else.
             record('assistant/message', {
@@ -460,6 +478,8 @@ function answer(frame) {
             // answer at all: the summary-only transport sends no streaming
             // attempt, so the reason on `turn/end` is the only thing left to
             // report it with.
+            record('turn/start', { turn: 2 }),
+            record('step/start', { turn: 2, step: 1 }),
             record('user/message', {
               content: [{ type: 'text', text: 'Now add a case for trailing commas.' }],
               // `source.kind` is not decoration: the reader shows a
@@ -472,23 +492,21 @@ function answer(frame) {
               role: 'user',
               id: 'm2',
             }),
-            record('turn/start', { turn: 2 }),
-            record('step/start', { turn: 2, step: 1 }),
             record('turn/end', { turn: 2, reason: { kind: 'error' } }),
 
             // Turn 3: asked for, ended badly, and it *did* answer. The row keeps
             // its warning and the answer stays -- a failure card belongs to a
             // turn that produced nothing, not to one that produced something and
             // then stopped.
+            record('turn/start', { turn: 3 }),
+            record('step/start', { turn: 3, step: 1 }),
+            record('step/start', { turn: 3, step: 2 }),
             record('user/message', {
               content: [{ type: 'text', text: 'And check the tokenizer.' }],
               source: { kind: 'user' },
               role: 'user',
               id: 'm3',
             }),
-            record('turn/start', { turn: 3 }),
-            record('step/start', { turn: 3, step: 1 }),
-            record('step/start', { turn: 3, step: 2 }),
             record('assistant/message', {
               turn: 3,
               step: 2,
@@ -504,15 +522,23 @@ function answer(frame) {
             // because a half-written answer is not one. Its two markers are all
             // the reader has of it, which is why the count matters here more
             // than anywhere else.
+            //
+            // The prompt is written inside the turn, after the markers, exactly
+            // as the host writes it -- and this is the turn where getting that
+            // wrong cost the screen its running row: with the prompt held for a
+            // turn that never came, this turn held no prompt, the group holding
+            // it sorted after this one, and the fold absorbed the turn into that
+            // group and lost both the number and the start the "深度求索中，用时"
+            // row is drawn from.
+            record('turn/start', { turn: 4 }),
+            record('step/start', { turn: 4, step: 1 }),
+            record('step/start', { turn: 4, step: 2 }),
             record('user/message', {
               content: [{ type: 'text', text: 'And run the whole suite.' }],
               source: { kind: 'user' },
               role: 'user',
               id: 'm4',
             }),
-            record('turn/start', { turn: 4 }),
-            record('step/start', { turn: 4, step: 1 }),
-            record('step/start', { turn: 4, step: 2 }),
 
             // Anything the client has sent since, appended the way a host would:
             // a prompt with no turn after it, which is the state every message is

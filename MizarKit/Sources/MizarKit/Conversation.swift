@@ -402,11 +402,35 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     /// record is the kind of thing this file exists to avoid.
     public let stepCount: Int?
     /// When the turn began.
+    ///
+    /// `turn/start` when the page holds it. A page window can be cut *through* a
+    /// turn, and then the oldest record of a running turn is a `step/start` --
+    /// written one record after the turn opened, measured on a live host at seq
+    /// 803 and 805 -- so the marker stands in for the start rather than the turn
+    /// losing its clock. An approximation of one record is worth more than a
+    /// running row that cannot say how long it has been running, and it is the
+    /// same tolerance ``beganAt`` has always used for a page cut across a turn.
     public let startedAt: Date?
     /// When it ended.
     public let endedAt: Date?
     /// How it ended, when the host said.
     public let endedReason: String?
+    /// The earliest log position any of the turn's records held.
+    ///
+    /// The turn's *markers* count, not only the records the screen draws, and
+    /// that is the point of storing it. A running turn is `turn/start` and
+    /// `step/start` and nothing else -- the host sends no answer for a turn that
+    /// has not finished, and the prompt is written after the turn opens -- so
+    /// derived from ``items`` alone its position was `nil`, and everything that
+    /// reads a position then got it wrong: the turn sorted to the end of the
+    /// conversation, so the prompt that began it (measured: turn/start at seq
+    /// 803, the prompt at 806) sorted *before* its own turn, and the rule that
+    /// gives a page-edge prompt back to the turn it began could not see that the
+    /// turn followed it.
+    ///
+    /// `nil` for a turn built by hand or read from a cache written before this
+    /// existed, which falls back to the positions of its items.
+    public let firstSeq: Int?
 
     /// A stable identity, unique within a conversation.
     ///
@@ -427,7 +451,12 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     /// number sent it to the very end, below messages written hours later.
     /// Measured on a real session: a prompt sent at 09:57 was drawn beneath one
     /// sent at 12:01.
-    public var orderSeq: Int? { items.compactMap(\.seq).min() }
+    ///
+    /// ``firstSeq`` first, because a turn can hold nothing else: its markers are
+    /// not items, so a running turn with no prompt in the page had no position
+    /// at all and was ordered as though it were the newest thing in a
+    /// conversation it might be the middle of.
+    public var orderSeq: Int? { firstSeq ?? items.compactMap(\.seq).min() }
 
     /// A total order over turns, oldest first.
     ///
@@ -455,6 +484,7 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             startedAt: startedAt,
             endedAt: endedAt,
             endedReason: endedReason,
+            firstSeq: firstSeq,
         )
     }
 
@@ -501,6 +531,7 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             startedAt: startedAt,
             endedAt: continuation ? next.endedAt : endedAt,
             endedReason: unfinished ?? (continuation ? next.endedReason : endedReason),
+            firstSeq: Self.earliest(firstSeq, next.firstSeq),
         )
     }
 
@@ -537,7 +568,26 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             startedAt: [startedAt, other.startedAt].compactMap { $0 }.min(),
             endedAt: endedAt ?? other.endedAt,
             endedReason: endedReason ?? other.endedReason,
+            firstSeq: Self.earliest(firstSeq, other.firstSeq),
         )
+    }
+
+    /// The earlier of two log positions.
+    ///
+    /// Used where two reads of one turn are folded together: the one that saw
+    /// further back is the one that knows where the turn begins.
+    ///
+    /// - Parameters:
+    ///   - first: one position.
+    ///   - second: the other.
+    /// - Returns: the earlier, or `nil` when neither knows.
+    private static func earliest(_ first: Int?, _ second: Int?) -> Int? {
+        switch (first, second) {
+        case (let first?, let second?): min(first, second)
+        case (let first?, nil): first
+        case (nil, let second?): second
+        case (nil, nil): nil
+        }
     }
 
     /// Two step counts for one turn, added.
@@ -605,6 +655,7 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
         startedAt: Date?,
         endedAt: Date?,
         endedReason: String?,
+        firstSeq: Int? = nil,
     ) {
         self.turn = turn
         self.prompts = prompts
@@ -613,6 +664,7 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.endedReason = endedReason
+        self.firstSeq = firstSeq
     }
 
     /// How long the turn took, when both ends are known.
@@ -633,11 +685,16 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     ///   the last step made every unfinished turn look finished, which is the
     ///   bug this exists to fix.
     /// - A group with **no turn number is not a turn**. It is a prompt whose
-    ///   `turn/start` has not been written yet — a real and ordinary state,
-    ///   because `user/message` is logged before the turn it begins — and it is
-    ///   also what a prompt from the end of a session that never started a turn
-    ///   looks like. Drawn as work in progress it would claim an agent was
-    ///   thinking about a message nobody ever answered.
+    ///   `turn/start` is in the page on the other side of a window edge -- or,
+    ///   rarely, a prompt from the end of a session that never started a turn.
+    ///   Drawn as work in progress it would claim an agent was thinking about a
+    ///   message nobody ever answered.
+    ///
+    ///   This used to say the cause was that `user/message` is logged before the
+    ///   turn it begins. It is logged *after* it -- measured on the live wire,
+    ///   `turn/start` at seq 92 and the prompt at 95 -- and reading the grouping
+    ///   as though it were the other way round is what left a running turn with
+    ///   no prompt, and its row reporting "已完成" while the host was executing.
     public var isRunning: Bool { turn != nil && endedAt == nil }
 
     /// When the turn began, as well as the log can say.
@@ -699,17 +756,31 @@ extension SessionMessagesResult {
     /// Grouping rules, each from the log rather than from taste:
     ///
     /// - `data.turn` on a record says which turn it belongs to.
-    /// - **A prompt carries no turn number.** Measured on a real log, the
-    ///   `user/message` that starts a turn has no `data.turn` at all, so the
-    ///   record it is paired with is the only thing that can place it. A prompt
-    ///   is therefore held and attached to the next `turn/start` after it -- the
-    ///   turn it caused. A prompt with no turn after it keeps its own unopened
-    ///   group rather than being dropped.
+    /// - **A prompt carries no turn number, and is written inside the turn it
+    ///   opened.** The order was measured twice over -- in the durable log of a
+    ///   real session (`turn/start` at seq 4, `step/start` at 6, the operator's
+    ///   `user/message` at 8, the injected context after it) and on the live wire
+    ///   (`turn/start` 803, `step/start` 805, the prompt 806) -- and it is the
+    ///   opposite of what this reader assumed: the prompt comes *after* the
+    ///   `turn/start`, not before it. So a prompt belongs to the turn that is
+    ///   open when it arrives, and is held for a later `turn/start` only when
+    ///   nothing is open -- which is what a page cut across a turn looks like.
+    ///   Holding it in every case lost the newest turn: the host sends one
+    ///   `assistant/message` per *finished* turn, so a running turn has no
+    ///   message to claim its prompt, and the prompt became a group of its own
+    ///   while the turn that was executing held none -- measured, `prompts.count
+    ///   == 0` on the turn whose row was supposed to read "深度求索中，用时
+    ///   xx分xx秒".
+    /// - A prompt with no turn after it keeps its own unopened group rather than
+    ///   being dropped.
     /// - Within a turn, the prompt is what the operator typed and stays visible;
     ///   the answer is the model's last message of the turn.
     /// - `step/start` is counted rather than rendered. The host still sends one
     ///   per step -- they are tiny -- but it sends nothing for the steps
-    ///   themselves, so the count is the only part of a step that survives.
+    ///   themselves, so the count is the only part of a step that survives. Its
+    ///   position and its time are kept even though the marker is not drawn: a
+    ///   turn whose window was cut before its `turn/start` has nothing else to
+    ///   place it by, and a running turn has nothing else at all.
     /// - `turn/end.reason.kind` distinguishes a turn that finished from one that
     ///   ran into something, and a turn that ran into something **before it
     ///   answered** is drawn as a failure. Under summary-only history there is no
@@ -728,19 +799,46 @@ extension SessionMessagesResult {
         var started: [Int?: Date] = [:]
         var ended: [Int?: Date] = [:]
         var reason: [Int?: String] = [:]
+        /// The earliest log position each turn is known to hold.
+        var firstSeq: [Int?: Int] = [:]
+        /// The earliest time a turn-naming record carried, for a turn whose
+        /// `turn/start` the page window cut away. Markers only: a `step/start`
+        /// stands in for the start it follows by one record, and a `turn/end`
+        /// does not stand in for anything.
+        var firstAt: [Int?: Date] = [:]
         /// Prompts seen before the turn they started.
         var pending: [ConversationItem] = []
+        /// The turn that is open: a `turn/start` has been read and no
+        /// `turn/end` for it has. This is the turn a prompt written now began.
+        var open: Int?
+        var openIsSet = false
+
+        /// Remember where a turn sits, and (for a marker) roughly when it began.
+        ///
+        /// - Parameters:
+        ///   - turn: the turn the record names.
+        ///   - seq: its log position.
+        ///   - at: when it happened, for the records that can stand in for a
+        ///     start.
+        func note(_ turn: Int?, seq: Int?, at: Date?) {
+            if let seq, seq < (firstSeq[turn] ?? .max) { firstSeq[turn] = seq }
+            if let at, at < (firstAt[turn] ?? .distantFuture) { firstAt[turn] = at }
+        }
 
         for record in records {
             let payload = record.payload
             let name = payload["type"]?.stringValue ?? record.type
             let turn = payload["data"]?["turn"]?.intValue
+            let seq = payload["seq"]?.intValue
             let at = payload["time"]?.numberValue.map { Date(timeIntervalSince1970: $0 / 1000) }
 
             switch name {
             case "turn/start":
                 if !order.contains(turn) { order.append(turn) }
                 started[turn] = at
+                note(turn, seq: seq, at: at)
+                open = turn
+                openIsSet = true
                 if !pending.isEmpty {
                     prompts[turn, default: []].append(contentsOf: pending)
                     pending.removeAll()
@@ -751,9 +849,14 @@ extension SessionMessagesResult {
                 // a marker for a turn no record has opened yet puts that turn in
                 // the order rather than dropping the step it counts.
                 if !order.contains(turn) { order.append(turn) }
+                note(turn, seq: seq, at: at)
                 stepCounts[turn, default: 0] += 1
             case "turn/end":
                 ended[turn] = at
+                note(turn, seq: seq, at: nil)
+                // Closed, so a prompt written after it belongs to a later turn
+                // rather than to this one.
+                if openIsSet, open == turn { openIsSet = false }
                 let kind = payload["data"]?["reason"]?["kind"]?.stringValue
                 reason[turn] = kind
                 // A turn that ended badly and produced **nothing**. The
@@ -772,19 +875,25 @@ extension SessionMessagesResult {
                 let items = record.conversationItems()
                 guard !items.isEmpty else { continue }
                 if name == "user/message" {
-                    // A prompt belongs to the turn it starts, and it is written
-                    // before that turn exists.
+                    // A prompt belongs to the turn it opened, and the host
+                    // writes it *inside* that turn -- see the note above. Only
+                    // when nothing is open is it held for a turn that has not
+                    // been read yet.
                     if let turn, order.contains(turn) {
                         prompts[turn, default: []].append(contentsOf: items)
+                    } else if openIsSet {
+                        prompts[open, default: []].append(contentsOf: items)
                     } else {
                         pending.append(contentsOf: items)
                     }
                     continue
                 }
                 if !order.contains(turn) { order.append(turn) }
-                // A prompt can also arrive after its `turn/start` -- the log
-                // holds both orders -- so it is claimed by whichever of the two
-                // comes first.
+                note(turn, seq: seq, at: nil)
+                // A prompt can also arrive before its `turn/start` -- a page
+                // whose oldest record is the prompt, with the turn's envelope in
+                // the page before it -- so it is claimed by whichever of the two
+                // is read first.
                 if !pending.isEmpty {
                     prompts[turn, default: []].append(contentsOf: pending)
                     pending.removeAll()
@@ -807,7 +916,7 @@ extension SessionMessagesResult {
                 prompts: prompts[turn] ?? [],
                 steps: steps[turn] ?? [],
                 stepCount: stepCounts[turn],
-                startedAt: started[turn],
+                startedAt: started[turn] ?? firstAt[turn],
                 // Only a `turn/end` ends a turn. This used to fall back to the
                 // time of the last step, which made every unfinished turn look
                 // finished: the screen drew "已完成，用时 1 分 12 秒" for a turn
@@ -815,6 +924,7 @@ extension SessionMessagesResult {
                 // newest message in it.
                 endedAt: ended[turn],
                 endedReason: reason[turn],
+                firstSeq: firstSeq[turn],
             )
         }
     }
