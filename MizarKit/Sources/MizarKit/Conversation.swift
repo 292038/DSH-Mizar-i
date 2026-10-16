@@ -10,26 +10,27 @@
 //  lands here -- this file is where an open schema meets a closed UI, and its
 //  whole job is to make an unrecognised record *visible* rather than dropped.
 //
-//  What each record means was read off a real session. One prompt produces
-//  eighteen records, and only two of them are the conversation:
+//  What each record means was read off a real session, and the *set* of records
+//  has since changed on the host's side. It now sends a summary rather than a
+//  transcript: for each finished turn, the operator's prompt, the turn's
+//  `turn/start`, its `turn/end`, one `step/start` per step, and **only the last**
+//  `assistant/message` of the turn -- the model's summary of it. Per-step
+//  narration, tool calls, streaming attempts and the partial answer of a running
+//  turn are not sent at all. The reason is bandwidth: the full history was too
+//  heavy through the relay.
 //
-//    user/message        data.content[] of typed parts, data.role
-//    system/message      the same shape
-//    assistant/attempt   data.stream[] of chunks
-//    everything else     permission/preset, sandbox/mode, approval/policy,
-//                        agent/inbox/spliced, turn/start, step/start, ...
+//    user/message        data.content[] of typed parts, data.source.kind
+//    assistant/message   the turn's summary, the last one it produced
+//    turn/start, turn/end, step/start   markers, and the shape of a turn
+//    everything else     permission/preset, sandbox/mode, approval/policy, ...
 //
-//  The eighteen were dumped from a live session rather than guessed, and the
-//  ratio is why the other sixteen are dropped rather than rendered. This is a
-//  conversation view, and a screen where two lines of dialogue sit in a list of
-//  sixteen bookkeeping rows is a screen nobody can read. DSH's own desktop
-//  transcript makes the same call.
-//
-//  Text extraction from assistant chunks is the one part not confirmed against a
-//  live response -- this host has no provider credential, so every attempt ends
-//  in a failure chunk rather than text. The failure path *is* confirmed, and is
-//  surfaced as an error item, because "the model never ran" is the single most
-//  important thing a monitoring app can tell you.
+//  The markers are kept rather than filtered out: "turn started, step started"
+//  is the shape of a working agent, and a conversation that showed only messages
+//  could not be told apart from one that was stuck. They are drawn as a count on
+//  the turn's row, not as rows of their own -- measured on a live session the
+//  ratio is sixteen bookkeeping records to two messages, and a screen where two
+//  lines of dialogue sit in a list of sixteen bookkeeping rows is a screen
+//  nobody can read. DSH's own desktop transcript makes the same call.
 //
 
 import Foundation
@@ -81,8 +82,6 @@ public struct SessionRecord: Decodable, Sendable, Equatable {
 public enum ConversationItem: Sendable, Equatable, Identifiable {
     /// A message from the operator or the agent.
     case message(id: String, role: Role, text: String, at: Date)
-    /// Something the agent did that is not a message.
-    case activity(id: String, label: String, at: Date)
     /// A turn that ended without producing a response.
     case failure(id: String, message: String, at: Date)
 
@@ -96,7 +95,6 @@ public enum ConversationItem: Sendable, Equatable, Identifiable {
     public var id: String {
         switch self {
         case .message(let id, _, _, _): id
-        case .activity(let id, _, _): id
         case .failure(let id, _, _): id
         }
     }
@@ -139,7 +137,6 @@ public enum ConversationItem: Sendable, Equatable, Identifiable {
     public var at: Date {
         switch self {
         case .message(_, _, _, let at): at
-        case .activity(_, _, let at): at
         case .failure(_, _, let at): at
         }
     }
@@ -178,15 +175,10 @@ extension SessionRecord {
 extension SessionMessagesResult {
     /// Flatten the log into something the conversation view can draw.
     ///
-    /// Activity events are kept rather than filtered out: "turn started, step
-    /// started, permission changed" is the shape of a working agent, and a
-    /// conversation that shows only messages cannot be told apart from one that
-    /// is stuck.
-    ///
-    /// Consecutive duplicates are collapsed. A single prompt arrives as *two*
-    /// `user/message` events -- one carrying the RPC source and one from the
-    /// inbox splice -- with identical text, and rendering both puts the same
-    /// bubble on screen twice.
+    /// One prompt arrives as *two* `user/message` events -- one carrying the RPC
+    /// source and one from the inbox splice -- with identical text, and rendering
+    /// both puts the same bubble on screen twice, so consecutive duplicates are
+    /// collapsed.
     ///
     /// - Returns: the items, oldest first.
     public func conversationItems() -> [ConversationItem] {
@@ -249,22 +241,26 @@ extension SessionRecord {
             return []
 
         case "assistant/message":
-            // The committed reply. `assistant/attempt` is the streaming attempt
-            // that produced it, and this was the one event type the parser did
-            // not know -- so a model that answered perfectly produced nothing on
-            // the phone while the Mac showed the whole exchange.
+            // The turn's summary. The host sends **one** of these per finished
+            // turn -- the model's last message, standing for the turn -- so this
+            // is the answer, not one step of several. A model that answered
+            // perfectly used to produce nothing on the phone while the Mac
+            // showed the whole exchange, because this event type was the one the
+            // parser did not know.
+            //
+            // A record with no readable text is a step that only called tools.
+            // Its stop reason is still worth surfacing: a turn whose model never
+            // ran is the single most important thing a monitoring app can tell
+            // you.
             guard let text = Self.messageText(in: event) else {
-                return Self.attemptItems(event: event, id: id, at: at)
+                return Self.stopReasonItem(event: event, id: id, at: at)
             }
             return [.message(id: id, role: .assistant, text: text, at: at)]
 
-        case "assistant/attempt":
-            return Self.attemptItems(event: event, id: id, at: at)
-
         default:
             // Dropped on purpose, not by omission. See the note at the top of
-            // this file: sixteen of every eighteen records are bookkeeping, and
-            // a conversation that lists them is not a conversation.
+            // this file: the markers outnumber the messages several times over,
+            // and a conversation that lists them is not a conversation.
             return []
         }
     }
@@ -348,55 +344,26 @@ extension SessionRecord {
         return text.isEmpty ? nil : text.joined(separator: "\n")
     }
 
-    /// Turn an assistant attempt into text, or into a failure.
+    /// Read a failed stop reason, when a reply carries one instead of text.
     ///
-    /// A failure chunk is checked first and wins outright: an attempt that ends
-    /// with an error produced no answer, and rendering the partial text of a
-    /// failed turn as if it were the response would be the most misleading thing
-    /// this view could do.
-    private static func attemptItems(event: JSONValue?, id: String, at: Date) -> [ConversationItem] {
-        guard let stream = event?["data"]?["stream"]?.arrayValue else { return [] }
-
-        for entry in stream {
-            guard let chunk = entry["chunk"], chunk["type"]?.stringValue == "finish" else { continue }
-            guard let reason = chunk["reason"], reason["kind"]?.stringValue == "error" else { continue }
-            let message = reason["failure"]?["message"]?.stringValue ?? "the turn ended without a response"
-            return [.failure(id: id, message: message, at: at)]
-        }
-
-        var text = ""
-        for entry in stream {
-            guard let chunk = entry["chunk"] else { continue }
-            // The text-bearing key is not confirmed against a live response;
-            // every plausible spelling is tried so an unrecognised one degrades
-            // to missing text rather than a wrong rendering.
-            for key in ["text", "delta", "content"] {
-                if let piece = chunk[key]?.stringValue { text += piece }
-            }
-        }
-        guard !text.isEmpty else { return [] }
-        return [.message(id: id, role: .assistant, text: text, at: at)]
-    }
-
-    /// A short human label for an event name.
-    /// - Parameter name: the event name, like `turn/start`.
-    /// - Returns: a readable label.
-    private static func label(for name: String) -> String {
-        switch name {
-        case "turn/start": return "Turn started"
-        case "turn/end": return "Turn finished"
-        case "step/start": return "Step started"
-        case "step/end": return "Step finished"
-        case "session/title": return "Session titled"
-        case "session/title-llm-request": return "Naming the session"
-        case "request/header": return "Preparing the request"
-        case "request/context": return "Assembling context"
-        case "permission/preset": return "Permission preset"
-        case "sandbox/mode": return "Sandbox mode"
-        case "approval/policy": return "Approval policy"
-        case "agent/inbox/spliced": return "Message queued"
-        default: return name
-        }
+    /// The host's summary-only history sends the model's last message of a turn,
+    /// and the shape of that message is the ordinary one: text parts. What is
+    /// *not* ordinary -- and is the case this exists for -- is a reply with no
+    /// text at all, which is what a turn whose model never ran looks like on a
+    /// host with no provider credential. Rendering that as nothing would make a
+    /// failure indistinguishable from a hang.
+    ///
+    /// - Parameters:
+    ///   - event: the event payload.
+    ///   - id: the record's identity.
+    ///   - at: when it happened.
+    /// - Returns: a failure item, or nothing when there is no reason to show.
+    private static func stopReasonItem(event: JSONValue?, id: String, at: Date) -> [ConversationItem] {
+        let message = event?["data"]?["stopReason"]?["message"]?.stringValue
+            ?? event?["data"]?["error"]?["message"]?.stringValue
+            ?? event?["data"]?["message"]?["stopReason"]?["message"]?.stringValue
+        guard let message else { return [] }
+        return [.failure(id: id, message: message, at: at)]
     }
 }
 
@@ -413,8 +380,27 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     public let turn: Int?
     /// What the operator said, oldest first. Always shown.
     public let prompts: [ConversationItem]
-    /// What the agent produced, oldest first. Collapsed behind the summary.
+    /// What the agent produced, oldest first. The last assistant message is the
+    /// turn's answer.
+    ///
+    /// Under the host's summary-only history this is the model's final message
+    /// for a finished turn, and **nothing at all** for a running one: the
+    /// per-step narration and the partial answer of a turn in progress are not
+    /// sent any more.
     public let steps: [ConversationItem]
+    /// How many steps the turn took, when the log says.
+    ///
+    /// Counted from `step/start`, not from ``steps``, and that is the point of
+    /// it: the host sends one tiny marker per step but only the *last*
+    /// `assistant/message` of a turn, so counting messages undercounts every
+    /// turn that took more than one. Eleven steps used to arrive as eleven
+    /// messages; they now arrive as eleven markers and one reply.
+    ///
+    /// `nil` means the log did not say -- a cache written before this existed,
+    /// or a page whose markers were trimmed away. It is deliberately not zero:
+    /// "this turn took no steps" is a claim, and a claim made out of a missing
+    /// record is the kind of thing this file exists to avoid.
+    public let stepCount: Int?
     /// When the turn began.
     public let startedAt: Date?
     /// When it ended.
@@ -465,6 +451,7 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             turn: turn,
             prompts: extra + prompts,
             steps: steps,
+            stepCount: stepCount,
             startedAt: startedAt,
             endedAt: endedAt,
             endedReason: endedReason,
@@ -504,6 +491,13 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             turn: turn,
             prompts: prompts,
             steps: Self.union(steps, next.steps),
+            // Added, not unioned: a count is of a whole turn, and the two halves
+            // of a continued turn each took their own steps. Only the items were
+            // unioned, because a step that arrived beside the folded turn is the
+            // same step -- its *marker* is a separate record with no identity to
+            // union on, which is why the addition happens once here rather than
+            // being re-derived from markers on every fold.
+            stepCount: Self.adding(stepCount, next.stepCount ?? next.steps.count),
             startedAt: startedAt,
             endedAt: continuation ? next.endedAt : endedAt,
             endedReason: unfinished ?? (continuation ? next.endedReason : endedReason),
@@ -535,10 +529,41 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             // the two describe the same item.
             prompts: Self.union(other.prompts, prompts),
             steps: Self.union(other.steps, steps),
+            // The count is of the *same* turn read twice, so the two are not
+            // added -- the larger is the read that saw more markers. Adding them
+            // would double every turn on every refresh, because a page and the
+            // cache overlap on every one of them.
+            stepCount: Self.most(stepCount, other.stepCount),
             startedAt: [startedAt, other.startedAt].compactMap { $0 }.min(),
             endedAt: endedAt ?? other.endedAt,
             endedReason: endedReason ?? other.endedReason,
         )
+    }
+
+    /// Two step counts for one turn, added.
+    ///
+    /// - Parameters:
+    ///   - first: one count.
+    ///   - second: the other.
+    /// - Returns: their sum, or `nil` when neither knows.
+    private static func adding(_ first: Int?, _ second: Int?) -> Int? {
+        guard first != nil || second != nil else { return nil }
+        return (first ?? 0) + (second ?? 0)
+    }
+
+    /// Two step counts for one turn, the larger of them.
+    ///
+    /// - Parameters:
+    ///   - first: one count.
+    ///   - second: the other.
+    /// - Returns: the larger, or `nil` when neither knows.
+    private static func most(_ first: Int?, _ second: Int?) -> Int? {
+        switch (first, second) {
+        case (let first?, let second?): max(first, second)
+        case (let first?, nil): first
+        case (nil, let second?): second
+        case (nil, nil): nil
+        }
     }
 
     /// Every item from both lists, once, in log order.
@@ -576,6 +601,7 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
         turn: Int?,
         prompts: [ConversationItem],
         steps: [ConversationItem],
+        stepCount: Int? = nil,
         startedAt: Date?,
         endedAt: Date?,
         endedReason: String?,
@@ -583,6 +609,7 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
         self.turn = turn
         self.prompts = prompts
         self.steps = steps
+        self.stepCount = stepCount
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.endedReason = endedReason
@@ -639,7 +666,7 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     ///
     /// Two separate facts, because neither on its own is enough.
     ///
-    /// **The host's reason.** `turn/end.reason.kind` is `completed` when the
+    /// **The log's own reason.** `turn/end.reason.kind` is `completed` when the
     /// agent finished, and one of `error`, `aborted`, `blocked`, `max-tokens`,
     /// `interrupted` or `forked` when it did not. Only `error` was treated as a
     /// failure here, so a turn the operator cancelled -- or the agent abandoned,
@@ -648,11 +675,12 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     /// unfinished. That is the safe direction: an unknown reason shown as done
     /// is a lie, and the same reason shown as unfinished is merely cautious.
     ///
-    /// **The steps.** Measured on this machine: every turn ends `completed`
-    /// while the attempt inside it carries a chunk that failed -- the host has
-    /// no provider credential, so the model never ran and the turn "completed"
-    /// anyway. Trusting the reason alone made ``isCollapsible`` true for those
-    /// turns, and a failure inside a folded turn is a failure nobody sees.
+    /// **The answer.** A failure item among the turn's own records is the other
+    /// half of the evidence, and it is what a turn whose message carries a stop
+    /// reason instead of text produces. Measured on this machine, every turn
+    /// ended `completed` while the model had never run -- the host has no
+    /// provider credential -- and trusting the reason alone drew those as
+    /// finished work.
     public var failed: Bool {
         if let endedReason, endedReason != "completed" { return true }
         return steps.contains { item in
@@ -663,26 +691,6 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
 
     /// Everything in the turn, for a caller that wants a flat list.
     public var items: [ConversationItem] { prompts + steps }
-
-    /// Whether there is anything to collapse.
-    ///
-    /// One step is not a crowd: collapsing a turn that produced a single reply
-    /// hides the answer behind a tap for no gain, and the answer is the whole
-    /// point.
-    ///
-    /// A turn that failed is never folded either. Failure is the one thing that
-    /// has to be visible without a tap -- an operator who has to open a turn to
-    /// discover it went wrong will not open it.
-    ///
-    /// A running turn follows the one-step rule and nothing else: it is not
-    /// finished, so it cannot have failed, and folding its steps away is right
-    /// because a turn in progress is mostly tool noise. The state itself is
-    /// never folded -- see `TurnSummary`, which is drawn whether or not there is
-    /// anything behind it.
-    public var isCollapsible: Bool {
-        if isRunning { return steps.count > 1 }
-        return steps.count > 1 && !failed
-    }
 }
 
 extension SessionMessagesResult {
@@ -691,21 +699,32 @@ extension SessionMessagesResult {
     /// Grouping rules, each from the log rather than from taste:
     ///
     /// - `data.turn` on a record says which turn it belongs to.
-    /// - **A prompt has no turn of its own.** Measured on a real log, the
-    ///   `user/message` that starts a turn carries no `data.turn` -- it is
-    ///   written before `turn/start`. So a prompt is held and attached to the
-    ///   turn that follows it, which is the turn it caused. A prompt with no
-    ///   turn after it keeps its own unopened group rather than being dropped.
+    /// - **A prompt carries no turn number.** Measured on a real log, the
+    ///   `user/message` that starts a turn has no `data.turn` at all, so the
+    ///   record it is paired with is the only thing that can place it. A prompt
+    ///   is therefore held and attached to the next `turn/start` after it -- the
+    ///   turn it caused. A prompt with no turn after it keeps its own unopened
+    ///   group rather than being dropped.
     /// - Within a turn, the prompt is what the operator typed and stays visible;
-    ///   the steps are the agent working, and they are what reads as noise.
+    ///   the answer is the model's last message of the turn.
+    /// - `step/start` is counted rather than rendered. The host still sends one
+    ///   per step -- they are tiny -- but it sends nothing for the steps
+    ///   themselves, so the count is the only part of a step that survives.
     /// - `turn/end.reason.kind` distinguishes a turn that finished from one that
-    ///   ran into something.
+    ///   ran into something, and a turn that ran into something **before it
+    ///   answered** is drawn as a failure. Under summary-only history there is no
+    ///   streaming attempt left to carry the reason, so a turn that ends
+    ///   `error`/`aborted`/`blocked` with no message of its own would otherwise
+    ///   read as a bar saying "未完成" over an empty screen. "The turn ended
+    ///   without a response" is exactly what happened, and it is the one state a
+    ///   monitoring app must not show as a hang.
     ///
     /// - Returns: the turns, oldest first.
     public func conversationTurns() -> [ConversationTurn] {
         var order: [Int?] = []
         var prompts: [Int?: [ConversationItem]] = [:]
         var steps: [Int?: [ConversationItem]] = [:]
+        var stepCounts: [Int?: Int] = [:]
         var started: [Int?: Date] = [:]
         var ended: [Int?: Date] = [:]
         var reason: [Int?: String] = [:]
@@ -726,10 +745,30 @@ extension SessionMessagesResult {
                     prompts[turn, default: []].append(contentsOf: pending)
                     pending.removeAll()
                 }
+            case "step/start":
+                // A marker, not content. It still names its turn -- unlike a
+                // prompt, which names none -- but a page can be cut mid-turn, so
+                // a marker for a turn no record has opened yet puts that turn in
+                // the order rather than dropping the step it counts.
+                if !order.contains(turn) { order.append(turn) }
+                stepCounts[turn, default: 0] += 1
             case "turn/end":
                 ended[turn] = at
-                reason[turn] = payload["data"]?["reason"]?["kind"]?.stringValue
-            case "user/message", "assistant/message", "assistant/attempt", "system/message":
+                let kind = payload["data"]?["reason"]?["kind"]?.stringValue
+                reason[turn] = kind
+                // A turn that ended badly and produced **nothing**. The
+                // answer's absence is what makes the card the operator's
+                // business: a turn that failed after answering has said
+                // something, and a notice drawn over its answer would replace
+                // what the model managed to say with a notice that it did not
+                // finish. That turn keeps its row's own warning and its answer.
+                if let kind, kind != "completed", steps[turn]?.isEmpty ?? true {
+                    let detail = payload["data"]?["reason"]?["error"]?["message"]?.stringValue
+                    steps[turn, default: []].append(
+                        .failure(id: record.recordId, message: detail ?? kind, at: at ?? .distantPast),
+                    )
+                }
+            case "user/message", "assistant/message":
                 let items = record.conversationItems()
                 guard !items.isEmpty else { continue }
                 if name == "user/message" {
@@ -767,6 +806,7 @@ extension SessionMessagesResult {
                 turn: turn,
                 prompts: prompts[turn] ?? [],
                 steps: steps[turn] ?? [],
+                stepCount: stepCounts[turn],
                 startedAt: started[turn],
                 // Only a `turn/end` ends a turn. This used to fall back to the
                 // time of the last step, which made every unfinished turn look

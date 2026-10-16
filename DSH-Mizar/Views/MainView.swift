@@ -27,10 +27,32 @@ struct MainView: View {
     }
 
     var body: some View {
+        NavigationSplitView {
+            sessionList(pushing: false)
+        } detail: {
+            if let sessionId = model.selectedSessionId {
+                SessionDetailView(sessionId: sessionId)
+                    .sheet(isPresented: namingPrompt) { namingSheet }
+            } else {
+                ContentUnavailableView(
+                    "Pick a session",
+                    systemImage: "bubble.left.and.bubble.right",
+                    description: Text("Sessions started on your Mac appear here."),
+                )
+            }
+        }
+    }
+
+    /// The session list, with everything that hangs off it.
+    ///
+    /// - Parameter pushing: whether a row pushes a conversation or selects it
+    ///   in the split view's detail column. Always `false` today: see the note
+    ///   in `WorkspaceListView`.
+    /// - Returns: the sidebar content.
+    private func sessionList(pushing: Bool) -> some View {
         @Bindable var model = model
 
-        NavigationSplitView {
-            WorkspaceListView(showingNewSession: $showingNewSession)
+        return WorkspaceListView(showingNewSession: $showingNewSession, pushing: pushing)
                 .safeAreaInset(edge: .top) {
                     // A refresh that failed says so and stays out of the way. It
                     // used to take over the whole screen, which read as the
@@ -111,33 +133,18 @@ struct MainView: View {
                 .sheet(isPresented: $showingSync) {
                     SyncProgressSheet()
                 }
-                .sheet(isPresented: namingPrompt) {
-                    if let host = model.pendingNameHostId.flatMap({ id in
-                        model.hosts.first { $0.hostId == id }
-                    }) {
-                        RenameSheet(host: host) { name in
-                            Task { await model.rename(hostId: host.hostId, to: name) }
-                        }
-                    }
+                .sheet(isPresented: namingPrompt) { namingSheet }
+    }
+
+    /// The one-time "what should this Mac be called" prompt.
+    private var namingSheet: some View {
+        Group {
+            if let host = model.pendingNameHostId.flatMap({ id in
+                model.hosts.first { $0.hostId == id }
+            }) {
+                RenameSheet(host: host) { name in
+                    Task { await model.rename(hostId: host.hostId, to: name) }
                 }
-        } detail: {
-            if let sessionId = model.selectedSessionId {
-                SessionDetailView(sessionId: sessionId)
-                    .sheet(isPresented: namingPrompt) {
-                        if let host = model.pendingNameHostId.flatMap({ id in
-                            model.hosts.first { $0.hostId == id }
-                        }) {
-                            RenameSheet(host: host) { name in
-                                Task { await model.rename(hostId: host.hostId, to: name) }
-                            }
-                        }
-                    }
-            } else {
-                ContentUnavailableView(
-                    "Pick a session",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text("Sessions started on your Mac appear here."),
-                )
             }
         }
     }
@@ -156,6 +163,16 @@ struct MainView: View {
 struct WorkspaceListView: View {
     @Environment(AppModel.self) private var model
     @Binding var showingNewSession: Bool
+    /// Whether a row pushes a conversation or selects one.
+    ///
+    /// Always `false` today. The conversation used to be pushed on a phone
+    /// (`NavigationStack`) so that hiding the tab bar travelled with the push --
+    /// which is the honest fix for the bar appearing after the screen has
+    /// loaded, and it is what a system app does. It is not shipped yet: the
+    /// restructure broke 21 of the 31 UI tests in one release, and a navigation
+    /// change that size belongs in one of its own. Kept as a parameter because
+    /// the row is the only part that differed.
+    var pushing: Bool = false
     /// Workspaces the operator opened, by path.
     ///
     /// Tracked as what is *open* rather than what is closed, so the default --
@@ -180,8 +197,31 @@ struct WorkspaceListView: View {
     var body: some View {
         @Bindable var model = model
 
-        List(selection: $model.selectedSessionId) {
-            Section {
+        return Group {
+            if pushing {
+                List { rows }
+            } else {
+                List(selection: $model.selectedSessionId) { rows }
+            }
+        }
+        .overlay {
+            if model.sessions.isEmpty {
+                ContentUnavailableView(
+                    "No sessions yet",
+                    systemImage: "tray",
+                    description: Text("Start one on your Mac, then refresh."),
+                )
+            }
+        }
+        .refreshable { await model.refreshSessions() }
+    }
+
+    /// The list's contents: the new-session row, then one section per workspace.
+    @ViewBuilder
+    private var rows: some View {
+        @Bindable var model = model
+
+        Section {
                 Button {
                     showingNewSession = true
                 } label: {
@@ -195,8 +235,17 @@ struct WorkspaceListView: View {
                     if expanded.contains(workspace.path) {
                         let shown = workspace.sessions.prefix(limits[workspace.path] ?? Self.pageSize)
                         ForEach(shown) { session in
-                            SessionRowView(session: session, title: model.titles[session.sessionId])
-                                .tag(session.sessionId)
+                            if pushing {
+                                NavigationLink(value: session.sessionId) {
+                                    SessionRowView(
+                                        session: session,
+                                        title: model.titles[session.sessionId],
+                                    )
+                                }
+                            } else {
+                                SessionRowView(session: session, title: model.titles[session.sessionId])
+                                    .tag(session.sessionId)
+                            }
                         }
                         if workspace.sessions.count > shown.count {
                             Button {
@@ -252,17 +301,6 @@ struct WorkspaceListView: View {
                     .accessibilityIdentifier("workspace.\(workspace.path)")
                 }
             }
-        }
-        .overlay {
-            if model.sessions.isEmpty {
-                ContentUnavailableView(
-                    "No sessions yet",
-                    systemImage: "tray",
-                    description: Text("Start one on your Mac, then refresh."),
-                )
-            }
-        }
-        .refreshable { await model.refreshSessions() }
     }
 }
 
@@ -371,6 +409,14 @@ struct SessionDetailView: View {
     @State private var reloading = false
     /// Whether something asked for a load while one was running.
     @State private var reloadWanted = false
+    /// Whether a reload the operator asked for by hand is in flight.
+    ///
+    /// `reloading` cannot answer this: it is true for the load the screen makes
+    /// on appearance too, so a toolbar button driven by it would show a spinner
+    /// at the moment the screen opens -- reporting a refresh nobody asked for.
+    /// This is the narrower claim: someone tapped the control and it has not
+    /// answered yet.
+    @State private var refreshing = false
     /// Bumped when one full load of this screen has finished.
     ///
     /// The scroll is anchored on this rather than on the appearance of content,
@@ -554,13 +600,43 @@ struct SessionDetailView: View {
         // from a screen that is still there.
         .toolbar(sizeClass == .compact ? .hidden : .automatic, for: .tabBar)
         .toolbar {
-            // Only the permission selector stays up here. The model is in the
-            // bar above the composer now, next to the context figure it is read
-            // with -- a bar that shows which model is answering and a button
-            // somewhere else that changes it is one decision in two places.
+            // Only the permission selector and a refresh stay up here. The model
+            // is in the bar above the composer now, next to the context figure it
+            // is read with -- a bar that shows which model is answering and a
+            // button somewhere else that changes it is one decision in two
+            // places.
             //
             // The title is the session's, truncated by the navigation bar, which
             // is what Messages does with a long contact name.
+            ToolbarItem(placement: .topBarTrailing) {
+                // A session that has gone quiet is the reason this screen is
+                // open at all, and until now the only way to ask it again was to
+                // pull the conversation down -- which is invisible, and which the
+                // floating composer sits on top of. The same control the session
+                // list has, in the same place, doing the same thing.
+                //
+                // Both size classes, deliberately: this is a trailing toolbar
+                // item, so it is drawn in the navigation bar on an iPad as well,
+                // where the pull gesture has no room to start.
+                Button {
+                    Task {
+                        refreshing = true
+                        await reload()
+                        refreshing = false
+                    }
+                } label: {
+                    // Turns while it works. A reload over a phone link can take
+                    // a while, and a button that looks idle while nothing happens
+                    // reads as a button that did nothing.
+                    if refreshing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                }
+                .disabled(refreshing)
+                .accessibilityIdentifier("session.refresh")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showingPermissionPicker = true
@@ -779,11 +855,19 @@ struct SessionDetailView: View {
             items = fresh
             conversationSessionId = sessionId
         }
-        // The cache again, for the turns: the page was just folded into it. A
-        // read that fails here keeps the grouping that is on screen rather than
-        // flattening the conversation into a list of messages.
+        // The cache again, for the turns: the page was just folded into it.
+        //
+        // Read and written together with the tag, and that is not tidiness. A
+        // page and its grouping are one answer: assigning session B's page while
+        // `turns` still holds session A's -- which a failed cache read here used
+        // to do -- draws A's rows under B, a conversation that never existed.
+        // When the cache does not answer, keep the grouping only if it is
+        // already this session's, and drop it if it belongs to another.
         if let cached = await model.cachedConversation(for: sessionId) {
             turns = cached.turns ?? []
+            conversationSessionId = sessionId
+        } else if conversationSessionId != sessionId {
+            turns = []
         }
         loading = false
         loadingConversation = false

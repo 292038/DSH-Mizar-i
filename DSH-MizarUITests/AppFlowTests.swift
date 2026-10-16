@@ -148,7 +148,7 @@ final class AppFlowTests: XCTestCase {
         return XCTWaiter().wait(for: [arrived], timeout: Self.patience) == .completed
     }
 
-    /// Scroll back through the conversation until an element is in the tree.
+    /// Scroll through the conversation until an element is in the tree.
     ///
     /// A `LazyVStack` builds only what is near the screen, so an element that is
     /// in the data can be absent from the accessibility hierarchy entirely --
@@ -156,12 +156,12 @@ final class AppFlowTests: XCTestCase {
     /// conversation opens anchored to its newest message, so anything older than
     /// that needs scrolling to before it can be asserted on.
     ///
-    /// Both directions, and that is not tidiness. Expanding a turn inserts its
-    /// steps where the turn is, so a row that was on screen can be pushed off the
-    /// top while another is pulled up from below -- and a helper that only
-    /// travels one way then reports the row as missing from a screen it is on.
-    /// Measured: an English-language case found the failure card and the same
-    /// case with one turn more expanded did not.
+    /// Both directions. The content is longer than the screen -- prompts,
+    /// turn rows, answers, the failure card -- and a helper that only travelled
+    /// one way reported a row as missing from a screen it was on. It used to have
+    /// a second reason, that expanding a turn moved rows in both directions;
+    /// turns are no longer expandable, and this is kept because the list is still
+    /// longer than the display.
     ///
     /// - Parameters:
     ///   - element: what to look for.
@@ -639,52 +639,130 @@ final class AppFlowTests: XCTestCase {
         )
     }
 
-    /// Open every folded turn, so the steps inside can be asserted on.
+    /// A turn's row, wherever it is in the tree.
     ///
-    /// A turn's steps are folded behind a summary by default -- one prompt that
-    /// took eleven steps read as the model talking to itself -- so a test that
-    /// looks for a step has to open the turn it is in first.
+    /// Found by identifier and by `any` descendant, deliberately. A turn row is
+    /// a plain `HStack` of a glyph, some text and a count -- it is not a control
+    /// any more, so it is not a button, and which element type SwiftUI gives a
+    /// row of loose `Text`s is not something this test should depend on.
     ///
-    /// The element to tap is the `DisclosureGroup`, and its identifier is
-    /// `turn.<n>`, not `turn.summary.<n>`: `DisclosureGroup` puts its own
-    /// accessibility identity on the whole folded row and the identifier set
-    /// inside the label never reaches the tree. This used to query
-    /// `turn.summary.` in a loop until the first match stopped being hittable,
-    /// which found nothing at all -- so it silently expanded nothing, and the
-    /// assertions that relied on it were reading whatever happened to be open.
-    ///
-    /// Each summary is tapped **once**, keyed on its identifier, because
-    /// expanding a row leaves it exactly where it was: a loop that taps until
-    /// the row goes away taps it open and shut again.
-    ///
-    /// - Parameter app: the running app.
-    private func expandTurns(_ app: XCUIApplication) {
-        let summaries = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'turn.'"))
-        var opened = Set<String>()
-        for index in 0..<summaries.count {
-            let summary = summaries.element(boundBy: index)
-            guard summary.exists else { continue }
-            guard opened.insert(summary.identifier).inserted else { continue }
-            summary.tap()
-        }
+    /// - Parameters:
+    ///   - app: the running app.
+    ///   - turn: the turn number.
+    /// - Returns: the row.
+    private func turnRow(_ app: XCUIApplication, _ turn: Int) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: "turn.\(turn)").firstMatch
     }
 
-    func testTheConversationRendersMessagesAndAFailedTurn() {
+    func testTheConversationRendersMessagesAndFailures() {
         // Nothing pending: the two interaction cards fill most of a phone screen,
         // and this test is about the conversation underneath them.
         let app = launch(pending: false)
         expect(app.staticTexts["Refactor the parser and run the tests."], "the user's message is missing")
-        // The prompt is never folded: it is what the operator typed. The steps
-        // are, so they have to be opened.
-        expandTurns(app)
-        // Streamed deltas have to be joined into one bubble, not shown per chunk.
+        // The turn's one message is its answer, and it is on screen without a
+        // tap. The transport no longer sends the steps that led to it.
         expect(
-            app.staticTexts["I split the tokenizer out of the parser so it can be tested alone."],
-            "the assistant's streamed text was not joined",
+            app.staticTexts["The parser is now two files."],
+            "the turn's answer is not on screen without a tap",
         )
-        // A turn that produced nothing is the one state where the agent looks
-        // busy and is doing nothing, so it has to be visible.
-        expect(app.staticTexts["The turn ended without a response"], "a failed turn was not surfaced")
+        // A turn that ended badly still says so, on its own row: the state is the
+        // one thing a monitoring app exists to report, and the row carries it
+        // even when there is an answer under it.
+        XCTAssertTrue(
+            reveal(
+                app.descendants(matching: .any)
+                    .matching(NSPredicate(format: "label BEGINSWITH %@", "Unfinished after "))
+                    .firstMatch,
+                in: app,
+            ),
+            "a turn that ended badly was not reported as unfinished",
+        )
+        // The turn that ended with *nothing to show* is the one the failure card
+        // belongs to, and it is on screen: without it, that turn is a bare row
+        // saying "未完成" over an empty space, and the operator is left to guess
+        // whether the model ever ran.
+        expect(
+            app.staticTexts["The turn ended without a response"],
+            "a turn that ended without a response was not surfaced",
+        )
+        // And the turn that ended badly *after* answering keeps its answer: a
+        // notice drawn over it would take away the only thing that turn managed
+        // to say, and the row's own warning already reports the state.
+        expect(
+            app.staticTexts["Two files changed, and it still fails."],
+            "a failure notice replaced a turn's answer",
+        )
+    }
+
+    /// The step count comes from the markers, not from the messages.
+    ///
+    /// The reported shape, and the reason the count is derived rather than
+    /// counted off the items: the host sends one tiny `step/start` per step and
+    /// only the **last** `assistant/message` of a turn. Turn 1 below takes three
+    /// steps and arrives with one message, so a row that counted messages would
+    /// read "1 steps" over a turn that took three -- and the count is the only
+    /// part of a step the transport still sends.
+    func testATurnRowCountsItsStepsFromTheMarkers() {
+        let app = launch(pending: false)
+        // Waited for first: without this the assertions below pass on a screen
+        // that has not drawn yet, which is a test that proves nothing.
+        expect(app.staticTexts["Refactor the parser and run the tests."], "the conversation never arrived")
+
+        let count = app.staticTexts["3 steps"]
+        XCTAssertTrue(reveal(count, in: app), "the turn's step count does not match its markers")
+        // And the row is a finished one, not a failure and not still running.
+        XCTAssertTrue(
+            app.staticTexts["The parser is now two files."].exists,
+            "the counted turn's answer is missing",
+        )
+    }
+
+    /// A turn is not a disclosure any more, and tapping it reveals nothing.
+    ///
+    /// The old screen folded a turn's steps behind its summary bar, and the
+    /// transport change took the steps away: the host sends the prompt, the
+    /// turn's markers and the model's last message, and none of the narration in
+    /// between. There is nothing left to expand, so the row must not offer to.
+    ///
+    /// The text asserted on is a step of the running turn under the old
+    /// fixture, which was the shape of the thing that is no longer sent at all.
+    /// The row is tapped rather than merely inspected, because "the row is not
+    /// expandable" is a claim about what a tap does -- and a `DisclosureGroup`
+    /// looks exactly like a plain row until someone touches it.
+    func testATurnRowIsNotExpandable() {
+        let app = launch(pending: false)
+        // Waited for first: the row is looked up by identifier, and an identifier
+        // query finds nothing at all on a screen that has not drawn.
+        let row = turnRow(app, 1)
+        XCTAssertTrue(reveal(row, in: app), "the turn row is missing, so nothing can be tapped")
+
+        // The step's text is not there to begin with, and that is the first half
+        // of the claim: it is not merely hidden behind a tap.
+        XCTAssertFalse(
+            app.staticTexts["Running the tests now."].waitForExistence(timeout: 2),
+            "a step's text is in the tree, so the steps were not actually dropped",
+        )
+
+        // Tapped, as an operator would. A row that was still a `DisclosureGroup`
+        // would now be open.
+        row.tap()
+
+        XCTAssertFalse(
+            app.staticTexts["Running the tests now."].waitForExistence(timeout: 2),
+            "tapping the turn revealed a step, so the row is still expandable",
+        )
+        // And nothing else was revealed either: a row that still offered a
+        // disclosure would be a control, and this one is not one any more.
+        XCTAssertEqual(
+            app.buttons.matching(identifier: "turn.1").count,
+            0,
+            "the turn row is still a control",
+        )
+        // The answer that is there stays there, so the tap did not swap anything.
+        XCTAssertTrue(
+            app.staticTexts["The parser is now two files."].exists,
+            "tapping the turn row changed what is on screen",
+        )
     }
 
     /// A turn that is still working says so, and does not claim to have finished.
@@ -692,20 +770,18 @@ final class AppFlowTests: XCTestCase {
     /// The reported bug, exactly. A running turn has no `turn/end`, and the
     /// reader invented an end time from its last record -- so a live turn was
     /// drawn as "已完成，用时 10 秒", with the seconds measuring the age of the
-    /// newest message, and that newest message was then lifted out from under
-    /// the bar and presented as the turn's conclusion.
+    /// newest message.
     func testARunningTurnSaysItIsRunning() {
         // With nothing pending, so the conversation has the screen. The two
         // interaction cards take most of it, and they are asserted on by their
         // own tests.
         let app = launch(pending: false)
 
-        // The state is written on the folded row, which is a `DisclosureGroup`
-        // and therefore a button; its label is the whole summary. Found by label
-        // rather than by identifier, because the identifier belongs to the
-        // disclosure and the state belongs to the label.
+        // The state is written on the row, found by its label: the identifier
+        // belongs to the row and the state belongs to the text inside it, which
+        // is where a reader finds it too.
         let running = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "label BEGINSWITH %@", "Running for "))
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "DeepSeeking for "))
             .firstMatch
         expect(running, "no turn is reported as running")
 
@@ -715,6 +791,40 @@ final class AppFlowTests: XCTestCase {
             .matching(NSPredicate(format: "label BEGINSWITH %@", "Completed in "))
             .firstMatch
         XCTAssertTrue(reveal(finished, in: app), "no turn is reported as completed")
+    }
+
+    /// The running wording, in the language it was asked for in.
+    ///
+    /// "深度求索中，用时 %@" is the operator's string, word for word, and the
+    /// running row is the one thing on this screen they want to read at a
+    /// glance. Asserted in Chinese because that is where it was asked for; the
+    /// English pass is asserted in the test above.
+    func testTheRunningRowIsWordedAsAskedInChinese() {
+        let app = launch(language: "zh-Hans", pending: false)
+        // The conversation has to have landed, or this passes on a screen with
+        // nothing on it.
+        XCTAssertTrue(
+            app.staticTexts["Refactor the parser and run the tests."]
+                .waitForExistence(timeout: Self.patience),
+            "the conversation never arrived",
+        )
+        XCTAssertTrue(
+            app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label BEGINSWITH %@", "深度求索中，用时 "))
+                .firstMatch
+                .waitForExistence(timeout: Self.patience),
+            "the running row does not read \"深度求索中，用时 \" in Chinese",
+        )
+        // And the finished row is the wording that was already correct.
+        XCTAssertTrue(
+            reveal(
+                app.descendants(matching: .any)
+                    .matching(NSPredicate(format: "label BEGINSWITH %@", "已完成，用时 "))
+                    .firstMatch,
+                in: app,
+            ),
+            "the finished row does not read \"已完成，用时 \" in Chinese",
+        )
     }
 
     /// The clock on a running turn moves.
@@ -727,7 +837,7 @@ final class AppFlowTests: XCTestCase {
     func testARunningTurnsClockMoves() {
         let app = launch(pending: false)
         let running = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "label BEGINSWITH %@", "Running for "))
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "DeepSeeking for "))
             .firstMatch
         expect(running, "no turn is reported as running")
         let first = running.label
@@ -743,33 +853,106 @@ final class AppFlowTests: XCTestCase {
         )
     }
 
-    /// A running turn shows no summary message, and folds its steps away.
+    /// A running turn shows no answer at all, and hides nothing.
     ///
-    /// Both halves of the request, and they are opposites: the message that
-    /// happens to be last must not be presented as a conclusion, and it must
-    /// also not be lost -- opening the turn brings it back.
-    func testARunningTurnShowsNoSummaryMessage() {
+    /// Both halves of the request, and they are opposites: a half-written answer
+    /// must not be presented as a conclusion, and nothing may be lost behind a
+    /// tap that no longer exists to reveal it.
+    ///
+    /// Since the transport change the two are the same fact -- the host does not
+    /// send a running turn's partial answer, so there is nothing to show and
+    /// nothing to fold -- but they are asserted separately because a view that
+    /// started drawing the partial answer again would fail one and pass the
+    /// other.
+    func testARunningTurnShowsNoAnswer() {
         let app = launch(pending: false)
-        // Waited for first: without this the two assertions below pass on a
-        // screen that has not drawn yet, which is a test that proves nothing.
+        // Waited for first: without this the assertions below pass on a screen
+        // that has not drawn yet, which is a test that proves nothing.
         expect(app.staticTexts["And run the whole suite."], "the running turn's prompt is missing")
 
-        let lastMessage = app.staticTexts["Two failures, fixing them."]
-        let firstStep = app.staticTexts["Running the tests now."]
+        let running = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "DeepSeeking for "))
+            .firstMatch
+        // Waited for: the row is what the next assertion measures against, and a
+        // query that matches nothing returns a frame of zeroes rather than
+        // failing.
+        expect(running, "the running turn is not reported as running")
 
-        // Closed, so neither step is on screen: nothing is presented as the
-        // turn's answer while the turn is still being written.
-        XCTAssertFalse(
-            lastMessage.waitForExistence(timeout: 2),
-            "a running turn's last message was shown as its summary",
+        // Its count is still shown, because the markers are still sent: a
+        // running turn with nothing on its row reads as a turn that has stalled.
+        XCTAssertTrue(
+            app.staticTexts["2 steps"].exists,
+            "the running turn's step count is missing",
         )
-        XCTAssertFalse(firstStep.exists, "a running turn's steps are not folded")
 
-        expandTurns(app)
+        // Nothing has leaked out under its row. The answer above it belongs to
+        // the turn that finished -- the prompt and the row are all the running
+        // turn has, because the transport does not send a partial answer -- and
+        // the narration of the old fixture is not here at all.
+        XCTAssertLessThan(
+            app.staticTexts["Two files changed, and it still fails."].frame.minY,
+            running.frame.minY,
+            "the running turn's row is not below the turn that came before it",
+        )
+        // The prompt is above the row, and the row is the last thing in the
+        // turn: nothing of the running turn's own is under it, because the
+        // transport sends nothing for a turn that has not ended.
+        XCTAssertLessThan(
+            app.staticTexts["And run the whole suite."].frame.minY,
+            running.frame.minY,
+            "the running turn's prompt is not above its row",
+        )
+        XCTAssertFalse(
+            app.staticTexts["Running the tests now."].exists,
+            "a step that the transport no longer sends is on screen",
+        )
+    }
 
-        // Opened, so both are: the content was folded, not dropped.
-        expect(firstStep, "opening a running turn did not reveal its first step")
-        expect(lastMessage, "opening a running turn did not reveal its last step")
+    /// The refresh control in the conversation, which is the way back to a
+    /// session that has gone quiet without hunting for a pull gesture.
+    ///
+    /// It calls the same reload the pull-to-refresh does. The assertion is that
+    /// it exists, that it is usable once the screen has landed, and that tapping
+    /// it loads the conversation again rather than emptying it -- a reload that
+    /// reported failure would draw the failure card over what was on screen.
+    func testTheConversationCanBeRefreshed() {
+        let app = launch(pending: false)
+        // The screen has to have landed first: the button is disabled while a
+        // reload is already in flight, and a disabled button that does nothing
+        // would fail this for the wrong reason.
+        expect(app.staticTexts["Refactor the parser and run the tests."], "the conversation never arrived")
+
+        let refresh = app.buttons["session.refresh"]
+        expect(refresh, "there is no way to refresh the conversation")
+        XCTAssertTrue(refresh.isEnabled, "the refresh button is disabled on a landed screen")
+        refresh.tap()
+
+        // It comes back, and it comes back usable: the spinner it shows while it
+        // works must not leave the control dead afterwards.
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "isEnabled == true"),
+            object: refresh,
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [ready], timeout: Self.patience),
+            .completed,
+            "the refresh button never became usable again",
+        )
+        XCTAssertTrue(
+            app.buttons["session.refresh"].exists,
+            "the refresh button vanished while it was working",
+        )
+
+        // And the conversation is still the conversation. A reload that lost it
+        // is what "pull to refresh loses my history" was, in the same code path.
+        XCTAssertTrue(
+            reveal(app.staticTexts["Refactor the parser and run the tests."], in: app),
+            "reloading the conversation emptied it",
+        )
+        XCTAssertFalse(
+            app.staticTexts["Could not load the conversation"].exists,
+            "reloading the conversation reported a failure",
+        )
     }
 
     /// The context figure opens the breakdown it is computed from.
@@ -1032,7 +1215,6 @@ final class AppFlowTests: XCTestCase {
         chinese.terminate()
 
         let english = launch(language: "en", pending: false)
-        expandTurns(english)
         let englishFailure = english.staticTexts["The turn ended without a response"]
         XCTAssertTrue(reveal(englishFailure, in: english), "the failure card did not translate")
         XCTAssertEqual(

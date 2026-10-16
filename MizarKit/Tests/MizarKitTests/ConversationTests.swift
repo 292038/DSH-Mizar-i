@@ -55,40 +55,27 @@ struct ConversationTests {
     }
 
     @Test("a failed turn is shown as a failure, not as an empty answer")
-    func failedAttempt() throws {
+    func failedTurn() throws {
         // This is the real shape: every turn on a host without a provider
-        // credential ends here, and showing nothing would look like a hang.
+        // credential ends here, and showing nothing would look like a hang. The
+        // history is summary-only now, so the reason arrives on the turn's one
+        // message rather than on a stream of chunks inside an attempt.
         let result = try page("""
         {"sessionId":"s1","asOfSeq":15,"hasMore":false,"records":[
-          {"type":"event","event":{"type":"assistant/attempt","seq":15,"time":1791984791236,
-            "data":{"turn":1,"step":1,"stream":[
-              {"type":"chunk","time":1,"chunk":{"type":"finish","reason":{"kind":"error",
-                "failure":{"message":"no API key for provider route deepseek-official",
-                           "code":"MISSING_CREDENTIAL"}}}}]}}}
+          {"type":"event","event":{"type":"turn/start","seq":14,"time":1,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"assistant/message","seq":15,"time":2,
+            "data":{"turn":1,"step":1,"message":{"role":"assistant","content":[]},
+                     "stopReason":{"kind":"error",
+                       "message":"llm-deepseek: no API key for provider route deepseek-official"}}}},
+          {"type":"event","event":{"type":"turn/end","seq":16,"time":3,
+            "data":{"turn":1,"reason":{"kind":"error"}}}}
         ]}
         """)
-        guard case .failure(_, let message, _) = result.conversationItems()[0] else {
-            Issue.record("expected a failure")
+        guard case .failure(_, let message, _) = result.conversationItems().first else {
+            Issue.record("expected a failure, got \(result.conversationItems())")
             return
         }
         #expect(message.contains("no API key"))
-    }
-
-    @Test("an attempt that streamed text becomes an assistant message")
-    func streamedAttempt() throws {
-        let result = try page("""
-        {"sessionId":"s1","asOfSeq":2,"hasMore":false,"records":[
-          {"type":"event","event":{"type":"assistant/attempt","seq":2,"time":1,
-            "data":{"stream":[{"type":"chunk","chunk":{"type":"delta","text":"Hel"}},
-                              {"type":"chunk","chunk":{"type":"delta","text":"lo"}}]}}}
-        ]}
-        """)
-        guard case .message(_, let role, let text, _) = result.conversationItems()[0] else {
-            Issue.record("expected a message")
-            return
-        }
-        #expect(role == .assistant)
-        #expect(text == "Hello")
     }
 
     @Test("bookkeeping events are dropped rather than rendered")
@@ -238,20 +225,26 @@ struct ConversationTests {
         #expect(text == "4")
     }
 
-    @Test("a reply with no readable content falls back to its attempt chunks")
-    func assistantMessageFallsBackToAttempt() throws {
-        // Whichever of the two carries the text, the reply has to appear.
+    @Test("a record the transport stopped sending renders nothing, not a crash")
+    func retiredRecordTypesAreIgnored() throws {
+        // `assistant/attempt` and `system/message` are no longer sent -- the
+        // history is summary-only -- but a cache, or a host a version behind,
+        // can still hold them, and a parser that cannot read what it is handed
+        // is a screen that shows nothing at all. They contribute nothing, which
+        // is the correct amount: the turn's own `assistant/message` is the
+        // answer, and the attempt behind it is the narration that was dropped.
         let result = try page("""
-        {"sessionId":"s1","asOfSeq":2,"hasMore":false,"records":[
-          {"type":"event","event":{"type":"assistant/message","seq":2,"time":2,
-            "data":{"stream":[{"chunk":{"type":"text","text":"from chunks"}}]}}}
+        {"sessionId":"s1","asOfSeq":3,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"assistant/attempt","seq":2,"time":1,
+            "data":{"turn":1,"step":1,"stream":[
+              {"type":"chunk","chunk":{"type":"delta","text":"Hel"}},
+              {"type":"chunk","chunk":{"type":"delta","text":"lo"}}]}}},
+          {"type":"event","event":{"type":"system/message","seq":3,"time":2,
+            "data":{"turn":1,"step":1,"message":{"role":"system","content":[
+              {"type":"text","text":"You are an AI agent powered by DeepSeek Harness."}]}}}}
         ]}
         """)
-        guard case .message(_, _, let text, _) = result.conversationItems().first else {
-            Issue.record("expected a message")
-            return
-        }
-        #expect(text == "from chunks")
+        #expect(result.conversationItems().isEmpty)
     }
 
     @Test("the same prompt arriving twice is shown once")
@@ -335,6 +328,26 @@ struct ConversationTests {
         ]}
         """)
         #expect(result.conversationItems().isEmpty)
+    }
+
+    @Test("the prompt is paired with the turn it opens")
+    func promptBeforeTurnStart() throws {
+        // The order a real session log holds, and the one the host's own tests
+        // pin down: the `user/message` is written **before** the `turn/start` it
+        // caused, and carries no `data.turn` of its own. So the record it is
+        // paired with is the only thing that can place it, and the pairing is by
+        // order rather than by a number.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":20,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"user/message","seq":1,"time":1000,
+            "data":{"content":[{"type":"text","text":"anybody there?"}],"source":{"kind":"user"}}}},
+          {"type":"event","event":{"type":"turn/start","seq":2,"time":1100,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"step/start","seq":3,"time":1200,"data":{"turn":1,"step":1}}}
+        ]}
+        """)
+        let turn = try #require(result.conversationTurns().first)
+        #expect(turn.prompts.count == 1)
+        #expect(turn.stepCount == 1)
     }
 
     @Test("a whole exchange renders in order")
@@ -446,6 +459,58 @@ struct ConversationCacheTests {
         #expect(loaded.items == conversation.items)
         #expect(loaded.throughSeq == 42)
         #expect(loaded.hasMore)
+    }
+
+    @Test("a turn's step count survives the cache")
+    func stepCountRoundTrip() async throws {
+        // The count is derived from `step/start` records, which are not items --
+        // so it lives on the turn and nowhere else. A cache that drops it is a
+        // conversation that reads "Completed in 12 s" with no idea whether the
+        // turn took one step or eleven, and the count is the only part of a step
+        // the transport still sends.
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("mizar-turns-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let cache = FileConversationCache(directory: directory)
+        let stored = ConversationTurn(
+            turn: 4,
+            prompts: [.message(id: "seq-1", role: .user, text: "run it", at: Date(timeIntervalSince1970: 1))],
+            steps: [.message(id: "seq-2", role: .assistant, text: "done", at: Date(timeIntervalSince1970: 2))],
+            stepCount: 11,
+            startedAt: Date(timeIntervalSince1970: 1),
+            endedAt: Date(timeIntervalSince1970: 2),
+            endedReason: "completed",
+        )
+        await cache.save(
+            CachedConversation(
+                sessionId: "session-1",
+                items: [],
+                throughSeq: 2,
+                turns: [stored],
+            ),
+        )
+
+        // A fresh cache object, as a relaunch would build.
+        let read = try #require(await FileConversationCache(directory: directory).load(sessionId: "session-1"))
+        let turn = try #require(read.turns?.first)
+        #expect(turn == stored)
+        #expect(turn.stepCount == 11)
+    }
+
+    @Test("a turn written before step counts existed still decodes")
+    func turnWithoutStepCountDecodes() throws {
+        // The cache is a file format and it outlives a build. A turn written by
+        // the previous version has no `stepCount` key at all, and a turn that
+        // fails to decode is a conversation that looks lost -- which is the one
+        // thing this file exists to prevent.
+        let json = """
+        {"turn":3,"prompts":[],"steps":[],"startedAt":0,"endedAt":10,"endedReason":"completed"}
+        """
+        let decoder = JSONDecoder()
+        let turn = try decoder.decode(ConversationTurn.self, from: Data(json.utf8))
+        #expect(turn.turn == 3)
+        #expect(turn.stepCount == nil)
     }
 
     @Test("merges by id rather than appending")
@@ -700,7 +765,6 @@ struct ConversationCacheTests {
             // things to be told.
             #expect(merged.first?.endedReason == kind)
             #expect(merged.first?.isRunning == false)
-            #expect(merged.first?.isCollapsible == false)
         }
     }
 
@@ -799,6 +863,16 @@ struct ConversationCacheTests {
     }
 }
 
+
+
+
+
+
+
+
+
+
+
 @Suite("Turns")
 struct TurnTests {
     /// A turn as the log holds it: prompts, then the steps the agent took.
@@ -806,7 +880,7 @@ struct TurnTests {
         try JSONDecoder().decode(SessionMessagesResult.self, from: Data(payload.utf8))
     }
 
-    @Test("a turn's steps are grouped, and its prompt is not")
+    @Test("a turn's records are grouped, and its prompt is not")
     func grouping() throws {
         // The shape that made the model look like it was talking to itself: one
         // prompt, three steps, and a reader with no idea they belonged together.
@@ -831,12 +905,168 @@ struct TurnTests {
         let turns = result.conversationTurns()
         #expect(turns.count == 1)
         let turn = try #require(turns.first)
-        // The prompt stays out of the collapse: it is what the operator typed.
+        // The prompt stays out of the agent's own records: it is what the
+        // operator typed.
         #expect(turn.prompts.count == 1)
         #expect(turn.steps.count == 3)
         #expect(turn.duration == 1)
         #expect(!turn.failed)
-        #expect(turn.isCollapsible)
+        // Counted from the one `step/start` marker, not from the three messages:
+        // the two differ because this fixture is an old full-fidelity log, and
+        // under summary-only history the same turn arrives as one marker per step
+        // and a single message. The marker is what the count follows, so a log
+        // that carries both still reports what the log said.
+        #expect(turn.stepCount == 1)
+    }
+
+    @Test("the step count follows the markers, not the messages")
+    func stepCountFollowsMarkers() throws {
+        // The shape the host actually sends now, and the reason `stepCount`
+        // exists at all: eleven steps used to arrive as eleven messages and now
+        // arrive as eleven tiny `step/start` markers and **one**
+        // `assistant/message` -- the model's summary of the turn. Counting the
+        // messages would draw "1 steps" over a turn that took eleven.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":20,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"user/message","seq":2,"time":1100,
+            "data":{"content":[{"type":"text","text":"fix the parser"}],"source":{"kind":"user"}}}},
+          {"type":"event","event":{"type":"step/start","seq":3,"time":1200,"data":{"turn":1,"step":1}}},
+          {"type":"event","event":{"type":"step/start","seq":4,"time":1300,"data":{"turn":1,"step":2}}},
+          {"type":"event","event":{"type":"step/start","seq":5,"time":1400,"data":{"turn":1,"step":3}}},
+          {"type":"event","event":{"type":"assistant/message","seq":6,"time":1500,
+            "data":{"turn":1,"step":3,"message":{"role":"assistant","content":[
+              {"type":"text","text":"Three files changed."}]}}}},
+          {"type":"event","event":{"type":"turn/end","seq":7,"time":2000,
+            "data":{"turn":1,"reason":{"kind":"completed"}}}}
+        ]}
+        """)
+        let turn = try #require(result.conversationTurns().first)
+        #expect(turn.stepCount == 3)
+        #expect(turn.steps.count == 1)
+        // And the answer is the message, not a marker.
+        guard case .message(_, .assistant, let text, _) = turn.steps.first else {
+            Issue.record("expected the turn's answer, got \(turn.steps)")
+            return
+        }
+        #expect(text == "Three files changed.")
+    }
+
+    @Test("a running turn has steps counted and no answer at all")
+    func runningTurnHasNoAnswer() throws {
+        // The transport sends nothing for a turn still going: no `assistant
+        // /message`, because a half-written answer is not the turn's summary.
+        // The row therefore has a count to show and nothing to draw under it,
+        // and neither of those is invented here.
+        //
+        // The prompt is written *before* the `turn/start` it begins and carries
+        // no turn of its own -- that is the real order in the log, and the
+        // reader pairs the two.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":20,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"user/message","seq":2,"time":1100,
+            "data":{"content":[{"type":"text","text":"run the suite"}],"source":{"kind":"user"}}}},
+          {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"step/start","seq":3,"time":1200,"data":{"turn":1,"step":1}}},
+          {"type":"event","event":{"type":"step/start","seq":4,"time":1300,"data":{"turn":1,"step":2}}}
+        ]}
+        """)
+        let turn = try #require(result.conversationTurns().first)
+        #expect(turn.isRunning)
+        #expect(turn.stepCount == 2)
+        #expect(turn.steps.isEmpty)
+        // The prompt is still there: a running turn is opened to read what was
+        // asked, not what was answered.
+        #expect(turn.prompts.count == 1)
+    }
+
+    @Test("a turn whose markers were trimmed away has no count, not a zero")
+    func missingMarkersHaveNoCount() throws {
+        // A page can be cut across a turn, and the host trims it -- so a turn
+        // can arrive with its prompt and its end and none of the markers in
+        // between. Zero would be a claim about the turn; `nil` is what "the log
+        // did not say" actually is, and the view draws no number for it.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":20,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"user/message","seq":2,"time":1100,
+            "data":{"content":[{"type":"text","text":"carry on"}],"source":{"kind":"user"}}}},
+          {"type":"event","event":{"type":"turn/end","seq":3,"time":2000,
+            "data":{"turn":1,"reason":{"kind":"completed"}}}}
+        ]}
+        """)
+        let turn = try #require(result.conversationTurns().first)
+        #expect(turn.stepCount == nil)
+    }
+
+    @Test("a turn that ended badly with nothing to show is drawn as a failure")
+    func failureWithNoAnswer() throws {
+        // The shape the mock host serves and the real host produces without a
+        // provider credential: a turn with markers, a turn/end saying `error`,
+        // and **no message at all**. Under the old transport a streaming attempt
+        // carried the reason; summary-only history sends no attempt, so a reader
+        // that only looked at messages would draw a bare "未完成" bar over an
+        // empty screen and leave the operator to guess.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":9,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"turn/end","seq":2,"time":4000,
+            "data":{"turn":1,"reason":{"kind":"error","error":{"message":"no API key"}}}}}
+        ]}
+        """)
+        let turn = try #require(result.conversationTurns().first)
+        #expect(turn.failed)
+        guard case .failure(_, let message, _) = turn.steps.first else {
+            Issue.record("a turn that produced nothing was not drawn as a failure: \(turn.steps)")
+            return
+        }
+        // The host's own words when it gave them, rather than a paraphrase.
+        #expect(message == "no API key")
+        // No marker was sent for it, so there is no count -- and none is
+        // invented. A missing record is not a zero.
+        #expect(turn.stepCount == nil)
+    }
+
+    @Test("a turn that failed after answering is not drawn as having said nothing")
+    func failureWithAnAnswer() throws {
+        // The other side of the rule. A turn that answered and *then* failed has
+        // said something, and a failure card over the answer would be a worse
+        // lie than the warning on the row -- which is already there, because the
+        // reason is not `completed`.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":9,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"assistant/message","seq":2,"time":1200,
+            "data":{"turn":1,"step":1,"message":{"role":"assistant","content":[
+              {"type":"text","text":"I changed two files."}]}}}},
+          {"type":"event","event":{"type":"turn/end","seq":3,"time":4000,
+            "data":{"turn":1,"reason":{"kind":"aborted"}}}}
+        ]}
+        """)
+        let turn = try #require(result.conversationTurns().first)
+        #expect(turn.failed)
+        #expect(turn.steps.count == 1)
+        guard case .message(_, _, let text, _) = turn.steps.first else {
+            Issue.record("the answer was replaced by a failure card: \(turn.steps)")
+            return
+        }
+        #expect(text == "I changed two files.")
+    }
+
+    @Test("a completed turn is not drawn as a failure")
+    func completedTurnHasNoFailureItem() throws {
+        // The guard on the rule above: only a reason that is not `completed`
+        // produces the card, so an ordinary turn cannot acquire one.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":9,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"turn/end","seq":2,"time":4000,
+            "data":{"turn":1,"reason":{"kind":"completed"}}}}
+        ]}
+        """)
+        let turn = try #require(result.conversationTurns().first)
+        #expect(!turn.failed)
+        #expect(turn.steps.isEmpty)
     }
 
     @Test("a cancelled turn is not a completed one")
@@ -863,10 +1093,12 @@ struct TurnTests {
         }
     }
 
-    @Test("a turn that produced one reply is not a crowd")
-    func singleStepStaysOpen() throws {
-        // Hiding a single answer behind a tap gains nothing -- the answer is the
-        // whole point of the turn.
+    @Test("a finished turn's answer is in the turn, with nothing to open")
+    func answerIsInTheTurn() throws {
+        // Hiding the answer behind a tap gained nothing, and there is no longer
+        // anything to hide it behind: the transport sends one message per
+        // finished turn. The turn's own records have to hold it, because the
+        // view draws what the turn holds and nothing else.
         let result = try page("""
         {"sessionId":"s1","asOfSeq":9,"hasMore":false,"records":[
           {"type":"event","event":{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}},
@@ -877,7 +1109,11 @@ struct TurnTests {
         ]}
         """)
         let turn = try #require(result.conversationTurns().first)
-        #expect(!turn.isCollapsible)
+        guard case .message(_, .assistant, let text, _) = turn.steps.first else {
+            Issue.record("the turn's answer is not in the turn: \(turn.steps)")
+            return
+        }
+        #expect(text == "hi")
     }
 
     @Test("a failed turn says so")
@@ -965,7 +1201,9 @@ struct TurnTests {
         let turn = try #require(result.conversationTurns().first)
         #expect(turn.turn == nil)
         #expect(!turn.isRunning)
-        #expect(!turn.isCollapsible)
+        // Nothing about it is a step count either: there is no turn to have
+        // taken one.
+        #expect(turn.stepCount == nil)
     }
 }
 
@@ -1040,5 +1278,79 @@ struct TurnMergeTests {
         let merged = mergeTurns(cached: [turn(7, "still going")], fresh: [ended(7, at: 60)])
         #expect(merged.first?.endedAt != nil)
         #expect(merged.first?.isRunning == false)
+    }
+
+    /// A turn with a step count, and nothing else that matters here.
+    private func counted(_ n: Int, steps: Int?) -> ConversationTurn {
+        ConversationTurn(
+            turn: n,
+            prompts: [],
+            steps: [],
+            stepCount: steps,
+            startedAt: nil,
+            endedAt: nil,
+            endedReason: nil,
+        )
+    }
+
+    @Test("merging one turn's two copies does not add its step count twice")
+    func stepCountIsNotDoubledByAMerge() {
+        // The page and the cache overlap on every refresh, and they hold the
+        // same steps. Adding the two counts would report a turn of eleven steps
+        // as twenty-two after one pull-to-refresh and thirty-three after the
+        // next -- a number that grows every time the screen is looked at.
+        let merged = mergeTurns(cached: [counted(7, steps: 11)], fresh: [counted(7, steps: 11)])
+        #expect(merged.first?.stepCount == 11)
+    }
+
+    @Test("the copy that saw more steps keeps its count")
+    func theLargerCountWins() {
+        // A page is a window, so one copy of a turn can arrive with fewer
+        // markers than the other. The larger is the read that saw more of the
+        // turn, in either direction, and the count cannot come back down.
+        let windowed = mergeTurns(cached: [counted(7, steps: 3)], fresh: [counted(7, steps: 11)])
+        #expect(windowed.first?.stepCount == 11)
+        let other = mergeTurns(cached: [counted(7, steps: 11)], fresh: [counted(7, steps: 3)])
+        #expect(other.first?.stepCount == 11)
+    }
+
+    @Test("a count on one copy and none on the other keeps the count")
+    func aCountSurvivesAPageWithoutOne() {
+        // A turn written before step counts existed has no count, and it merges
+        // with a page that does on every refresh after the upgrade. Losing the
+        // count to the older copy is the number disappearing from a row the
+        // operator was just reading.
+        let merged = mergeTurns(cached: [counted(7, steps: nil)], fresh: [counted(7, steps: 4)])
+        #expect(merged.first?.stepCount == 4)
+    }
+
+    @Test("a continuation's steps are added to the turn it continued")
+    func continuationStepsAreAdded() {
+        // Opposite rule, and for the opposite reason: these are two *different*
+        // turns folded into one, each with its own markers. Taking the larger
+        // would report the first turn's steps and forget the rest of the work.
+        let asked = ConversationTurn(
+            turn: 2,
+            prompts: [.message(id: "seq-100", role: .user, text: "go", at: Date(timeIntervalSince1970: 0))],
+            steps: [],
+            stepCount: 3,
+            startedAt: Date(timeIntervalSince1970: 0),
+            endedAt: Date(timeIntervalSince1970: 10),
+            endedReason: "completed",
+        )
+        let carriedOn = ConversationTurn(
+            turn: 3,
+            prompts: [],
+            steps: [],
+            stepCount: 4,
+            startedAt: Date(timeIntervalSince1970: 11),
+            endedAt: Date(timeIntervalSince1970: 20),
+            endedReason: "completed",
+        )
+
+        let merged = mergeTurns(cached: [], fresh: [asked, carriedOn])
+
+        #expect(merged.count == 1)
+        #expect(merged.first?.stepCount == 7)
     }
 }

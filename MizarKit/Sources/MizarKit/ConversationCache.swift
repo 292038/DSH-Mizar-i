@@ -127,7 +127,7 @@ public protocol ConversationCache: Sendable {
 
 extension ConversationItem: Codable {
     private enum CodingKeys: String, CodingKey {
-        case kind, id, role, text, label, message, at
+        case kind, id, role, text, message, at
     }
 
     /// A flat shape, because the enum's associated values do not encode usefully
@@ -150,12 +150,6 @@ extension ConversationItem: Codable {
                 id: id,
                 role: .system,
                 text: try container.decode(String.self, forKey: .text),
-                at: at,
-            )
-        case "activity":
-            self = .activity(
-                id: id,
-                label: try container.decode(String.self, forKey: .label),
                 at: at,
             )
         case "failure":
@@ -187,11 +181,6 @@ extension ConversationItem: Codable {
             case .assistant: try container.encode("assistant", forKey: .kind)
             case .system: try container.encode("system", forKey: .kind)
             }
-        case .activity(let id, let label, let at):
-            try container.encode(id, forKey: .id)
-            try container.encode("activity", forKey: .kind)
-            try container.encode(label, forKey: .label)
-            try container.encode(at, forKey: .at)
         case .failure(let id, let message, let at):
             try container.encode(id, forKey: .id)
             try container.encode("failure", forKey: .kind)

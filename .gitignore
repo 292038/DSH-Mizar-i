@@ -1,0 +1,15 @@
+# --- Xcode ---
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.devstate/
+
+# --- Swift Package Manager ---
+MizarKit/.build/
+
+# --- Local caches (Xcode DerivedData lives here for the scripts) ---
+.devcache/
+
+# --- macOS ---
+.DS_Store

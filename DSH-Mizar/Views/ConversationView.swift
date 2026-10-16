@@ -2,12 +2,14 @@
 //  ConversationView.swift
 //  DSH-Mizar
 //
-//  What was said, and what the agent did between the saying.
+//  What was said, and how long the agent took over it.
 //
-//  Activity events are rendered rather than filtered. "Turn started, step
-//  started, permission changed" is the shape of a working agent, and a view that
-//  showed only messages could not be told apart from one that was stuck — which
-//  is exactly the question a monitoring app exists to answer.
+//  A turn is drawn, not folded. The host used to send a whole transcript --
+//  every step, every tool call, every streaming attempt -- and the screen folded
+//  it behind a summary bar. It now sends a *summary* instead: the prompt, the
+//  turn's markers, and the model's last message of the turn, with the per-step
+//  narration left out entirely. There is nothing left to expand, so the bar is a
+//  plain row and the answer sits under it.
 //
 //  A failed turn gets the most prominent treatment of anything here. It is the
 //  one state where the agent looks busy and is in fact doing nothing.
@@ -144,7 +146,7 @@ struct ConversationView: View {
             } else {
                 // One row per turn rather than one per message. A prompt that
                 // took eleven steps arrived as eleven bubbles and read as the
-                // model talking to itself; DSH folds them and so does this.
+                // model talking to itself; DSH groups them and so does this.
                 ForEach(turns) { turn in
                     TurnSection(turn: turn)
                 }
@@ -160,11 +162,9 @@ struct ConversationView: View {
     }
 }
 
-/// One turn: the prompt in the open, the agent's work folded behind a summary.
+/// One turn: the prompt, the row that says how it is going, and the answer.
 private struct TurnSection: View {
     let turn: ConversationTurn
-
-    @State private var open = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -172,84 +172,44 @@ private struct TurnSection: View {
                 ConversationRow(item: item)
             }
 
-            if turn.isCollapsible {
-                // Prompt, then the bar, then the turn's answer -- with the detail
-                // unfolding *between* the bar and the answer.
-                //
-                // This shape took three attempts to land on, and each wrong one
-                // is worth naming so it is not rebuilt:
-                //
-                //   first    the answer was drawn above the bar while folded and
-                //            folded into the disclosure when opened, so a tap
-                //            removed a bubble from directly above the bar and the
-                //            bar jumped upward under the operator's finger;
-                //   then     everything moved inside the disclosure, which kept
-                //            the bar still but hid the answer behind a tap --
-                //            the one thing a monitoring app must not do;
-                //   now      the bar sits under the prompt and does not move,
-                //            the steps open beneath it, and the answer stays on
-                //            screen below them either way.
-                //
-                // The answer is the last thing the model *said*, not the last
-                // thing the turn did: a turn usually ends on a tool call, and
-                // that is not a summary of anything.
-                //
-                // A turn that is still running has no answer, and the message
-                // that happens to be last is not one either -- it is wherever
-                // the model had got to when the screen was drawn. Pulling it out
-                // from under the bar presented half a streamed answer as the
-                // turn's conclusion and, worse, as a turn that had concluded.
-                // While a turn runs its steps all stay behind the bar: nothing
-                // is hidden, and nothing is claimed.
-                let answer = turn.isRunning
-                    ? nil
-                    : turn.steps.last { item in
-                        if case .message(_, .assistant, _, _) = item { return true }
-                        return false
-                    }
-                let details = answer.map { last in turn.steps.filter { $0.id != last.id } } ?? turn.steps
-
-                DisclosureGroup(isExpanded: $open) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(details) { item in
-                            ConversationRow(item: item)
-                        }
-                    }
-                    .padding(.top, 8)
-                } label: {
-                    TurnSummary(turn: turn)
-                }
+            // The order is prompt, row, answer, and the row does not move.
+            //
+            // This shape took three attempts to land on, and each wrong one is
+            // worth naming so it is not rebuilt:
+            //
+            //   first    the answer was drawn above the bar while the detail was
+            //            folded, so a tap removed a bubble from directly above
+            //            the bar and the bar jumped upward under the operator's
+            //            finger;
+            //   then     everything moved inside the disclosure, which kept the
+            //            bar still but hid the answer behind a tap -- the one
+            //            thing a monitoring app must not do;
+            //   now      the bar sits under the prompt and the answer sits under
+            //            the bar, always, for every turn. Nothing is behind a tap
+            //            because there is nothing left to put there.
+            //
+            // A running turn has no answer, and that is the transport's doing
+            // rather than this view's: the host sends the model's last message
+            // of a *finished* turn and nothing at all for one still going, so
+            // there is no half-streamed reply to mistake for a conclusion.
+            TurnSummary(turn: turn)
+                // The row's identity on the row, not inside it. These are loose
+                // `Text`s in an `HStack`, so an identifier on one of them would
+                // make that one text the handle and leave the others unaddressable
+                // -- the state, the clock and the count are all the same row.
                 .accessibilityIdentifier("turn.\(turn.id)")
 
-                if let answer {
-                    ConversationRow(item: answer)
-                }
-            } else if turn.isRunning {
-                // Running with nothing folded behind it -- a turn that has taken
-                // one step, or none yet. The bar stays, because whether the
-                // agent is working is the whole reason this screen was opened,
-                // and the steps stay in the open because there is nothing yet to
-                // fold away.
-                TurnSummary(turn: turn)
-                    // The same identity the folded row carries, so a caller can
-                    // look for a turn's state without knowing whether that turn
-                    // happened to have anything to fold.
-                    .accessibilityIdentifier("turn.\(turn.id)")
-                ForEach(turn.steps) { item in
-                    ConversationRow(item: item)
-                }
-            } else {
-                // A turn that produced one reply is not a crowd, and hiding a
-                // single answer behind a tap gains nothing.
-                ForEach(turn.steps) { item in
-                    ConversationRow(item: item)
-                }
+            // The answer, and for a failed turn the card that says there was
+            // none. Drawn from what the turn holds: the host sends one message
+            // per finished turn and nothing for a running one.
+            ForEach(turn.steps) { item in
+                ConversationRow(item: item)
             }
         }
     }
 }
 
-/// "Running for 2m 14s", "Completed in 2m 14s", or why it did not.
+/// "DeepSeeking for 2m 14s", "Completed in 2m 14s", or why it did not.
 private struct TurnSummary: View {
     let turn: ConversationTurn
 
@@ -266,15 +226,18 @@ private struct TurnSummary: View {
             }
             headline
             Spacer()
-            Text("\(turn.steps.count) steps")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            // Only when the log actually said. The host sends a `step/start`
+            // marker per step and those markers are tiny, so the count is
+            // normally there -- but a turn whose markers were trimmed away by
+            // the pager shows no number rather than the zero it would otherwise
+            // be counted as. "No steps" is a claim about the turn, and this row
+            // is not the place to make one out of a missing record.
+            if let stepCount = turn.stepCount, stepCount > 0 {
+                Text("\(stepCount) steps")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
-        // No identifier here. Folded, this view is the label of a
-        // `DisclosureGroup`, and that group puts its own accessibility identity
-        // on the whole row -- `turn.<n>` -- so anything set in here never
-        // reaches the tree. The state is in the label, which is where a reader
-        // finds it and where a test finds it.
     }
 
     /// The state of the turn, and for a running one a clock that moves.
@@ -289,7 +252,7 @@ private struct TurnSummary: View {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 Text(
                     String(
-                        format: String(localized: "Running for %@"),
+                        format: String(localized: "DeepSeeking for %@"),
                         Self.spell(context.date.timeIntervalSince(beganAt)),
                     ),
                 )
@@ -305,7 +268,10 @@ private struct TurnSummary: View {
 
     /// The headline for a turn whose text does not change.
     private var staticHeadline: String {
-        if turn.isRunning { return String(localized: "Running") }
+        // A turn with a number and no end is running; this case is reached when
+        // it also has no start to measure from, which is what a page cut across
+        // a turn looks like.
+        if turn.isRunning { return String(localized: "DeepSeeking") }
         if turn.failed {
             return turn.duration.map {
                 String(format: String(localized: "Unfinished after %@"), Self.spell($0))
@@ -338,8 +304,6 @@ private struct ConversationRow: View {
         switch item {
         case .message(let id, let role, let text, _):
             MessageBubble(id: id, role: role, text: text)
-        case .activity(_, let label, let at):
-            ActivityMarker(label: label, at: at)
         case .failure(_, let message, _):
             FailureCard(message: message)
         }
@@ -429,27 +393,6 @@ private struct MessageBubble: View {
         case .assistant: Color(.secondarySystemBackground)
         case .system: Color(.tertiarySystemBackground)
         }
-    }
-}
-
-/// Something the agent did.
-private struct ActivityMarker: View {
-    let label: String
-    let at: Date
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "circle.fill").font(.system(size: 4)).foregroundStyle(.tertiary)
-            // The label is a key, not display text: MizarKit is a protocol
-            // layer and owns no strings. An event name it does not recognise
-            // falls through as itself, which is what should happen.
-            Text(LocalizedStringKey(label)).font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Text(at, format: .dateTime.hour().minute().second())
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.leading, 4)
     }
 }
 

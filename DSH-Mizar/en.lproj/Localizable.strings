@@ -82,19 +82,7 @@
 "This preset grants unrestricted access to your machine." = "This preset grants unrestricted access to your machine.";
 "Applies to this session immediately. A running turn is not interrupted." = "Applies to this session immediately. A running turn is not interrupted.";
 
-/* Activity labels */
-"Turn started" = "Turn started";
-"Turn finished" = "Turn finished";
-"Step started" = "Step started";
-"Step finished" = "Step finished";
-"Session titled" = "Session titled";
-"Naming the session" = "Naming the session";
-"Preparing the request" = "Preparing the request";
-"Assembling context" = "Assembling context";
-"Permission preset" = "Permission preset";
-"Sandbox mode" = "Sandbox mode";
-"Approval policy" = "Approval policy";
-"Message queued" = "Message queued";
+/* Failures */
 "The turn ended without a response" = "The turn ended without a response";
 "Context %lld%" = "Context %lld%";
 "Commands" = "Commands";
@@ -129,8 +117,8 @@
 "%lld%% of %@" = "%lld%% of %@";
 "%lld steps" = "%lld steps";
 "Loading…" = "Loading…";
-"Running for %@" = "Running for %@";
-"Running" = "Running";
+"DeepSeeking for %@" = "DeepSeeking for %@";
+"DeepSeeking" = "DeepSeeking";
 "Completed in %@" = "Completed in %@";
 "Completed" = "Completed";
 "Unfinished after %@" = "Unfinished after %@";
