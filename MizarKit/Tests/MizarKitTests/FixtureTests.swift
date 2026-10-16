@@ -32,7 +32,6 @@ private var fixturesDirectory: URL {
         .deletingLastPathComponent()  // MizarKitTests
         .deletingLastPathComponent()  // Tests
         .deletingLastPathComponent()  // MizarKit
-        .deletingLastPathComponent()  // iOS
         .deletingLastPathComponent()  // repository root
         .appendingPathComponent("protocol/fixtures")
 }
