@@ -18,6 +18,11 @@
 //  So this file holds exactly the three things a list is drawn from, and every
 //  refresh writes over it. Nothing reads the network directly to draw a row.
 //
+//  The workspaces are in here for the same reason and with one extra wrinkle:
+//  they are the host's answer, kept verbatim, because a phone that draws a
+//  workspace DSH has deleted is a phone that will offer it as somewhere to start
+//  work. `nil` and `[]` are different answers — see `SessionIndex.workspaces`.
+//
 
 import Foundation
 
@@ -30,8 +35,15 @@ public struct SessionIndex: Codable, Sendable, Equatable {
     public var sessions: [SessionRow]
     /// DSH's own title for a session, by id.
     public var titles: [String: String]
-    /// The workspaces DSH still has, by path.
-    public var workspacePaths: [String]
+    /// The workspaces DSH had, as it last reported them, or `nil` when it has
+    /// never said.
+    ///
+    /// Optional rather than an empty array, because the two are different
+    /// answers and the screen acts on the difference: no workspaces means there
+    /// is nothing to draw, and not knowing means the list has to fall back to
+    /// grouping sessions by directory. Storing them at all is what keeps a
+    /// deleted workspace off the screen before the first read of a launch.
+    public var workspaces: [WorkspaceRow]?
     /// When this was last written.
     public var updatedAt: Date
 
@@ -39,13 +51,13 @@ public struct SessionIndex: Codable, Sendable, Equatable {
         hostId: String,
         sessions: [SessionRow] = [],
         titles: [String: String] = [:],
-        workspacePaths: [String] = [],
+        workspaces: [WorkspaceRow]? = nil,
         updatedAt: Date = Date(),
     ) {
         self.hostId = hostId
         self.sessions = sessions
         self.titles = titles
-        self.workspacePaths = workspacePaths
+        self.workspaces = workspaces
         self.updatedAt = updatedAt
     }
 }

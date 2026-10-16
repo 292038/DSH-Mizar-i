@@ -33,23 +33,91 @@ public struct SessionListResult: Decodable, Sendable, Equatable {
 }
 
 /// The workspaces DSH has.
+///
+/// `complete` is the difference between two identical-looking answers. A host
+/// that read its registry and found nothing and a host that could not read it at
+/// all both send an empty array, and only one of them is grounds for taking a
+/// workspace off the operator's screen. Absent means "not complete": a host
+/// older than the registry read cannot say, and a phone must not throw away what
+/// it has on the strength of a field nobody sent.
 public struct WorkspaceListResult: Decodable, Sendable, Equatable {
     public let items: [WorkspaceRow]
+    public let complete: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case items
+        case complete
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        items = try container.decodeIfPresent([WorkspaceRow].self, forKey: .items) ?? []
+        complete = try container.decodeIfPresent(Bool.self, forKey: .complete) ?? false
+    }
+
+    public init(items: [WorkspaceRow], complete: Bool) {
+        self.items = items
+        self.complete = complete
+    }
 }
 
 /// One workspace, as the host reports it.
 ///
-/// The phone needs the path and nothing else: it already has the sessions, and
-/// a workspace is what tells it which of their working directories DSH still
-/// recognises.
-public struct WorkspaceRow: Decodable, Sendable, Equatable, Identifiable {
+/// The phone needs the path, what DSH calls it, and — crucially — which sessions
+/// DSH has filed under it. Membership is not something the phone can work out
+/// for itself: a session created with a bare directory is in no workspace at
+/// all, and a workspace's list is membership rather than a directory scan. It is
+/// also the difference between one directory and two spellings of it, which on
+/// macOS is `/tmp/x` against `/private/tmp/x`.
+public struct WorkspaceRow: Codable, Sendable, Equatable, Identifiable {
     public let workspaceId: String
-    /// The directory the workspace is rooted at.
+    /// The directory the workspace is rooted at, as DSH canonicalised it.
     public let path: String
     /// What DSH calls it.
     public let title: String
+    /// The sessions DSH has filed under it, in DSH's order, or `nil` when the
+    /// host did not say.
+    ///
+    /// Optional on purpose, and the difference is load-bearing: an empty list is
+    /// DSH saying nothing is filed here, and `nil` is DSH saying nothing at all
+    /// — which is the older host, and the only case where the phone falls back
+    /// to matching a session's directory against the workspace path.
+    public let sessionIds: [String]?
 
     public var id: String { workspaceId }
+
+    public init(workspaceId: String, path: String, title: String, sessionIds: [String]? = nil) {
+        self.workspaceId = workspaceId
+        self.path = path
+        self.title = title
+        self.sessionIds = sessionIds
+    }
+
+    /// Decoded leniently, because this is also what a stored index is read with.
+    ///
+    /// An index written before the host sent membership decodes with none rather
+    /// than failing, which matters: a stored index that will not decode is a
+    /// session list with no rows in it.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        workspaceId = try container.decode(String.self, forKey: .workspaceId)
+        path = try container.decode(String.self, forKey: .path)
+        let decoded = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        // An empty title is not a name. DSH's own list would show the directory,
+        // and a heading with nothing in it is a section nobody can identify.
+        title = decoded.isEmpty ? path : decoded
+        // `try?` on purpose: a membership list of the wrong shape is not worth
+        // an index that will not load, and "the host did not say" is the answer
+        // that hides nothing -- the phone still matches sessions on the path.
+        sessionIds = (try? container.decodeIfPresent([String].self, forKey: .sessionIds)) ?? nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case workspaceId
+        case path
+        case title
+        case sessionIds
+    }
 }
 
 /// One row in the session list.

@@ -164,6 +164,17 @@ struct SyncProgressSheet: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
+
+                // What the host says it has, which is the figure the operator can
+                // check against the Mac's own sidebar. A refresh is when somebody
+                // would notice the two disagreeing, so it is where the answer
+                // belongs -- and "the Mac has not said" is a different line from
+                // "0", because only one of them is a reason to act.
+                Text(model.workspaceCountLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .accessibilityIdentifier("sync.workspaces")
             }
             .padding(28)
             .navigationTitle("History")
@@ -175,6 +186,9 @@ struct SyncProgressSheet: View {
                 }
             }
         }
-        .presentationDetents([.height(240)])
+        // Tall enough for the figures first and the workspace count last: the
+        // sheet grew a line when that count arrived, and a detent that clips the
+        // last line is a line nobody reads.
+        .presentationDetents([.height(280)])
     }
 }

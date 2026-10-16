@@ -4,10 +4,15 @@
 //
 //  Choosing where to work.
 //
-//  The directory list is derived from the sessions the host has already run,
-//  because those are the directories the operator actually uses. A text field is
-//  kept alongside it for anywhere new: a picker that cannot reach a path is
-//  worse than no picker at all.
+//  The list is the host's **workspaces**, not the directories its sessions have
+//  used. Those are different lists, and the difference is the whole report this
+//  file answers: deleting a workspace removes the host's registry entry and
+//  leaves the session log on disk, so a picker built out of working directories
+//  kept offering every workspace the operator had ever deleted — "手机app中有许多
+//  电脑端dsh已经删除的工作区".
+//
+//  A text field is kept alongside it for anywhere new: a picker that cannot
+//  reach a path is worse than no picker at all.
 //
 
 import SwiftUI
@@ -22,22 +27,31 @@ struct NewSessionView: View {
     var body: some View {
         NavigationStack {
             Form {
-                if !model.knownWorkingDirectories.isEmpty {
-                    Section("Recent") {
-                        ForEach(model.knownWorkingDirectories, id: \.self) { directory in
+                if !model.workspaceChoices.isEmpty {
+                    // "Workspaces", not "Recent": these are DSH's workspaces, not
+                    // a recency-ordered history of anything, and a heading that
+                    // says otherwise makes the operator wonder what happened to
+                    // the ones they deleted.
+                    Section("Workspaces") {
+                        ForEach(model.workspaceChoices) { workspace in
                             Button {
-                                Task { await create(directory) }
+                                Task { await create(workspace.path) }
                             } label: {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text((directory as NSString).lastPathComponent)
+                                    Text(workspace.title)
                                         .foregroundStyle(.primary)
-                                    Text(directory)
+                                    Text(workspace.path)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
                                         .truncationMode(.head)
                                 }
                             }
+                            // On the row, not on a container: an identifier on a
+                            // container does not reach the accessibility tree,
+                            // so a test looking for it would report the screen
+                            // as empty while it is full.
+                            .accessibilityIdentifier("workspace.choice.\(workspace.path)")
                         }
                     }
                 }

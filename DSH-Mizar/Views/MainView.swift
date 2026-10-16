@@ -170,42 +170,12 @@ struct WorkspaceListView: View {
     /// How many to add when asked for more.
     private static let pageSize = 10
 
-    /// Sessions the operator started, grouped by working directory.
+    /// Sessions the operator started, grouped the way DSH groups them.
     ///
-    /// Two filters, both of which the list used to get wrong in the same
-    /// direction -- by showing rows DSH's own workspace list does not.
-    ///
-    /// `isSubagent` rather than `parentSessionId`: a delegated child is marked
-    /// by *either* fact, and matching on only one of them leaves the other kind
-    /// of child on the list.
-    ///
-    /// `blank` is a session nobody has typed into yet. It has no title, no
-    /// turns and no messages, so as a row it reads as ``<dir> · session-`` with
-    /// a timestamp -- indistinguishable from a real conversation and impossible
-    /// to act on. Measured against a live host, one workspace held eight rows of
-    /// which five were subagents and two were blank; DSH's own list showed the
-    /// remaining one, and this one showed three.
-    ///
-    /// The selected session is exempt: a session created from the phone starts
-    /// blank, and hiding it the moment it is created would make the row the
-    /// operator just tapped vanish under their finger.
-    private var workspaces: [(path: String, sessions: [SessionRow])] {
-        var byPath: [String: [SessionRow]] = [:]
-        for session in model.sessions
-        where !session.isSubagent
-            && (!session.blank || session.sessionId == model.selectedSessionId)
-            && isKnownWorkspace(session.cwd) {
-            byPath[session.cwd ?? "", default: []].append(session)
-        }
-        return byPath
-            .map { (path: $0.key, sessions: $0.value.sorted { $0.updatedAt > $1.updatedAt }) }
-            .sorted { lhs, rhs in
-                // Sessions with no working directory last: they are the ones an
-                // operator can least identify, so they should not lead.
-                if lhs.path.isEmpty != rhs.path.isEmpty { return !lhs.path.isEmpty }
-                return lhs.path < rhs.path
-            }
-    }
+    /// The arrangement lives in `MizarKit.WorkspaceCatalog`, because it is one
+    /// rule with two callers — this list and the new-session picker — and it was
+    /// wrong in both of them at once. See that file for what it does and why.
+    private var workspaces: [WorkspaceGroup] { model.workspaceGroups }
 
     var body: some View {
         @Bindable var model = model
@@ -220,7 +190,7 @@ struct WorkspaceListView: View {
                 .accessibilityIdentifier("sessions.new")
             }
 
-            ForEach(workspaces, id: \.path) { workspace in
+            ForEach(workspaces) { workspace in
                 Section {
                     if expanded.contains(workspace.path) {
                         let shown = workspace.sessions.prefix(limits[workspace.path] ?? Self.pageSize)
@@ -259,8 +229,18 @@ struct WorkspaceListView: View {
                             Image(systemName: expanded.contains(workspace.path) ? "chevron.down" : "chevron.right")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            Text(workspaceTitle(workspace.path))
+                            // The leftover group is drawn as what it is. It is not
+                            // a workspace DSH has -- the heading says so in words,
+                            // and this says so without them, so nobody counts it
+                            // as one when comparing against their Mac.
+                            if workspace.isUnclaimed {
+                                Image(systemName: "tray")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Text(workspace.title)
                                 .lineLimit(1)
+                                .foregroundStyle(workspace.isUnclaimed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                             Spacer()
                             Text("\(workspace.sessions.count)")
                                 .font(.caption2)
@@ -283,35 +263,6 @@ struct WorkspaceListView: View {
             }
         }
         .refreshable { await model.refreshSessions() }
-    }
-
-    /// Whether DSH still has a workspace rooted at this directory.
-    ///
-    /// A session is not a workspace. Deleting a workspace removes the host's
-    /// registry entry and leaves the session log on disk, so `session.list` keeps
-    /// returning sessions from directories DSH no longer recognises -- and
-    /// grouping on the working directory drew every one of them. Measured on the
-    /// machine this was reported from: 4 workspaces in DSH, 10 rows on the phone.
-    ///
-    /// An empty set means the host has not told us, and then every directory is
-    /// shown: the old behaviour is the safe one to fall back to, because hiding a
-    /// workspace somebody is working in is worse than showing one they deleted.
-    ///
-    /// - Parameter path: the session's working directory.
-    /// - Returns: whether to draw a row for it.
-    private func isKnownWorkspace(_ path: String?) -> Bool {
-        guard !model.workspacePaths.isEmpty else { return true }
-        guard let path else { return false }
-        return model.workspacePaths.contains(path)
-    }
-
-    /// The last path component, with the parent shown when two would collide.
-    private func workspaceTitle(_ path: String) -> String {
-        if path.isEmpty { return "No workspace" }
-        let name = (path as NSString).lastPathComponent
-        let clashes = workspaces.filter { ($0.path as NSString).lastPathComponent == name }
-        guard clashes.count > 1 else { return name }
-        return (path as NSString).abbreviatingWithTildeInPath
     }
 }
 
@@ -352,9 +303,9 @@ struct SessionRowView: View {
     /// What to call this session.
     ///
     /// The host's title first, because it describes the conversation. Falling
-    /// back to the working directory is what the row used to do always, and
-    /// since a workspace *is* a working directory every row in one read the same
-    /// -- five sessions all called "DSH-Mizar", with nothing to tell them apart.
+    /// back to the working directory is what the row used to do always, and a
+    /// workspace grouped by directory makes every row in it read the same -- five
+    /// sessions all called "DSH-Mizar", with nothing to tell them apart.
     ///
     /// A shortened session id is the last resort: it is not a name, but it is
     /// still a way to distinguish one row from the next, which the directory was

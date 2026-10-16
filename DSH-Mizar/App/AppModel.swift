@@ -74,18 +74,61 @@ final class AppModel {
     /// nothing about which is which.
     private(set) var titles: [String: String] = [:]
 
-    /// The workspaces DSH has, as paths.
+    /// The workspaces DSH has, as it last reported them.
     ///
     /// Kept because the session list cannot answer this on its own: a session
     /// outlives the workspace it was created in, so grouping sessions by their
     /// working directory draws a row for a workspace the operator deleted. From
     /// the machine this was reported from, DSH had 4 workspaces and the phone
-    /// showed 10.
+    /// showed 10 — and every one of the ten was offered as a place to start a
+    /// new session, which is the version of it that was reported twice.
     ///
-    /// Empty means "the host did not say", and the screen falls back to grouping
-    /// sessions on their working directory. A failure here must never remove a
-    /// workspace somebody is using.
-    private(set) var workspacePaths: Set<String> = []
+    /// `nil` means the host has not said, and the screen falls back to grouping
+    /// sessions on their working directory. An empty array means it said it has
+    /// none, which is an answer and draws nothing. A failure here must never
+    /// remove a workspace somebody is using, which is why the distinction is
+    /// carried this far rather than collapsed into "no rows".
+    private(set) var workspaces: [WorkspaceRow]?
+
+    /// The session list, as sections.
+    var workspaceGroups: [WorkspaceGroup] {
+        WorkspaceCatalog.groups(
+            sessions: sessions,
+            workspaces: workspaces,
+            selectedSessionId: selectedSessionId,
+        )
+    }
+
+    /// Where a new session can be started.
+    ///
+    /// The host's workspaces, not the directories its sessions have happened to
+    /// use: a deleted workspace leaves its session log behind, so the two are not
+    /// the same list and the difference is exactly the report this answers.
+    var workspaceChoices: [WorkspaceChoice] {
+        WorkspaceCatalog.choices(sessions: sessions, workspaces: workspaces)
+    }
+
+    /// How many workspaces this phone is showing, in one line.
+    ///
+    /// In the refresh sheet, under the progress, because that is the number the
+    /// operator can check against their Mac without leaving the screen they are
+    /// already on. The two cases are said differently on purpose: "the Mac has
+    /// not said" is not "zero", and the whole bug this answers came from those
+    /// two being treated as the same thing.
+    ///
+    /// The conversations the host has no workspace for are counted on the same
+    /// line, because they are a heading on the list above it: an operator
+    /// comparing figures would otherwise find one section more than the number
+    /// they were given, and conclude the count was wrong.
+    var workspaceCountLine: String {
+        guard let workspaces else { return String(localized: "Workspaces: the Mac has not said") }
+        let named = String(format: String(localized: "Workspaces: %lld"), workspaces.count)
+        let unclaimed = workspaces.isEmpty
+            ? 0
+            : (workspaceGroups.first(where: \.isUnclaimed)?.sessions.count ?? 0)
+        guard unclaimed > 0 else { return named }
+        return named + String(format: String(localized: " · %lld not in a workspace"), unclaimed)
+    }
 
     /// Fetch titles for sessions that do not have one yet.
     ///
@@ -290,7 +333,12 @@ final class AppModel {
         // what a live read has already put on screen.
         if !stored.sessions.isEmpty { sessions = stored.sessions }
         if !stored.titles.isEmpty { titles.merge(stored.titles) { _, stored in stored } }
-        if !stored.workspacePaths.isEmpty { workspacePaths.formUnion(stored.workspacePaths) }
+        // Not merged: a workspace is not something to accumulate. This is the
+        // host's last answer, whole, and unioning a second answer into it is how
+        // a deleted workspace survives a refresh -- which is the bug this exists
+        // to fix. `nil` stays `nil`: knowing nothing is not the same as knowing
+        // there is nothing.
+        if let storedWorkspaces = stored.workspaces { workspaces = storedWorkspaces }
     }
 
     /// Write down what is on screen, so a later launch starts from it.
@@ -305,7 +353,7 @@ final class AppModel {
                 hostId: hostId,
                 sessions: sessions,
                 titles: titles,
-                workspacePaths: Array(workspacePaths),
+                workspaces: workspaces,
             ),
         )
     }
@@ -403,13 +451,12 @@ final class AppModel {
         selectedSessionId = nil
         statsError = nil
         conversationError = nil
-        // Per-machine facts, cleared with the machine. `workspacePaths` is a
-        // filter: leaving the last Mac's set in place and unioning the new one's
-        // into it means this Mac's deleted workspaces are drawn again the moment
-        // its own `workspace.list` fails -- which the code itself says older
-        // hosts do.
+        // Per-machine facts, cleared with the machine. `workspaces` is that
+        // Mac's own list: leaving it in place means the next machine's sessions
+        // are drawn under this one's workspace names -- and a deleted workspace
+        // belonging to a Mac this phone is no longer paired with comes back.
         titles = [:]
-        workspacePaths = []
+        workspaces = nil
         hasStoredIndex = false
         phase = .launching
     }
@@ -480,9 +527,30 @@ final class AppModel {
     }
 
     /// Read the pending approvals and questions.
+    ///
+    /// A read that fails leaves the last answer alone, and that is not tidiness.
+    /// `pending = try? …` wrote `nil` on any failure, and two readers start at
+    /// once on this — the poll below and the session screen's own refresh — so a
+    /// slower *failure* could land after the other one's success and wipe a card
+    /// that was already on screen. Nothing then re-read it for 45 seconds, which
+    /// is how an approval or a question went missing for the whole of a UI
+    /// test's twenty-second wait while every other figure on the screen was
+    /// loaded.
+    ///
+    /// With nothing on screen there is nothing to lose, so that case gets one
+    /// more try rather than a 45-second wait: a card the agent is blocked on is
+    /// the most urgent thing the app draws.
     func refreshInteractions() async {
         guard let connection else { return }
-        pending = try? await connection.call("interactions.pending", as: PendingInteractions.self)
+        if let read = try? await connection.call("interactions.pending", as: PendingInteractions.self) {
+            pending = read
+            return
+        }
+        guard pending == nil else { return }
+        try? await Task.sleep(for: .milliseconds(600))
+        if let retried = try? await connection.call("interactions.pending", as: PendingInteractions.self) {
+            pending = retried
+        }
     }
 
     /// Answer an approval.
@@ -561,17 +629,6 @@ final class AppModel {
             phase = .failed(Self.describe(error, authority: host?.authority))
             return false
         }
-    }
-
-    /// Every working directory the host has already used, newest first.
-    ///
-    /// Derived from the session list rather than a workspace API: the host
-    /// reports a `cwd` for each session, and those are exactly the directories
-    /// the operator works in. Offerring them costs nothing and avoids asking a
-    /// question the host has already answered.
-    var knownWorkingDirectories: [String] {
-        var seen = Set<String>()
-        return sessions.compactMap(\.cwd).filter { seen.insert($0).inserted }
     }
 
     /// Start a session in a directory.
@@ -663,7 +720,7 @@ final class AppModel {
         try? await credentials.clear()
         for forgotten in forgetting { await indexStore.remove(hostId: forgotten) }
         titles = [:]
-        workspacePaths = []
+        workspaces = nil
         hasStoredIndex = false
         phase = .unpaired
     }
@@ -701,10 +758,16 @@ final class AppModel {
 
     /// Re-read which workspaces DSH has.
     ///
-    /// Best effort, and deliberately silent on failure. The workspaces are a
-    /// filter over a list the screen can draw without them, so a host that does
-    /// not answer leaves the previous answer in place rather than emptying the
-    /// screen.
+    /// Best effort, and deliberately silent on failure. The session list can be
+    /// drawn without this, so a host that does not answer leaves the previous
+    /// answer in place rather than emptying the screen.
+    ///
+    /// What is *not* best effort is acting on the answer. `complete` is the
+    /// host saying "this is all of them", and only then may a workspace that is
+    /// absent be dropped — including when the list comes back empty, which is
+    /// what "the operator deleted their last workspace" looks like. Treating an
+    /// empty answer as no answer is precisely how deleted workspaces stayed on
+    /// this screen: the phone kept the old list and drew it forever.
     private func refreshWorkspaces() async {
         // `connection.call`, not `call`: the shared helper reconnects the whole
         // socket when a request fails, and this is a best-effort read of a
@@ -715,11 +778,8 @@ final class AppModel {
         guard let connection else { return }
         do {
             let result = try await connection.call("workspace.list", as: WorkspaceListResult.self)
-            // An empty answer is treated as "no answer". A host that genuinely
-            // has no workspaces is a host with no sessions, and then there is
-            // nothing to filter anyway.
-            guard !result.items.isEmpty else { return }
-            workspacePaths = Set(result.items.map(\.path))
+            guard result.complete else { return }
+            workspaces = result.items
         } catch {
             // Left alone on purpose. See above.
         }

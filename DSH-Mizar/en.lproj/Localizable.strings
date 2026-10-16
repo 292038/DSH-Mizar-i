@@ -145,3 +145,9 @@
 "Pairings, notifications and stored history will live here." = "Pairings, notifications and stored history will live here.";
 "Conversation" = "Conversation";
 "Settings" = "Settings";
+"No workspace" = "No workspace";
+"Workspaces: %lld" = "Workspaces: %lld";
+"Workspaces: the Mac has not said" = "Workspaces: the Mac has not said";
+"Workspaces" = "Workspaces";
+"Not in a workspace" = "Not in a workspace";
+" · %lld not in a workspace" = " · %lld not in a workspace";

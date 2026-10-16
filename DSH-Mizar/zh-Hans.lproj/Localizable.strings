@@ -146,3 +146,9 @@
 "Pairings, notifications and stored history will live here." = "配对、通知与本地历史之后会放在这里。";
 "Conversation" = "对话";
 "Settings" = "设置";
+"No workspace" = "无工作区";
+"Workspaces: %lld" = "工作区：%lld 个";
+"Workspaces: the Mac has not said" = "工作区：主机没有给出";
+"Workspaces" = "工作区";
+"Not in a workspace" = "未归档到工作区";
+" · %lld not in a workspace" = " · 未归档 %lld 个";

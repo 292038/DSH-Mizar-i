@@ -43,14 +43,22 @@ struct SessionIndexTests {
                 hostId: "host-1",
                 sessions: [row("s1"), row("s2")],
                 titles: ["s1": "Refactor the parser"],
-                workspacePaths: ["/Users/you/projects/demo"],
+                workspaces: [
+                    WorkspaceRow(
+                        workspaceId: "w1",
+                        path: "/Users/you/projects/demo",
+                        title: "demo",
+                        sessionIds: ["s1"],
+                    ),
+                ],
             ),
         )
 
         let read = try #require(await store.load(hostId: "host-1"))
         #expect(read.sessions.map(\.sessionId) == ["s1", "s2"])
         #expect(read.titles["s1"] == "Refactor the parser")
-        #expect(read.workspacePaths == ["/Users/you/projects/demo"])
+        #expect(read.workspaces?.map(\.workspaceId) == ["w1"])
+        #expect(read.workspaces?.first?.sessionIds == ["s1"])
         // `SessionRow` had to become `Codable` for this: a row is more than the
         // id, and a list that lost `running` would show every session as idle.
         #expect(read.sessions[0].cwd == "/Users/you/projects/demo")
@@ -132,14 +140,16 @@ struct SessionIndexTests {
                 hostId: "host-1",
                 sessions: [odd],
                 titles: [odd.sessionId: "   "],
-                workspacePaths: ["/Users/you/项目/emoji 😀"],
+                workspaces: [
+                    WorkspaceRow(workspaceId: "w1", path: "/Users/you/项目/emoji 😀", title: "😀"),
+                ],
             ),
         )
         let read = try #require(await store.load(hostId: "host-1"))
         #expect(read.sessions.first?.sessionId == odd.sessionId)
         #expect(read.sessions.first?.cwd == nil)
         #expect(read.sessions.first?.isSubagent == true)
-        #expect(read.workspacePaths.first == "/Users/you/项目/emoji 😀")
+        #expect(read.workspaces?.first?.path == "/Users/you/项目/emoji 😀")
     }
 }
 

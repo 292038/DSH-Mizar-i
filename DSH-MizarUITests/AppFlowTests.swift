@@ -402,12 +402,19 @@ final class AppFlowTests: XCTestCase {
         XCTAssertTrue(send.isEnabled, "send is disabled with text in the field")
     }
 
-    /// A session whose workspace the host has deleted is not drawn.
+    /// A session whose workspace the host has deleted is not drawn as a
+    /// workspace.
     ///
     /// The host reports two sessions: one in a workspace it has, and one in a
     /// directory it does not -- which is what a deleted workspace looks like,
     /// because deleting it removes the registry entry and leaves the session log
-    /// behind. Grouping on the working directory drew both.
+    /// behind. Grouping on the working directory drew both, and the deleted one
+    /// was offered as somewhere to start new work.
+    ///
+    /// It is not gone, though, and that is deliberate: the conversation is
+    /// collected under one heading of its own, because the list is the only
+    /// screen that can open it. What changed is that it is no longer presented
+    /// as a workspace DSH has.
     func testADeletedWorkspaceIsNotListed() {
         let app = launch(session: nil)
         expect(app.staticTexts["Mock Mac (fixture)"], "the host's name is missing")
@@ -421,8 +428,85 @@ final class AppFlowTests: XCTestCase {
         XCTAssertEqual(
             app.buttons.matching(identifier: "workspace./Users/you/projects/deleted-workspace").count,
             0,
-            "a session in a deleted workspace was listed",
+            "a session in a deleted workspace was listed as a workspace",
         )
+        // The host's second workspace holds no sessions and is drawn anyway: it
+        // is on the Mac's sidebar, so it is part of the count the operator is
+        // comparing.
+        expect(
+            app.buttons["workspace./Users/you/projects/fresh"],
+            "a workspace with no sessions was left out",
+        )
+        // One heading for what no workspace claims, and it says what it is.
+        expect(
+            app.buttons["workspace.not-in-a-workspace"],
+            "the session in a deleted workspace is unreachable",
+        )
+    }
+
+    /// The new-session picker offers the host's workspaces, and nothing else.
+    ///
+    /// This is the screen the report was about: "手机app中有许多电脑端dsh已经删除的
+    /// 工作区". The list below it was already filtered by the host's workspace
+    /// registry; the picker was not, because it was built from the working
+    /// directory of every session the host had ever listed -- and a deleted
+    /// workspace leaves its session log behind, so its directory stayed on offer
+    /// forever as somewhere to start new work.
+    func testTheNewSessionPickerDoesNotOfferADeletedWorkspace() {
+        let app = launch(session: nil)
+        expect(app.buttons["sessions.new"], "the new-session button is missing")
+        app.buttons["sessions.new"].tap()
+
+        expect(
+            app.staticTexts["/Users/you/projects/demo"],
+            "the host's own workspace is not offered",
+        )
+        XCTAssertFalse(
+            offersDirectory(app, "/Users/you/projects/deleted-workspace"),
+            "a deleted workspace was offered as somewhere to start a session",
+        )
+    }
+
+    /// A refresh reports the workspaces the host has, which is the number the
+    /// operator can check against their Mac.
+    ///
+    /// The sheet used to say nothing about workspaces at all, so "the phone has
+    /// more of them than DSH does" could only be discovered by counting rows.
+    func testRefreshingReportsTheHostsWorkspaces() {
+        let app = launch(session: nil)
+        expect(app.buttons["sessions.refresh"], "the refresh button is missing")
+        app.buttons["sessions.refresh"].tap()
+
+        let count = app.staticTexts["sync.workspaces"]
+        expect(count, "the refresh sheet does not say how many workspaces there are")
+        // Two: the one holding the demo session, and the one holding none. The
+        // session in a deleted workspace is not a workspace.
+        XCTAssertTrue(
+            labelLands(count, containing: "Workspaces: 2"),
+            "the sheet reported \(count.label)",
+        )
+    }
+
+    /// Whether a directory path appears anywhere the operator could tap it.
+    ///
+    /// Deliberately not by identifier: this has to be able to report the bug it
+    /// was written for, and an identifier that does not exist yet would make it
+    /// fail for the wrong reason. A path is not a localised string, so matching
+    /// on the label is safe here in a way it is not for the rest of this file.
+    ///
+    /// Scanned by index rather than through an `NSPredicate`: a predicate is not
+    /// `Sendable`, and handing one to a query is a data-race error under Swift
+    /// 6's region isolation.
+    ///
+    /// - Parameters:
+    ///   - app: the running app.
+    ///   - path: the directory to look for.
+    /// - Returns: whether it is on screen.
+    private func offersDirectory(_ app: XCUIApplication, _ path: String) -> Bool {
+        if app.buttons.allElementsBoundByIndex.contains(where: { $0.label.contains(path) }) {
+            return true
+        }
+        return app.staticTexts.allElementsBoundByIndex.contains { $0.label.contains(path) }
     }
 
     /// The three figures above the field, each of which is a control.
