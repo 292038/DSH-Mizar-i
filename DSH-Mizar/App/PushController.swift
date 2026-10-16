@@ -20,6 +20,7 @@
 import Foundation
 import UIKit
 import UserNotifications
+import MizarKit
 
 /// The application delegate, for the parts SwiftUI cannot reach.
 final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -63,7 +64,8 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         NSLog("[mizar] remote notifications unavailable: %@", String(describing: error))
     }
 
-    /// Show a notification that arrives while the app is open.
+    /// Show a notification that arrives while the app is open -- or drop it,
+    /// because the operator switched that kind off.
     ///
     /// Without this, iOS shows nothing for a foreground notification. The plugin
     /// declines to send while the app reports itself in the foreground, which
@@ -71,16 +73,47 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     /// asked for in the second between the app opening and the Mac hearing about
     /// it would otherwise vanish.
     ///
-    /// `nonisolated` on both of these, and that is not decoration: the protocol
-    /// declares them without isolation while this class is main-actor-isolated
-    /// by `UIApplicationDelegate`, and Swift 6 will not send a non-`Sendable`
-    /// `UNNotification` across that boundary. Nothing here touches this class's
-    /// state, so there is nothing to isolate -- and only a `String` crosses back.
+    /// This is also where the four switches in the settings screen mean
+    /// something. The relay copies the plugin's `kind` into the payload, so the
+    /// decision is made here, on the phone, at the moment the notification
+    /// arrives -- not by asking the Mac to stop sending, which would need a round
+    /// trip, a protocol change and a host that believed the phone. Reading
+    /// `AppSettings.shared` at delivery time rather than caching it is what makes
+    /// a switch take effect on the next notification instead of the next launch.
+    ///
+    /// The two strings are read out of the notification here, before the hop to
+    /// the main actor: `UNNotification` and its `userInfo` are not `Sendable`,
+    /// and only a `String` and the classified kind need to cross. A push whose
+    /// kind this build does not recognise is shown -- see
+    /// ``NotificationKind/classify(kind:title:reason:)``.
+    ///
+    /// One limit worth stating: a notification that arrives while the app is in
+    /// the background is delivered by iOS without asking this delegate anything,
+    /// so this suppresses what would appear over the app, and the switches
+    /// describe what the operator wants to see rather than what the Mac sends.
+    /// Filtering the background case is the host's side of the wire.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
     ) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        let content = notification.request.content
+        let userInfo = content.userInfo
+        let kind = NotificationKind.classify(
+            kind: userInfo["kind"] as? String,
+            title: content.title,
+            reason: userInfo["reason"] as? String,
+        )
+        let described = kind?.rawValue ?? (userInfo["kind"] as? String ?? "unknown")
+        let wanted = await MainActor.run { kind.map(AppSettings.shared.isEnabled) ?? true }
+        await MainActor.run {
+            ActivityLog.shared.add(
+                .push,
+                wanted
+                    ? "presented \(described)"
+                    : "suppressed \(described): switched off in settings",
+            )
+        }
+        return wanted ? [.banner, .list, .sound] : []
     }
 
     /// Open the session the notification was about.
@@ -91,6 +124,7 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         let sessionId = response.notification.request.content.userInfo["sessionId"] as? String
         guard let sessionId, !sessionId.isEmpty else { return }
         await MainActor.run {
+            ActivityLog.shared.add(.push, "opened from a notification: session \(sessionId)")
             NotificationCenter.default.post(name: Self.openSession, object: sessionId)
         }
     }

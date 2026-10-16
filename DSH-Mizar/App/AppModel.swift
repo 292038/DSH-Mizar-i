@@ -303,17 +303,63 @@ final class AppModel {
     /// conversation that will not load is a screen with no messages, an index
     /// that will not load is a list with no rows.
     private let indexStore: any SessionIndexStore
+
+    /// What the operator has switched on, and where it is written.
+    ///
+    /// The same object the notification delegate reads (`AppSettings.shared`) and
+    /// the Live Activity is meant to read, which is what makes a switch on the
+    /// settings screen change behaviour rather than only a picture of it.
+    let settings: AppSettings
+
+    /// The activity log the export button hands over.
+    let log: ActivityLog
+
+    /// The archive the last successful export produced.
+    ///
+    /// Kept so the screen can keep saying that it happened, with the file's name
+    /// and size: a share sheet that has been dismissed leaves no other trace, and
+    /// "did that work?" is not a question the operator should have to answer by
+    /// trying again.
+    private(set) var lastLogExport: LogArchive?
+
+    /// The host events that have arrived, newest first.
+    ///
+    /// Bounded, and it holds names rather than payloads: this exists for the log
+    /// export, and what it has to answer is "did the host tell us anything, and
+    /// when" -- not what it said.
+    private(set) var recentHostEvents: [HostSummary.Event] = []
+
     private var connection: MizarConnection?
 
     init(
         credentials: any CredentialStore = KeychainCredentialStore(),
         conversations: any ConversationCache = FileConversationCache(),
         index: any SessionIndexStore = FileSessionIndexStore(),
+        settings: AppSettings = .shared,
+        log: ActivityLog = .shared,
     ) {
         self.credentials = credentials
         self.conversations = conversations
         self.indexStore = index
+        self.settings = settings
+        self.log = log
     }
+
+    /// 实时活动 — whether the Live Activity may run.
+    ///
+    /// **The single place the Live Activity consults.** Whoever builds it should
+    /// read this property at the moment it starts an activity, updates one or
+    /// ends one, and should not keep a copy: this is a value the operator can
+    /// change while an activity is on screen, and a cached answer is a switch
+    /// that takes effect at the next launch.
+    ///
+    /// The app decides nothing else about it. Whether an activity is *running* is
+    /// a fact about the activity, not about this preference, and conflating the
+    /// two is how a switch ends up unable to say "no" to something already up.
+    var liveActivitiesEnabled: Bool { settings.values.liveActivitiesEnabled }
+
+    /// Whether a connection to the host is open right now.
+    var isConnected: Bool { connection != nil }
 
     /// Put what this phone already knows on screen, before asking anybody.
     ///
@@ -326,9 +372,15 @@ final class AppModel {
     private func loadIndex(for hostId: String) async {
         guard let stored = await indexStore.load(hostId: hostId) else {
             hasStoredIndex = false
+            log.add(.cache, "index: nothing stored for this machine yet")
             return
         }
         hasStoredIndex = !stored.sessions.isEmpty
+        log.add(
+            .cache,
+            "index: read \(stored.sessions.count) sessions, \(stored.titles.count) titles"
+                + (stored.workspaces.map { ", \($0.count) workspaces" } ?? ", no workspace list"),
+        )
         // Only ever adds. A stored list that is empty must not be able to wipe
         // what a live read has already put on screen.
         if !stored.sessions.isEmpty { sessions = stored.sessions }
@@ -348,6 +400,11 @@ final class AppModel {
     /// mixture of that and something this app inferred.
     private func persistIndex() async {
         guard let hostId = host?.hostId else { return }
+        log.add(
+            .cache,
+            "index: wrote \(sessions.count) sessions, \(titles.count) titles"
+                + (workspaces.map { ", \($0.count) workspaces" } ?? ", no workspace list"),
+        )
         await indexStore.save(
             SessionIndex(
                 hostId: hostId,
@@ -365,6 +422,23 @@ final class AppModel {
     /// typing into fields or tapping through an alert. It is the same payload
     /// the QR carries, so the path exercised is the real one.
     func start() async {
+        log.add(
+            .app,
+            "launch \(Self.versionLine) on \(Self.deviceModel); flags: \(Self.launchFlags.joined(separator: " "))",
+        )
+        // What the switches were at this launch, which is the one line that
+        // answers "I turned that off, why did it still arrive" from a log alone:
+        // a push that was suppressed and a push that arrived because the switch
+        // was never written down look identical from the notification.
+        let suppressed = settings.values.notifications.suppressed
+        log.add(
+            .settings,
+            "loaded: "
+                + (suppressed.isEmpty
+                    ? "every notification kind on"
+                    : "off: \(suppressed.map(\.rawValue).sorted().joined(separator: ", "))")
+                + "; live activity \(settings.values.liveActivitiesEnabled ? "on" : "off")",
+        )
         if Self.launchResetsCache {
             // Before the first read, not after: everything below loads what is
             // stored, so this is the only place where "start empty" can be true.
@@ -374,6 +448,7 @@ final class AppModel {
             // list under a fresh install's pairing.
             await conversations.clear()
             await indexStore.clear()
+            log.add(.cache, "starting from nothing: stored conversations and index cleared")
         }
         if let raw = Self.launchPairingURI, let target = PairingURI.parse(raw) {
             await pair(with: target, deviceName: "iPhone")
@@ -442,6 +517,7 @@ final class AppModel {
 
     /// Tear the live connection down without touching what is stored.
     private func disconnectCurrent() {
+        if connection != nil { log.add(.connection, "closing the connection") }
         interactionPoll?.cancel()
         eventListener?.cancel()
         Task { await connection?.disconnect() }
@@ -518,6 +594,7 @@ final class AppModel {
             guard let stream = await self?.connection?.events() else { return }
             for await frame in stream {
                 guard case .event(let name, _) = frame else { continue }
+                self?.noteHostEvent(name)
                 // Any other event name is for a future build; ignoring it is not
                 // the same as failing on it.
                 guard Self.interactionEvents.contains(name) else { continue }
@@ -525,6 +602,24 @@ final class AppModel {
             }
         }
     }
+
+    /// Write down that the host pushed something.
+    ///
+    /// Every event, not only the four that move the pending set: "the host said
+    /// nothing at all" and "the host said something this build ignored" look
+    /// identical from the screen, and they have completely different answers.
+    ///
+    /// - Parameter name: the event name.
+    private func noteHostEvent(_ name: String) {
+        recentHostEvents.insert(HostSummary.Event(at: Date(), name: name), at: 0)
+        if recentHostEvents.count > Self.recentHostEventLimit {
+            recentHostEvents.removeLast(recentHostEvents.count - Self.recentHostEventLimit)
+        }
+        log.add(.host, "event \(name)")
+    }
+
+    /// How many host events are kept for the log export.
+    private static let recentHostEventLimit = 50
 
     /// Read the pending approvals and questions.
     ///
@@ -542,13 +637,13 @@ final class AppModel {
     /// the most urgent thing the app draws.
     func refreshInteractions() async {
         guard let connection else { return }
-        if let read = try? await connection.call("interactions.pending", as: PendingInteractions.self) {
+        if let read = try? await loggedCall("interactions.pending", on: connection, as: PendingInteractions.self) {
             pending = read
             return
         }
         guard pending == nil else { return }
         try? await Task.sleep(for: .milliseconds(600))
-        if let retried = try? await connection.call("interactions.pending", as: PendingInteractions.self) {
+        if let retried = try? await loggedCall("interactions.pending", on: connection, as: PendingInteractions.self) {
             pending = retried
         }
     }
@@ -564,7 +659,7 @@ final class AppModel {
             "requestId": .string(approval.requestId),
             "outcome": .string(outcome.rawValue),
         ])
-        _ = try? await connection.call("approval.answer", payload: payload, as: AcceptanceResult.self)
+        _ = try? await loggedCall("approval.answer", payload: payload, on: connection, as: AcceptanceResult.self)
         // Re-read rather than removing locally: the host is the authority on
         // what is still outstanding, and a racing device may have answered it.
         await refreshInteractions()
@@ -586,7 +681,7 @@ final class AppModel {
             for (key, fieldValue) in batchFields { fields[key] = fieldValue }
             merged = .object(fields)
         }
-        _ = try? await connection.call("question.answer", payload: merged, as: AcceptanceResult.self)
+        _ = try? await loggedCall("question.answer", payload: merged, on: connection, as: AcceptanceResult.self)
         await refreshInteractions()
     }
 
@@ -594,10 +689,10 @@ final class AppModel {
     func loadCatalogs() async {
         guard let connection else { return }
         if modelCatalog == nil {
-            modelCatalog = try? await connection.call("model.catalog", as: ModelCatalog.self)
+            modelCatalog = try? await loggedCall("model.catalog", on: connection, as: ModelCatalog.self)
         }
         if permissionCatalog == nil {
-            permissionCatalog = try? await connection.call("permissions.catalog", as: PermissionCatalog.self)
+            permissionCatalog = try? await loggedCall("permissions.catalog", on: connection, as: PermissionCatalog.self)
         }
     }
 
@@ -622,7 +717,7 @@ final class AppModel {
             "requestId": .string(requestId),
         ])
         do {
-            let result = try await connection.call("session.prompt", payload: payload, as: PromptResult.self)
+            let result = try await loggedCall("session.prompt", payload: payload, on: connection, as: PromptResult.self)
             if result.accepted { lastRequestId = result.requestId }
             return result.accepted
         } catch {
@@ -639,7 +734,7 @@ final class AppModel {
         guard let connection else { return nil }
         let payload = JSONValue.object(["cwd": .string(cwd)])
         do {
-            let result = try await connection.call("session.create", payload: payload, as: CreateSessionResult.self)
+            let result = try await loggedCall("session.create", payload: payload, on: connection, as: CreateSessionResult.self)
             await refreshSessions()
             selectedSessionId = result.sessionId
             return result.sessionId
@@ -653,7 +748,7 @@ final class AppModel {
     func cancelTurn(sessionId: String) async {
         guard let connection else { return }
         let payload = JSONValue.object(["sessionId": .string(sessionId)])
-        _ = try? await connection.call("session.cancel", payload: payload, as: AcceptanceResult.self)
+        _ = try? await loggedCall("session.cancel", payload: payload, on: connection, as: AcceptanceResult.self)
     }
 
     /// Switch the session's model, and optionally its reasoning effort.
@@ -676,9 +771,10 @@ final class AppModel {
             "model": .string(model),
         ]
         if let effort { fields["reasoningEffort"] = .string(effort) }
-        _ = try? await connection.call(
+        _ = try? await loggedCall(
             "session.model.set",
             payload: .object(fields),
+            on: connection,
             as: SelectModelResult.self,
         )
     }
@@ -694,7 +790,7 @@ final class AppModel {
             "sessionId": .string(sessionId),
             "preset": .string(preset),
         ])
-        return try? await connection.call("session.permission.set", payload: payload, as: SetPermissionResult.self)
+        return try? await loggedCall("session.permission.set", payload: payload, on: connection, as: SetPermissionResult.self)
     }
 
     /// Forget every pairing and return to the pairing screen.
@@ -723,6 +819,128 @@ final class AppModel {
         workspaces = nil
         hasStoredIndex = false
         phase = .unpaired
+        log.add(.connection, "unpaired: every stored credential and index removed")
+    }
+
+    // MARK: - The log export
+
+    /// Write everything this phone knows into a zip, and hand back the file.
+    ///
+    /// Everything the archive needs is gathered here, at the moment the button is
+    /// tapped: the log so far, the build and the phone, the switch positions, and
+    /// what the host last said. Nothing is cached for it, because the interesting
+    /// report is always about what is happening now.
+    ///
+    /// A failure is written to the log and returned as `nil` rather than thrown
+    /// at the view: the screen has nothing useful to say about the temporary
+    /// directory being full, and an alert over a settings list is worse than a
+    /// row that says the export did not happen.
+    ///
+    /// - Returns: the archive, or `nil` when it could not be written.
+    @discardableResult
+    func exportLogs() async -> LogArchive? {
+        let environment = await AppEnvironment.facts()
+        do {
+            let archive = try LogArchiveWriter.write(
+                records: log.records,
+                environment: environment,
+                settings: settings.values,
+                host: hostSummary,
+                // The temporary directory, deliberately: this is a copy of the
+                // app's state and it is meant to leave the phone. Keeping it
+                // would leave a second, longer-lived log on disk with no way to
+                // delete it from the screen that made it.
+                to: FileManager.default.temporaryDirectory,
+            )
+            lastLogExport = archive
+            log.add(
+                .app,
+                "log export: \(archive.fileName), \(archive.fileCount) files, "
+                    + "\(archive.byteCount) bytes, \(archive.recordCount) records",
+            )
+            return archive
+        } catch {
+            log.add(.app, "log export failed: \(Self.describe(error))")
+            lastLogExport = nil
+            return nil
+        }
+    }
+
+    /// What the host last said, as the archive describes it.
+    ///
+    /// Built by hand rather than by encoding the frames the app holds, and that
+    /// is the point: a `WelcomeFrame` carries the device id, a `PairedHost`
+    /// carries the device token, and a dump of either would put a credential into
+    /// a file whose entire purpose is to be sent to somebody else. Every field
+    /// here is one somebody chose to include.
+    var hostSummary: HostSummary {
+        HostSummary(
+            connected: isConnected,
+            phase: phaseName,
+            current: host.map(machine),
+            pairedHosts: hosts.map(machine),
+            protocolVersion: welcome?.protocolVersion,
+            sessionCount: sessions.count,
+            titledSessionCount: titles.count,
+            // `nil` stays `nil`: "the Mac has not said how many workspaces it
+            // has" and "it has none" are different answers here too.
+            workspaceCount: workspaces?.count,
+            lastError: lastError,
+            pendingApprovals: (pending?.approvals ?? []).map { approval in
+                HostSummary.Approval(
+                    requestId: approval.requestId,
+                    sessionId: approval.sessionId,
+                    toolName: approval.toolName,
+                    // The presentation text if the tool supplied one, else the
+                    // raw reason: the same choice the card on screen makes, so
+                    // the archive describes what the operator was looking at.
+                    reason: approval.reasonText(preferring: Locale.preferredLanguages.first ?? "en"),
+                    waitingSeconds: Date(timeIntervalSince1970: approval.requestedAt / 1000)
+                        .distance(to: Date())
+                        .rounded(),
+                )
+            },
+            pendingQuestions: (pending?.questions ?? []).map { question in
+                HostSummary.Question(
+                    callId: question.callId,
+                    sessionId: question.sessionId,
+                    count: question.questions.count,
+                    // Shortened, because this is a summary and not a transcript.
+                    // The question is on screen; what the archive needs is enough
+                    // to recognise which one it was.
+                    firstPrompt: question.questions.first.map { String($0.question.prefix(120)) },
+                )
+            },
+            recentEvents: recentHostEvents,
+        )
+    }
+
+    /// Where the app is in its life, as a word the archive can carry.
+    var phaseName: String {
+        switch phase {
+        case .launching: "launching"
+        case .unpaired: "unpaired"
+        case .connecting: "connecting"
+        case .ready: "ready"
+        case .failed: "failed"
+        }
+    }
+
+    /// One machine, as the archive describes it.
+    /// - Parameter paired: the pairing.
+    /// - Returns: the machine, and never its token.
+    private func machine(_ paired: PairedHost) -> HostSummary.Machine {
+        // The live route is recorded for the machine in use and for no other: a
+        // second pairing's address is whatever it was paired with, which is a
+        // different fact and a misleading one if it is labelled "in use".
+        let described = paired.hostId == host?.hostId ? activeEndpoint.map(Self.routeDescription) : nil
+        return HostSummary.Machine(
+            hostId: paired.hostId,
+            name: paired.label ?? paired.hostName,
+            route: described?.name ?? (paired.authority != nil ? "direct (not in use)" : "relay (not in use)"),
+            address: described?.address ?? paired.authority ?? paired.baseURL,
+            pairedAt: paired.pairedAt,
+        )
     }
 
     /// Refresh the session list.
@@ -777,7 +995,7 @@ final class AppModel {
         // before anything else did.
         guard let connection else { return }
         do {
-            let result = try await connection.call("workspace.list", as: WorkspaceListResult.self)
+            let result = try await loggedCall("workspace.list", on: connection, as: WorkspaceListResult.self)
             guard result.complete else { return }
             workspaces = result.items
         } catch {
@@ -806,15 +1024,98 @@ final class AppModel {
         as type: T.Type,
     ) async throws -> T {
         guard let connection else {
-            throw MizarError(code: "NO_CONNECTION", message: "not connected to the Mac")
+            let failure = MizarError(code: "NO_CONNECTION", message: "not connected to the Mac")
+            logRequest(method, payload: payload, since: .now, error: failure)
+            throw failure
         }
+        let started = ContinuousClock.now
         do {
-            return try await connection.call(method, payload: payload, as: type)
+            let result = try await connection.call(method, payload: payload, as: type)
+            logRequest(method, payload: payload, since: started, error: nil)
+            return result
         } catch {
-            guard await reconnect() else { throw error }
+            guard await reconnect() else {
+                logRequest(method, payload: payload, since: started, error: error)
+                throw error
+            }
             guard let fresh = self.connection else { throw error }
-            return try await fresh.call(method, payload: payload, as: type)
+            do {
+                let result = try await fresh.call(method, payload: payload, as: type)
+                logRequest(method, payload: payload, since: started, error: nil)
+                return result
+            } catch {
+                logRequest(method, payload: payload, since: started, error: error)
+                throw error
+            }
         }
+    }
+
+    /// Run one call on a connection the caller already holds, logging it.
+    ///
+    /// The counterpart of ``call(_:payload:as:)`` for the requests that are
+    /// deliberately not retried -- presence, the catalogues, the interaction
+    /// reads, the registration with the relay. Each of those has its own answer
+    /// for a failure, and a reconnect underneath them would be a second attempt
+    /// nobody asked for, over a link the caller is about to report on.
+    ///
+    /// - Parameters:
+    ///   - method: the wire method.
+    ///   - payload: the arguments, when there are any.
+    ///   - connection: the connection to use.
+    ///   - type: the result type.
+    /// - Returns: the decoded result.
+    /// - Throws: whatever the call threw.
+    @discardableResult
+    private func loggedCall<T: Decodable & Sendable>(
+        _ method: String,
+        payload: JSONValue? = nil,
+        on connection: MizarConnection,
+        as type: T.Type,
+    ) async throws -> T {
+        let started = ContinuousClock.now
+        do {
+            let result = try await connection.call(method, payload: payload, as: type)
+            logRequest(method, payload: payload, since: started, error: nil)
+            return result
+        } catch {
+            logRequest(method, payload: payload, since: started, error: error)
+            throw error
+        }
+    }
+
+    /// Write one host call into the activity log.
+    ///
+    /// The method, the *names* of its arguments, how long it took and how it
+    /// ended. Never the values: prompts, answers, prompts' session text and the
+    /// device token all travel in payloads, and a diagnostic archive that quoted
+    /// them would be a transcript of somebody's work rather than a record of a
+    /// connection. The names are what makes a failure diagnosable -- that a
+    /// request carried a `beforeSeq` and no `maxMessages` is the whole answer to
+    /// some questions.
+    ///
+    /// - Parameters:
+    ///   - method: the wire method.
+    ///   - payload: the arguments, when there were any.
+    ///   - started: when the call began.
+    ///   - error: what went wrong, or `nil` when it worked.
+    private func logRequest(
+        _ method: String,
+        payload: JSONValue?,
+        since started: ContinuousClock.Instant,
+        error: (any Error)?,
+    ) {
+        let taken = ContinuousClock.now - started
+        var arguments: [String] = []
+        if case .object(let fields) = payload { arguments = Array(fields.keys) }
+        let detail = RequestDetail(
+            method: method,
+            arguments: arguments,
+            durationMs: taken / .milliseconds(1),
+            outcome: error == nil ? .ok : .failed,
+            errorCode: (error as? MizarError)?.code,
+            errorMessage: error.flatMap { Self.describe($0).isEmpty ? nil : Self.describe($0) },
+        )
+        log.add(.request, detail.summary, request: detail)
     }
 
     /// Open a fresh connection to the current machine.
@@ -878,6 +1179,7 @@ final class AppModel {
         }
         reconnecting = true
         defer { reconnecting = false }
+        log.add(.connection, "reconnecting\(patient ? " (patient)" : "")")
 
         eventListener?.cancel()
         interactionPoll?.cancel()
@@ -895,6 +1197,7 @@ final class AppModel {
                 _ = try await next.connect()
                 connection = next
                 lastError = nil
+                log.add(.connection, "reconnected after \(attempt + 1) attempt(s)")
                 startInteractionPoll()
                 // `phase` decides which screen is on. This never touched it, so
                 // a retry that *succeeded* left the operator looking at "Cannot
@@ -909,6 +1212,7 @@ final class AppModel {
                 return true
             } catch {
                 let message = Self.describe(error, authority: host.authority ?? host.baseURL)
+                log.add(.connection, "reconnect attempt \(attempt + 1)/\(attempts) failed: \(message)")
                 lastError = message.isEmpty ? nil : message
                 // Keep the screen's text current. A retry that fails for a new
                 // reason -- no internet rather than the Mac being unreachable --
@@ -916,6 +1220,7 @@ final class AppModel {
                 if case .failed = phase, !message.isEmpty { phase = .failed(message) }
             }
         }
+        log.add(.connection, "reconnect gave up after \(attempts) attempts")
         return false
     }
 
@@ -976,6 +1281,10 @@ final class AppModel {
                 )
             }
             lastError = nil
+            log.add(
+                .cache,
+                "session \(sessionId): paged back, \(stored.items.count) items now held",
+            )
             return stored.items.count - cached.items.count
         } catch {
             let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
@@ -1012,8 +1321,12 @@ final class AppModel {
         // nil at the end of the happy path only, so any early return or
         // cancellation left `isSyncing` true for good, with the refresh button
         // spinning and disabled and no way back.
-        guard syncProgress == nil else { return }
+        guard syncProgress == nil else {
+            log.add(.sync, "history sync: already running, second request ignored")
+            return
+        }
         guard connection != nil else {
+            log.add(.sync, "history sync: skipped, not connected to the Mac")
             // Reported rather than silently skipped. The window is already up
             // by the time this runs, and doing nothing looks exactly like having
             // nothing to do.
@@ -1025,11 +1338,13 @@ final class AppModel {
         // below: the estimate is measured from when the operator asked, not from
         // whenever the session list happened to come back.
         let startedAt = Date()
+        log.add(.sync, "history sync: starting")
         syncProgress = SyncProgress(current: "", completed: 0, total: sessions.count, startedAt: startedAt)
         defer { syncProgress = nil }
 
         await refreshSessions()
         guard !sessions.isEmpty else {
+            log.add(.sync, "history sync: the Mac listed no sessions, or the list could not be read")
             // Either the Mac listed nothing or the read failed. Both are worth
             // saying out loud; neither is "up to date".
             syncProblem = lastError ?? "The Mac listed no sessions."
@@ -1037,6 +1352,7 @@ final class AppModel {
         }
 
         let runnable = sessions.filter { $0.parentSessionId == nil }
+        log.add(.sync, "history sync: \(runnable.count) sessions to fetch")
         syncProgress = SyncProgress(current: "", completed: 0, total: runnable.count, startedAt: startedAt)
 
         for (index, session) in runnable.enumerated() {
@@ -1052,7 +1368,10 @@ final class AppModel {
                 titles[session.sessionId] = title
             }
             syncProgress?.completed = index + 1
+            log.add(.sync, "history sync: \(index + 1)/\(runnable.count) \(session.sessionId)")
         }
+        let elapsed = Date().timeIntervalSince(startedAt)
+        log.add(.sync, String(format: "history sync: finished in %.1f s", elapsed))
         await persistIndex()
         // The pass ran to the end. Whatever went wrong inside it is already in
         // `lastError`, and this is the line that lets the window stop saying it.
@@ -1106,6 +1425,7 @@ final class AppModel {
             }
             lastError = nil
             conversationError = nil
+            log.add(.cache, "session \(sessionId): stored \(stored.items.count) items")
             return stored.items
         } catch {
             let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
@@ -1170,9 +1490,10 @@ final class AppModel {
                 // app that only ever shows the last few exchanges.
                 "maxMessages": .number(200),
             ])
-            let result = try await connection.call(
+            let result = try await loggedCall(
                 "session.messages",
                 payload: payload,
+                on: connection,
                 as: SessionMessagesResult.self,
             )
             lastError = nil
@@ -1253,9 +1574,18 @@ final class AppModel {
             "locale": .string(PushRegistration.locale),
         ])
         do {
-            _ = try await connection.call("push.register", payload: payload, as: PushRegistrationResult.self)
+            _ = try await loggedCall("push.register", payload: payload, on: connection, as: PushRegistrationResult.self)
+            // How long the token is, never the token: see ``ActivityLog``.
+            log.add(
+                .push,
+                "registered with the host: \(token.count) characters, \(PushRegistration.environment), \(PushRegistration.locale)",
+            )
         } catch {
-            // Logged by the host's side of the story; nothing to show here.
+            // Nothing to show: a phone that cannot be notified is a worse app,
+            // not a broken one. Worth a line in the log all the same, because
+            // "notifications never arrive" is otherwise indistinguishable from
+            // "the host was never told where to send them".
+            log.add(.push, "registration failed: \(Self.describe(error))")
         }
         await sendPresence()
     }
@@ -1279,7 +1609,7 @@ final class AppModel {
     private func sendPresence() async {
         guard let connection else { return }
         let payload = JSONValue.object(["foreground": .bool(foreground)])
-        _ = try? await connection.call("push.presence", payload: payload, as: AcceptanceResult.self)
+        _ = try? await loggedCall("push.presence", payload: payload, on: connection, as: AcceptanceResult.self)
     }
 
     /// Forget this phone's notification endpoint.
@@ -1288,7 +1618,8 @@ final class AppModel {
     /// being woken for a machine it no longer knows about.
     func forgetPushRegistration() async {
         guard let connection else { return }
-        _ = try? await connection.call("push.unregister", as: PushUnregisterResult.self)
+        _ = try? await loggedCall("push.unregister", on: connection, as: PushUnregisterResult.self)
+        log.add(.push, "asked the host to forget this phone's notification endpoint")
     }
 
     /// Register for remote notifications if the operator has already agreed.
@@ -1309,8 +1640,10 @@ final class AppModel {
             // the permission is a row on the Mac's roster that pushes into
             // nothing.
             PushRegistration.storedToken = nil
+            log.add(.push, "no notification permission (\(settings.authorizationStatus.rawValue)); no token kept")
             return
         }
+        log.add(.push, "notification permission is in place; asking Apple for a token")
         await Permissions.registerForRemoteNotifications()
     }
 
@@ -1335,6 +1668,7 @@ final class AppModel {
         guard !Self.launchSkipsPermissions else { return }
         guard !UserDefaults.standard.bool(forKey: Self.permissionsAskedKey) else { return }
         UserDefaults.standard.set(true, forKey: Self.permissionsAskedKey)
+        log.add(.app, "first launch: asking for notification and local-network permission")
         await Permissions.requestNotifications()
         // Only if the answer was yes. Registering regardless gave a phone that
         // tapped "Don't Allow" a token anyway, which it then handed to the Mac --
@@ -1374,6 +1708,7 @@ final class AppModel {
     ///   - deviceName: what to call this device in the host's roster.
     func pair(with target: PairingTarget, deviceName: String) async {
         phase = .connecting
+        log.add(.connection, "pairing with \(target.authority ?? target.baseURL ?? "unknown address") as \(deviceName)")
         do {
             let client = PairingClient()
             let paired = try await client.pair(
@@ -1387,6 +1722,7 @@ final class AppModel {
                 baseURL: target.baseURL,
             )
             try await credentials.save(paired)
+            log.add(.connection, "paired with \(paired.hostName) (\(paired.hostId))")
             hosts = try await credentials.loadAll().sorted { $0.pairedAt < $1.pairedAt }
             host = paired
             // Offered once, now, while the operator still knows which machine
@@ -1410,9 +1746,9 @@ final class AppModel {
             await runFirstLoad()
             pendingNameHostId = paired.hostId
         } catch {
-            phase = .failed(
-                Self.describe(error, authority: target.authority ?? target.baseURL),
-            )
+            let message = Self.describe(error, authority: target.authority ?? target.baseURL)
+            log.add(.connection, "pairing failed: \(message)")
+            phase = .failed(message)
         }
     }
 
@@ -1454,6 +1790,11 @@ final class AppModel {
                 return
             } catch {
                 lastError = error
+                log.add(
+                    .connection,
+                    "route \(Self.routeName(endpoint)) failed: "
+                        + Self.describe(error, authority: host.authority ?? host.baseURL),
+                )
                 // Nothing left to fall back to, so this is the answer.
                 guard index < endpoints.count - 1 else { break }
                 // Back to connecting rather than failed: the next route has
@@ -1464,6 +1805,7 @@ final class AppModel {
         }
 
         let failure = lastError ?? MizarError(code: "UNREACHABLE", message: "the host did not answer")
+        log.add(.connection, "no route reached \(host.hostName); \(endpoints.count) tried")
         phase = .failed(Self.describe(failure, authority: host.authority ?? host.baseURL))
         throw failure
     }
@@ -1542,8 +1884,13 @@ final class AppModel {
         let connection = makeConnection(host: host, endpoint: endpoint)
         self.connection = connection
 
+        log.add(.connection, "dialling \(Self.routeName(endpoint))")
         let welcome = try await connection.connect()
         self.welcome = welcome
+        log.add(
+            .connection,
+            "connected to \(welcome.hostName), protocol \(welcome.protocolVersion), over \(Self.routeName(endpoint))",
+        )
         self.activeEndpoint = endpoint
         phase = .ready
         await refreshSessions()
@@ -1576,8 +1923,32 @@ final class AppModel {
     /// was giving the second for both.
     private(set) var conversationError: String?
 
-    /// The hardware model, for the host's device roster.
-    private static var deviceModel: String {
+    /// How a route reads in a log line.
+    ///
+    /// - Parameter endpoint: the route.
+    /// - Returns: e.g. `direct 127.0.0.1:19390` or `relay https://…`.
+    private static func routeName(_ endpoint: PairedHost.Endpoint) -> String {
+        let described = routeDescription(endpoint)
+        return "\(described.name) \(described.address)"
+    }
+
+    /// A route's kind and address, apart, for the archive.
+    ///
+    /// Separate from ``routeName(_:)`` because the JSON has somewhere to put each
+    /// and a log line does not: `"route": "relay"` beside
+    /// `"address": "wss://…"` is queryable, and one string is not.
+    ///
+    /// - Parameter endpoint: the route.
+    /// - Returns: the kind, and the address it dials.
+    private static func routeDescription(_ endpoint: PairedHost.Endpoint) -> (name: String, address: String) {
+        switch endpoint {
+        case .direct(let authority): ("direct", authority)
+        case .relay(let baseURL): ("relay", baseURL)
+        }
+    }
+
+    /// The hardware model, for the host's device roster and the log.
+    static var deviceModel: String {
         #if targetEnvironment(simulator)
         "iOS Simulator"
         #else
@@ -1593,8 +1964,26 @@ final class AppModel {
     }
 
     /// The app's marketing version.
-    private static var appVersion: String {
+    static var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+    }
+
+    /// The build number, which is what tells two builds of one version apart.
+    static var appBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+    }
+
+    /// Version and build in one line, as the About section and the log show it.
+    static var versionLine: String { "\(appVersion) (\(appBuild))" }
+
+    /// The launch flags this process was started with, by name.
+    ///
+    /// Names, not values. `-mizarPairURI` carries a pairing code, and both this
+    /// line and the archive it travels into exist to be read by somebody else.
+    /// The scrubber in `MizarKit` would catch the code; not writing it is better
+    /// than catching it.
+    static var launchFlags: [String] {
+        ProcessInfo.processInfo.arguments.filter { $0.hasPrefix("-") }
     }
 
     /// Whether an error is something the operator should be told about.

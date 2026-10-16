@@ -140,3 +140,31 @@
 "Workspaces" = "工作区";
 "Not in a workspace" = "未归档到工作区";
 " · %lld not in a workspace" = " · 未归档 %lld 个";
+
+/* Settings */
+"Notifications" = "通知";
+"Live Activity" = "实时活动";
+"Logs" = "日志";
+"About" = "关于";
+"Credits" = "开发者鸣谢";
+"Task complete" = "任务完成";
+"Task interrupted" = "任务中断";
+"Model question" = "模型询问";
+"Permission needed" = "权限授予";
+"iOS notifications" = "iOS 通知权限";
+"Not asked yet" = "尚未询问";
+"Allowed" = "已允许";
+"Quiet delivery" = "静默送达";
+"Off in iOS Settings" = "已在 iOS 设置中关闭";
+"Unknown" = "未知";
+"Checking…" = "正在检查…";
+"A notification whose kind is switched off is dropped when it arrives, whatever iOS is set to. The line above is the system permission: if it says notifications are off, no switch here can bring them back." = "关闭某一类后，这类通知到达时会直接被丢弃，与 iOS 的设置无关。上面一行是系统权限：如果那里显示已关闭，这里的开关都救不回来。";
+"Shows a running turn on the Lock Screen. Switching it off stops a new activity from starting; it does not touch the conversation." = "在锁定屏幕上显示正在进行的回合。关闭后不会再启动新的实时活动，也不影响对话本身。";
+"Export logs" = "导出日志";
+"Packing the log…" = "正在打包日志…";
+"Entries recorded" = "已记录条目";
+"Last export, %lld files, %lld entries" = "上次导出：%lld 个文件，%lld 条记录";
+"A zip with this build and phone, the settings above, every request to the Mac and how it ended, the connection attempts, the sync progress and the recent host events. Device tokens and pairing codes are removed before the file is written, and conversations are not in it." = "压缩包内含：版本与机型、上面的设置、每一次对 Mac 的请求及其结果、连接尝试、同步进度与最近的主机事件。写入前会移除设备令牌与配对码，且不包含任何对话内容。";
+"Source code" = "源代码";
+"Version" = "版本";
+"Monitor and guide a DSH agent from a phone. The Mac decides; this app shows and answers." = "在手机上查看并指挥 DSH agent。判断由 Mac 做出，这里负责呈现与应答。";

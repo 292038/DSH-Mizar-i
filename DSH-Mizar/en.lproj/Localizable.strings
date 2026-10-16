@@ -139,3 +139,31 @@
 "Workspaces" = "Workspaces";
 "Not in a workspace" = "Not in a workspace";
 " · %lld not in a workspace" = " · %lld not in a workspace";
+
+/* Settings */
+"Notifications" = "Notifications";
+"Live Activity" = "Live Activity";
+"Logs" = "Logs";
+"About" = "About";
+"Credits" = "Credits";
+"Task complete" = "Task complete";
+"Task interrupted" = "Task interrupted";
+"Model question" = "Model question";
+"Permission needed" = "Permission needed";
+"iOS notifications" = "iOS notifications";
+"Not asked yet" = "Not asked yet";
+"Allowed" = "Allowed";
+"Quiet delivery" = "Quiet delivery";
+"Off in iOS Settings" = "Off in iOS Settings";
+"Unknown" = "Unknown";
+"Checking…" = "Checking…";
+"A notification whose kind is switched off is dropped when it arrives, whatever iOS is set to. The line above is the system permission: if it says notifications are off, no switch here can bring them back." = "A notification whose kind is switched off is dropped when it arrives, whatever iOS is set to. The line above is the system permission: if it says notifications are off, no switch here can bring them back.";
+"Shows a running turn on the Lock Screen. Switching it off stops a new activity from starting; it does not touch the conversation." = "Shows a running turn on the Lock Screen. Switching it off stops a new activity from starting; it does not touch the conversation.";
+"Export logs" = "Export logs";
+"Packing the log…" = "Packing the log…";
+"Entries recorded" = "Entries recorded";
+"Last export, %lld files, %lld entries" = "Last export, %lld files, %lld entries";
+"A zip with this build and phone, the settings above, every request to the Mac and how it ended, the connection attempts, the sync progress and the recent host events. Device tokens and pairing codes are removed before the file is written, and conversations are not in it." = "A zip with this build and phone, the settings above, every request to the Mac and how it ended, the connection attempts, the sync progress and the recent host events. Device tokens and pairing codes are removed before the file is written, and conversations are not in it.";
+"Source code" = "Source code";
+"Version" = "Version";
+"Monitor and guide a DSH agent from a phone. The Mac decides; this app shows and answers." = "Monitor and guide a DSH agent from a phone. The Mac decides; this app shows and answers.";

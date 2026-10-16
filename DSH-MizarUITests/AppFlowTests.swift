@@ -208,8 +208,39 @@ final class AppFlowTests: XCTestCase {
     ) -> XCUIApplication {
         Self.resetMockHost(pending: pending, slow: slow)
         let app = XCUIApplication()
+        app.launchArguments = Self.arguments(
+            pairing: pairing,
+            session: session,
+            language: language,
+            freshStart: freshStart,
+        )
+        app.launch()
+        if naming { dismissNamingIfPresented(app) }
+        return app
+    }
+
+    /// The launch arguments one run of the app is started with.
+    ///
+    /// Kept apart from ``launch(pairing:session:language:pending:slow:naming:freshStart:)``
+    /// so that a test which relaunches the app can say what the *second* launch
+    /// looks like. That is the only way to check anything that has to outlive a
+    /// process -- a stored pairing, a switch position -- because everything else
+    /// in this suite throws the app away between assertions.
+    ///
+    /// - Parameters:
+    ///   - pairing: whether to pass a pairing URI.
+    ///   - session: a session to open, or `nil` to stay on the list.
+    ///   - language: a language to force, or `nil` to follow the system.
+    ///   - freshStart: whether to throw the stored data away first.
+    /// - Returns: the arguments.
+    private static func arguments(
+        pairing: Bool,
+        session: String?,
+        language: String?,
+        freshStart: Bool,
+    ) -> [String] {
         var arguments: [String] = []
-        if pairing { arguments += ["-mizarPairURI", Self.mockPairingURI] }
+        if pairing { arguments += ["-mizarPairURI", mockPairingURI] }
         if let session { arguments += ["-mizarSelectSession", session] }
         if let language { arguments += ["-AppleLanguages", "(\(language))"] }
         // The stored conversations outlive a relaunch, which is the point of
@@ -219,10 +250,130 @@ final class AppFlowTests: XCTestCase {
         // The system prompts are real and belong to the app, not to a test:
         // answered by an alert, every assertion after them measures the alert.
         arguments += ["-mizarSkipPermissionPrompts"]
-        app.launchArguments = arguments
-        app.launch()
-        if naming { dismissNamingIfPresented(app) }
-        return app
+        return arguments
+    }
+
+    /// Open the settings tab.
+    ///
+    /// The tab is found by position and never by its label: the label is 设置 in
+    /// Chinese, and a query for "Settings" passes only in one language.
+    ///
+    /// - Parameter app: the running app.
+    private func openSettings(_ app: XCUIApplication) {
+        let tab = app.tabBars.buttons.element(boundBy: 1)
+        let opener = tab.exists ? tab : app.buttons.element(boundBy: 1)
+        expect(opener, "there is no settings tab")
+        opener.tap()
+    }
+
+    /// The control for one switch on the settings screen.
+    ///
+    /// Three queries, in order, because how SwiftUI exposes a `Toggle` has moved
+    /// between OS versions: the classic `switches` query, the newer `toggles`
+    /// one -- `XCUIElement.ElementType.toggle` is a separate type -- and finally
+    /// any element carrying the identifier, which is what a `List` row does when
+    /// the control inside it is not itself exposed. The first version of this
+    /// test asked `switches` alone and reported a screen full of switches as
+    /// having none.
+    ///
+    /// - Parameters:
+    ///   - identifier: the row's accessibility identifier.
+    ///   - app: the running app.
+    /// - Returns: the element to tap.
+    private func settingControl(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
+        for candidate in [app.switches[identifier], app.toggles[identifier]] where candidate.exists {
+            return candidate
+        }
+        // The identifier reached a row rather than a control. Tapping the row is
+        // normally enough -- a `Toggle` row toggles from anywhere on it -- but the
+        // control inside is tried first when there is one, because it is the
+        // thing the tap is meant for.
+        let row = app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+        for inner in [row.switches.firstMatch, row.toggles.firstMatch] where inner.exists {
+            return inner
+        }
+        return row
+    }
+
+    /// Whether one switch is on, read from whichever element reports it.
+    ///
+    /// The identifier can land on the control or on the row that contains it, so
+    /// both are tried and the value is taken from the first that has one.
+    ///
+    /// - Parameters:
+    ///   - identifier: the row's accessibility identifier.
+    ///   - app: the running app.
+    /// - Returns: the state, or `nil` when nothing reported one.
+    private func settingState(_ identifier: String, in app: XCUIApplication) -> Bool? {
+        let candidates = [
+            app.switches[identifier],
+            app.toggles[identifier],
+            app.descendants(matching: .any).matching(identifier: identifier).firstMatch,
+        ]
+        for candidate in candidates where candidate.exists {
+            if let state = Self.onValue(candidate) { return state }
+            // The identifier reached a row: the state is on something inside it,
+            // which may carry no identifier of its own. Bounded, because this
+            // walks the accessibility tree of one row.
+            let inside = candidate.descendants(matching: .any)
+            for index in 0..<min(inside.count, 12) {
+                if let state = Self.onValue(inside.element(boundBy: index)) { return state }
+            }
+        }
+        return nil
+    }
+
+    /// A switch's value, as a `Bool`.
+    /// - Parameter element: the element to read.
+    /// - Returns: whether it is on, or `nil` when it reports nothing.
+    private static func onValue(_ element: XCUIElement) -> Bool? {
+        switch (element.value as? String)?.lowercased() {
+        case "1", "on", "true": true
+        case "0", "off", "false": false
+        default: nil
+        }
+    }
+
+    /// The element carrying an identifier whose label says something.
+    ///
+    /// A SwiftUI `Label` puts its identifier on both the text and the symbol --
+    /// the symbol's label is "Account" -- so asking for "the" element with an
+    /// identifier is ambiguous, and `XCUIElementQuery` throws rather than
+    /// choosing. The one whose label contains the expected text is the one
+    /// wanted, and both callers here are checking text.
+    ///
+    /// - Parameters:
+    ///   - identifier: the accessibility identifier.
+    ///   - app: the running app.
+    ///   - text: what the label should contain.
+    /// - Returns: the element, or the first match when none says it.
+    private func labelled(_ identifier: String, in app: XCUIApplication, contains text: String) -> XCUIElement {
+        let matches = app.descendants(matching: .any).matching(identifier: identifier)
+        for index in 0..<matches.count where matches.element(boundBy: index).label.contains(text) {
+            return matches.element(boundBy: index)
+        }
+        return matches.firstMatch
+    }
+
+    /// Scroll the settings list until a row has been built.
+    ///
+    /// A SwiftUI `List` is lazy in the same way the conversation is: a row below
+    /// the fold is not in the accessibility tree at all, and `waitForExistence`
+    /// cannot see what the app has not built.
+    ///
+    /// - Parameters:
+    ///   - element: the row to look for.
+    ///   - app: the running app.
+    ///   - swipes: how far to travel.
+    /// - Returns: whether it turned up.
+    @discardableResult
+    private func revealInSettings(_ element: XCUIElement, in app: XCUIApplication, swipes: Int = 6) -> Bool {
+        if element.waitForExistence(timeout: 3) { return true }
+        for _ in 0..<swipes {
+            app.swipeUp()
+            if element.exists { return true }
+        }
+        return element.exists
     }
 
     /// Skip the naming prompt.
@@ -281,22 +432,190 @@ final class AppFlowTests: XCTestCase {
         XCTAssertTrue(appeared, "the app reached neither the pairing screen nor the session list")
     }
 
-    /// The second tab, which is where the settings will go.
+    /// The second tab: the four sections, each with something in it.
     ///
-    /// It exists because the bar does: a bar with one tab is not a bar. Asked
-    /// for as a bar with "对话" on the left and "设置" on the right.
+    /// Asked for as a bar with "对话" on the left and "设置" on the right, and as
+    /// a settings screen rather than a placeholder. What is asserted is that each
+    /// of the four sections has its control -- the switches, the export button
+    /// and the source link -- because a screen can be present and empty.
     func testTheSecondTabOpensSettings() {
         let app = launch(session: nil)
-        let settings = app.tabBars.buttons.element(boundBy: 1)
-        let opener = settings.exists ? settings : app.buttons["Settings"]
-        expect(opener, "there is no settings tab")
-        opener.tap()
-        expect(app.staticTexts["settings.empty"], "the settings tab is not a settings screen")
+        openSettings(app)
+        // 通知: the four switches, and the system permission they sit under.
+        expect(settingControl("settings.notify.turn-finished", in: app), "there is no 任务完成 switch")
+        expect(settingControl("settings.notify.turn-interrupted", in: app), "there is no 任务中断 switch")
+        expect(settingControl("settings.notify.question", in: app), "there is no 模型询问 switch")
+        expect(settingControl("settings.notify.approval", in: app), "there is no 权限授予 switch")
+        expect(
+            app.descendants(matching: .any).matching(identifier: "settings.notify.authorization").firstMatch,
+            "the system notification permission is not shown",
+        )
+        // 实时活动.
+        expect(settingControl("settings.liveActivity", in: app), "there is no live activity switch")
+        // 日志 and 关于 are below the fold on a phone.
+        XCTAssertTrue(
+            revealInSettings(app.buttons["settings.logs.export"], in: app),
+            "there is no log export button",
+        )
+        XCTAssertTrue(
+            revealInSettings(app.descendants(matching: .any)["settings.about.version"], in: app),
+            "the about section is missing",
+        )
         // Both tabs, so a bar that switched to a screen it cannot leave would
         // not pass.
         let conversation = app.tabBars.buttons.element(boundBy: 0)
         conversation.tap()
         expect(app.buttons["sessions.new"], "the conversation tab does not come back")
+    }
+
+    /// A switch is a setting, not a picture of one.
+    ///
+    /// The value asserted is the one the switch moved to rather than its default,
+    /// because the app's defaults outlive a test run -- `xcodebuild test`
+    /// reinstalls the app but does not wipe its container, so a suite that
+    /// insisted on "on" would fail on the second run and pass on the third.
+    /// What matters is that the change survives the process, which is the whole
+    /// difference between a switch and a decoration.
+    func testANotificationSwitchSurvivesARelaunch() {
+        let app = launch(session: nil)
+        openSettings(app)
+        // The identifier is built from the notification kind's wire name, which
+        // is hyphenated -- `settings.notify.turn-finished`, not `turnFinished`.
+        let identifier = "settings.notify.turn-finished"
+        let control = settingControl(identifier, in: app)
+        expect(control, "there is no 任务完成 switch")
+        let before = settingState(identifier, in: app)
+        XCTAssertNotNil(
+            before,
+            "the switch reports no state to read: \(control.debugDescription)",
+        )
+        control.tap()
+        let after = settingState(identifier, in: app)
+        XCTAssertNotNil(after, "the switch reports no state after being tapped")
+        XCTAssertNotEqual(before, after, "the switch did not move when it was tapped")
+
+        // The same phone, the same app, a new process. Nothing here is in memory
+        // only, or this is where it shows.
+        app.terminate()
+        let reopened = launch(session: nil, freshStart: false)
+        openSettings(reopened)
+        expect(settingControl(identifier, in: reopened), "the settings screen did not come back")
+        XCTAssertEqual(
+            settingState(identifier, in: reopened),
+            after,
+            "the switch did not survive a relaunch",
+        )
+        // Put it back, so the next run of this suite starts where this one did.
+        settingControl(identifier, in: reopened).tap()
+    }
+
+    /// The export button produces a zip and offers it.
+    ///
+    /// The two things that must not be flaky: the file is made, and something
+    /// offers it. The file is asserted first and always; the share sheet is the
+    /// system's `UIActivityViewController`, so it is recognised rather than
+    /// driven -- picking a destination in it is a test of iOS, not of this app.
+    /// The archive itself is checked outside the test, by unzipping it from the
+    /// app's container.
+    func testTheLogExportMakesAZipAndOffersIt() {
+        let app = launch(session: nil)
+        openSettings(app)
+        let export = app.buttons["settings.logs.export"]
+        XCTAssertTrue(revealInSettings(export, in: app), "there is no log export button")
+        export.tap()
+        // The row that names the file, which is also what tells the operator the
+        // export happened after the share sheet has been dismissed.
+        let produced = app.descendants(matching: .any).matching(identifier: "settings.logs.lastArchive").firstMatch
+        // The file's name as text as well, because a `List` row is a container
+        // whose accessibility shape is the system's to decide: if the identifier
+        // lands somewhere that is not an element, the name is still on screen.
+        let named = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", ".zip")).firstMatch
+        XCTAssertTrue(
+            produced.waitForExistence(timeout: Self.patience) || named.exists,
+            "the export produced no file",
+        )
+        XCTAssertTrue(
+            named.waitForExistence(timeout: 5) || produced.label.contains(".zip"),
+            "the export did not name the zip it made",
+        )
+        // And it is offered: the share sheet comes up on its own, without a
+        // second tap. It is asserted and then left alone -- the first version of
+        // this test swiped it away, and the swipe never came back from
+        // "wait for the app to idle", which killed the test after every
+        // assertion in it had already passed. Choosing a destination in that
+        // sheet is a test of iOS, not of this app; the archive's contents are
+        // checked outside the suite, by unzipping it from the app's container.
+        XCTAssertTrue(
+            app.otherElements["ActivityListView"].waitForExistence(timeout: Self.patience),
+            "the export was made but nothing offered to share it",
+        )
+    }
+
+    /// 关于: where it comes from, what it is, and who made it.
+    func testTheAboutSectionShowsTheVersionAndBothCredits() {
+        let app = launch(session: nil)
+        openSettings(app)
+        let source = app.buttons["settings.about.source"]
+        XCTAssertTrue(revealInSettings(source, in: app), "there is no source code button")
+        XCTAssertTrue(source.isEnabled, "the source code button cannot be tapped")
+
+        let version = labelled("settings.about.version", in: app, contains: ".")
+        XCTAssertTrue(version.waitForExistence(timeout: 5), "the version is not shown")
+        // A version, not a specific version: the release is cut elsewhere, and a
+        // test that fails on a bump is a test somebody deletes.
+        XCTAssertNotNil(
+            version.label.range(of: #"[0-9]+\.[0-9]+"#, options: .regularExpression),
+            "the version row does not show a version: \(version.label)",
+        )
+
+        // 开发者鸣谢: two names, on two rows. Not one paragraph with a line break
+        // in it -- which is why the y positions are compared rather than the text.
+        // The text element of each `Label`, not its symbol: a `Label` gives both
+        // the same identifier, and the symbol's label is "Account".
+        let shirazu = labelled("settings.credits.shirazu", in: app, contains: "ShirazuNagisa")
+        let arowey = labelled("settings.credits.arowey", in: app, contains: "Arowey")
+        XCTAssertTrue(revealInSettings(arowey, in: app), "the credits are missing")
+        XCTAssertTrue(shirazu.exists, "the first credit is missing")
+        XCTAssertTrue(shirazu.label.contains("ShirazuNagisa"), "the first credit is mislabelled: \(shirazu.label)")
+        XCTAssertTrue(arowey.label.contains("Arowey"), "the second credit is mislabelled: \(arowey.label)")
+        XCTAssertNotEqual(
+            shirazu.frame.origin.y,
+            arowey.frame.origin.y,
+            "the two credits are on one line, not one per row",
+        )
+        // The link is asserted and not tapped. Tapping it opens Safari, and every
+        // assertion after that would be about Safari.
+    }
+
+    /// Chinese-first: the settings screen follows the phone's language.
+    func testTheSettingsScreenFollowsTheLanguage() {
+        // The section headers, which are interface copy, in Chinese.
+        let chinese = launch(session: nil, language: "zh-Hans")
+        openSettings(chinese)
+        expect(settingControl("settings.notify.turn-finished", in: chinese), "there is no notifications section")
+        expect(chinese.staticTexts["通知"], "通知 is not on the settings screen")
+        expect(chinese.staticTexts["实时活动"], "实时活动 is not on the settings screen")
+        XCTAssertTrue(
+            revealInSettings(chinese.staticTexts["开发者鸣谢"], in: chinese),
+            "关于 is not on the settings screen",
+        )
+        expect(chinese.staticTexts["源代码"], "源代码 is not translated")
+        // A name is not translated, in either language.
+        expect(chinese.staticTexts["ShirazuNagisa"], "the first credit is missing in Chinese")
+        chinese.terminate()
+
+        // The same screen in English, so a catalogue that lost one of the two
+        // languages is caught rather than the other one being taken on trust.
+        let english = launch(session: nil, language: "en")
+        openSettings(english)
+        expect(settingControl("settings.notify.turn-finished", in: english), "there is no notifications section")
+        expect(english.staticTexts["Notifications"], "the notifications section did not translate")
+        expect(english.staticTexts["Live Activity"], "the live activity section did not translate")
+        XCTAssertTrue(
+            revealInSettings(english.staticTexts["Credits"], in: english),
+            "the about section did not translate",
+        )
+        expect(english.staticTexts["Source code"], "the source link did not translate")
     }
 
     /// A first pairing downloads everything, and says how far along it is.
