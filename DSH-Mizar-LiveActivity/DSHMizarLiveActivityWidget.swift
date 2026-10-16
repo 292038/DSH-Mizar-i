@@ -109,11 +109,10 @@ import WidgetKit
 ///     No `.accessibilityElement(children: .combine)` anywhere: an element's
 ///     words are put together in this process and attached with
 ///     `children: .ignore`. The clock is drawn with `accessibilityHidden(true)`
-///     (see `Clock`) and described in words by whoever draws it. The mark is
-///     `Image(decorative:)`, which has no name-derived label to merge — a named
-///     `Image("…")` is labelled by SwiftUI with the asset's name, resolved the
-///     same localisable way, so it taints whatever element it is merged into
-///     without being a `Text` at all.
+///     (see `Clock`) and described in words by whoever draws it. The mark's
+///     asset is found by a `String` name rather than by a
+///     `LocalizedStringKey`, and its label is `verbatim`, so the one label it
+///     has is one this process wrote.
 ///
 /// `grep -n 'Text(' DSHMizarLiveActivityWidget.swift` should therefore show
 /// `Text(verbatim:)`, `Text.translated(…)` and the one date-styled `Text` inside
@@ -220,12 +219,12 @@ struct DSHMizarLiveActivityWidget: Widget {
 /// system may refuse to start the activity at all. The imageset is 32/64/96
 /// pixels, so nothing here can trip that.
 ///
-/// `decorative`, not `Image("MizarIcon")`: an image found by name is labelled by
-/// SwiftUI with that name, resolved the localisable way, so the default label is
-/// a localised segment arriving by a route that is not a `Text` -- and a label
-/// merged into another element is the crash the note at the top of this file is
-/// about. `decorative` says there is no such label; the one below is the mark's
-/// only one.
+/// The name is a `String`, not a `LocalizedStringKey`: `Image("…")` has both
+/// initialisers and a literal picks the `String` one, which is what this is --
+/// verified with `-dump-ast`, not assumed. SwiftUI still labels an image found
+/// by name with that name, resolved the localisable way, which is the other
+/// reason the label below is `verbatim` and the reason nothing merges this
+/// element into anything (see the note at the top of this file).
 private struct Mark: View {
     var diameter: CGFloat
 

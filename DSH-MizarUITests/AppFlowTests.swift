@@ -180,11 +180,15 @@ final class AppFlowTests: XCTestCase {
         for _ in 0..<attempts {
             if row.exists { return true }
             guard heading.waitForExistence(timeout: 5), heading.isHittable else { continue }
-            // Not `heading.tap()`: the centre of a workspace heading is the empty
-            // space between its title and its count, and a tap delivered there
-            // does not toggle it -- measured, three attempts in a row left the
-            // workspace folded. A fifth of the way in is over the title.
-            heading.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).tap()
+            // The heading's own title, not the button and not a coordinate: a
+            // tap at the centre of the button lands on the empty space between
+            // the title and the count and does not toggle it -- measured on both
+            // destinations, three attempts in a row leaving the workspace
+            // folded. `heading` is the button, and its first static text is the
+            // title, which is the element an operator actually taps.
+            let title = heading.staticTexts.element(boundBy: 0)
+            guard title.exists else { continue }
+            title.tap()
             if row.waitForExistence(timeout: 3) { return true }
         }
         return row.exists
@@ -770,7 +774,15 @@ final class AppFlowTests: XCTestCase {
     /// the thing that was asked for -- that the operator is shown progress
     /// rather than an empty app.
     func testAFirstPairingShowsAFullScreenDownload() {
-        let app = launch(session: nil, slow: 500, naming: false)
+        // A long stall, and the reason is the estimate rather than the counter.
+        // The estimate exists only between one session finishing and the next --
+        // `SyncProgress.remaining` refuses to guess before it has a sample -- so
+        // the window this test has to catch is one session's worth of answers,
+        // and at 500 ms that window is about a second wide. Measured: it was
+        // missed on a loaded machine, in a suite where all 39 other tests passed.
+        // 1.5 s makes the window three times wider and costs this one test eight
+        // seconds.
+        let app = launch(session: nil, slow: 1500, naming: false)
         XCTAssertTrue(
             app.staticTexts["firstload.title"].waitForExistence(timeout: Self.patience),
             "a first pairing downloaded the history with nothing on screen to say so",
