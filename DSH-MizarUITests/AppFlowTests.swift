@@ -168,22 +168,23 @@ final class AppFlowTests: XCTestCase {
     /// The condition is the row rather than the tap, so a tap that is lost -- to
     /// the naming sheet still animating away, which is where this went wrong --
     /// costs a retry instead of twenty seconds of waiting for something that will
-    /// not happen. Tapping the heading's *title* rather than the button is the
-    /// shape the rest of this file already uses, and it is the one that works on
-    /// both layouts: inside a `List` section header the button's own centre is
-    /// empty space beside the title.
+    /// not happen.
     ///
     /// - Parameters:
-    ///   - title: the workspace's title, as it is drawn.
+    ///   - heading: the workspace's heading, found by its identifier.
     ///   - row: a row that only exists inside the workspace.
     ///   - attempts: how many times to try.
     /// - Returns: whether the row turned up.
     @discardableResult
-    private func expand(_ title: XCUIElement, revealing row: XCUIElement, attempts: Int = 3) -> Bool {
+    private func expand(_ heading: XCUIElement, revealing row: XCUIElement, attempts: Int = 3) -> Bool {
         for _ in 0..<attempts {
             if row.exists { return true }
-            guard title.waitForExistence(timeout: 5), title.isHittable else { continue }
-            title.tap()
+            guard heading.waitForExistence(timeout: 5), heading.isHittable else { continue }
+            // Not `heading.tap()`: the centre of a workspace heading is the empty
+            // space between its title and its count, and a tap delivered there
+            // does not toggle it -- measured, three attempts in a row left the
+            // workspace folded. A fifth of the way in is over the title.
+            heading.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5)).tap()
             if row.waitForExistence(timeout: 3) { return true }
         }
         return row.exists
@@ -1758,10 +1759,14 @@ final class AppFlowTests: XCTestCase {
 
         // The first session, opened the way an operator opens one: the workspace
         // it is filed under, then the row.
-        expect(app.staticTexts["demo"], "the host's first workspace is missing")
+        // By identifier, never by label: the workspace's own title is interface
+        // copy and follows the device's language, while a session's title is the
+        // host's data and does not.
+        let demo = app.buttons["workspace./Users/you/projects/demo"]
+        expect(demo, "the host's first workspace is missing")
         let first = sessionRow(in: app, titled: "Mock session", in: "demo")
         XCTAssertTrue(
-            expand(app.staticTexts["demo"], revealing: first),
+            expand(demo, revealing: first),
             "the first session never appeared under its workspace",
         )
         first.tap()
@@ -1790,13 +1795,14 @@ final class AppFlowTests: XCTestCase {
         // are the app's real layouts, and the subject of the state is the same.
         let back = app.navigationBars.buttons["BackButton"]
         if back.exists { back.tap() }
-        expect(app.staticTexts["demo"], "the session list never came back")
+        expect(demo, "the session list never came back")
 
         // The second session, which has a conversation of its own — different
         // prompt, different answer, and older history still to fetch.
+        let orphanGroup = app.buttons["workspace.not-in-a-workspace"]
         let orphanRow = sessionRow(in: app, titled: "Orphan session", in: "deleted-workspace")
         XCTAssertTrue(
-            expand(app.staticTexts["Not in a workspace"], revealing: orphanRow),
+            expand(orphanGroup, revealing: orphanRow),
             "the second session never appeared under its heading",
         )
         orphanRow.tap()

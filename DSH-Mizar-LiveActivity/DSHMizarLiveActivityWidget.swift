@@ -230,7 +230,7 @@ private struct Mark: View {
     var diameter: CGFloat
 
     var body: some View {
-        Image(decorative: "MizarIcon")
+        Image("MizarIcon")
             .resizable()
             .scaledToFit()
             .frame(width: diameter, height: diameter)
@@ -281,6 +281,8 @@ private struct Clock: View {
             // numbers change.
             .font(.caption.monospacedDigit())
             .lineLimit(1)
+            // The string SwiftUI resolves for this clock never enters the
+            // accessibility tree. Whoever draws it says in words what it is.
             .accessibilityHidden(true)
     }
 }
@@ -297,8 +299,6 @@ private struct Headline: View {
             // The system ticks this. No update from the app, ever, for the
             // seconds to move.
             Clock(since: longest.countingSince)
-                // The clock has no words that may cross the process boundary, so
-                // this element's words are these, and it is the element.
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(Text.translated("Running time"))
         } else {
@@ -312,10 +312,6 @@ private struct FinishedCheck: View {
     var body: some View {
         Image(systemName: "checkmark.circle.fill")
             .foregroundStyle(.green)
-            // `translated`, not `Text("…")`: see the note at the top of this
-            // file. This is the one string that reaches the card only when
-            // everything has stopped, which is exactly when nobody is watching
-            // closely enough to report a crash.
             .accessibilityLabel(Text.translated("Every session has finished"))
     }
 }
@@ -408,12 +404,6 @@ private struct LiveActivityCard: View {
                         .font(.caption)
                     Spacer(minLength: 0)
                 }
-                // The check has that sentence as its label and the words beside
-                // it are the same sentence, so without this VoiceOver reads it
-                // twice. One element, one label, and both parts are already
-                // plain -- see the note at the top of the file.
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(Text.translated("Every session has finished"))
             } else {
                 SessionRows(state: state)
             }

@@ -5,7 +5,10 @@
    the app's name reads as a card that failed to load. */
 "Every session has finished" = "Every session has finished";
 
-/* What the counting clock on the right of the island is. VoiceOver only: the
-   number is drawn by the system's timer, and a bare duration announced with no
-   noun is a number about nothing. */
+/* What the counting clock is, for VoiceOver: on the island it is the clock
+   element's whole name, and in a row of the card it is the noun at the end of
+   that row's sentence. The number is drawn by the system's timer and is
+   deliberately not exposed -- a ticking figure read out every second is not
+   information -- so this noun is all a listener gets, and a duration announced
+   with no noun is a number about nothing. */
 "Running time" = "Running time";

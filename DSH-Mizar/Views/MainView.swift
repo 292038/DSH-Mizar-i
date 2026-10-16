@@ -46,6 +46,7 @@ struct MainView: View {
                 // the tag that covers the ones nobody remembered to add, and it
                 // cancels a load the moment its subject goes away.
                 SessionDetailView(sessionId: sessionId)
+                    .id(sessionId)
                     .sheet(isPresented: namingPrompt) { namingSheet }
             } else {
                 ContentUnavailableView(
