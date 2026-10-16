@@ -31,6 +31,20 @@ struct MainView: View {
             sessionList(pushing: false)
         } detail: {
             if let sessionId = model.selectedSessionId {
+                // Keyed on the session, which is what makes every piece of state
+                // below belong to the session it was filled from.
+                //
+                // The screen is one view for every session and most of what it
+                // holds is tagged by hand -- `statsSessionId`,
+                // `conversationSessionId` -- but the untagged remainder is drawn
+                // for whichever session is open next: the composer kept the text
+                // typed for the last one, `ConversationView` kept "this history
+                // has been paged to its end" and stopped offering older messages
+                // for the new session, and the scroll anchor, the in-flight-load
+                // gate and the paging allowance all belonged to a conversation
+                // that is no longer on screen. One identity for the session is
+                // the tag that covers the ones nobody remembered to add, and it
+                // cancels a load the moment its subject goes away.
                 SessionDetailView(sessionId: sessionId)
                     .sheet(isPresented: namingPrompt) { namingSheet }
             } else {
@@ -425,26 +439,6 @@ struct SessionDetailView: View {
     @State private var loadGeneration = 0
     /// Bumped when something was just sent, to move the view to it.
     @State private var newMessageArrived = 0
-    @State private var tab: Tab = .conversation
-
-    /// Which half of the session is on screen.
-    ///
-    /// Two peers rather than one stacked on the other: a monitoring app is used
-    /// to answer either "what is it doing" or "what has it cost", and making one
-    /// of those mean scrolling past the other gets the priority wrong half the
-    /// time.
-    private enum Tab: String, CaseIterable, Identifiable {
-        case conversation
-        case usage
-        var id: String { rawValue }
-
-        var title: LocalizedStringKey {
-            switch self {
-            case .conversation: "Conversation"
-            case .usage: "Usage"
-            }
-        }
-    }
 
     /// The figures for the session on screen, or nothing.
     ///
@@ -831,10 +825,11 @@ struct SessionDetailView: View {
             stats = known
             statsSessionId = sessionId
         }
-        // Run together: the two reads are independent, and a conversation that
-        // waits for a stats call would make the screen feel slower than it is.
-        async let statsResult = model.stats(for: sessionId)
-        let freshStats = await statsResult
+        // One after the other, deliberately. The two reads are independent, and
+        // they were run together once -- which is how one dropped request became
+        // two overlapping loads over a single socket, each reconnecting out from
+        // under the other. They share one connection, so they take it in turn.
+        let freshStats = await model.stats(for: sessionId)
         // `statsError` is how a *read* is told apart from a session that has no
         // usage yet: both come back as no frame, and only the first is worth
         // asking about again.

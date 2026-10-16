@@ -126,6 +126,12 @@ public struct PairedHost: Codable, Sendable, Equatable {
             deviceToken: deviceToken,
             pairedAt: pairedAt,
             baseURL: baseURL,
+            // The operator's own name for this machine travels with it. Dropping
+            // it here renamed the machine back to the host's own name the moment
+            // its address changed, which is the one thing the label exists to
+            // avoid -- `Shirazus-Mac-mini.local` is exactly what somebody with
+            // two Macs cannot tell apart.
+            label: label,
         )
     }
 
@@ -142,6 +148,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
             deviceToken: deviceToken,
             pairedAt: pairedAt,
             baseURL: baseURL,
+            label: label,
         )
     }
 }

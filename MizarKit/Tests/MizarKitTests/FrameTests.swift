@@ -63,6 +63,31 @@ struct ServerFrameTests {
         #expect(unsolicitedId == nil)
     }
 
+    @Test("decodes the code the host sends when an answer will not fit")
+    func responseTooLarge() throws {
+        // The host has its own code for "the answer is real and the transport
+        // cannot carry it" (`RESPONSE_TOO_LARGE`, in the host's `ERROR_CODES`),
+        // and this build did not list it -- so the one failure whose answer is
+        // "ask for less" arrived as an unclassified string.
+        guard case .failure(let error, let id) = try decode(
+            errorFrame(
+                code: "RESPONSE_TOO_LARGE",
+                message: "the answer to r9 is 1400KB, too large to deliver",
+                id: "r9",
+            ),
+        ) else {
+            Issue.record("expected a failure")
+            return
+        }
+        #expect(
+            MizarErrorCode(rawValue: "RESPONSE_TOO_LARGE") != nil,
+            "the host emits RESPONSE_TOO_LARGE and this build has no case for it",
+        )
+        #expect(error.known == .responseTooLarge)
+        #expect(id == "r9")
+        #expect(!error.requiresRepairing)
+    }
+
     @Test("decodes an event")
     func event() throws {
         guard case .event(let name, let data) = try decode(
@@ -170,6 +195,23 @@ struct MizarErrorTests {
         #expect(error.known == nil)
         #expect(error.code == "SOMETHING_NEW")
         #expect(error.message == "from the future")
+    }
+
+    @Test("asks for a smaller page when the host says the answer will not fit")
+    func smallerPageAfterTooLarge() {
+        // The one failure that is not about the connection and not about the
+        // request: the same request asked for too much. Retrying it unchanged is
+        // the same answer; asking for a quarter of it can succeed.
+        let tooLarge = MizarError(code: MizarErrorCode.responseTooLarge.rawValue, message: "1400KB")
+        #expect(tooLarge.smallerPage(than: 200) == 50)
+        #expect(tooLarge.smallerPage(than: 60) == 25)
+        // Nothing left to give up: a page already at the floor is not asked for
+        // again, so the caller reports the failure instead of looping.
+        #expect(tooLarge.smallerPage(than: 25) == nil)
+        #expect(tooLarge.smallerPage(than: 10) == nil)
+        // Every other failure leaves the request alone.
+        #expect(MizarError(code: "INTERNAL", message: "").smallerPage(than: 200) == nil)
+        #expect(MizarError(code: "REQUEST_TIMEOUT", message: "").smallerPage(than: 200) == nil)
     }
 
     @Test("tells the app when repairing is the only way forward")

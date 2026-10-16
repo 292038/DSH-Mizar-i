@@ -53,9 +53,24 @@ final class AppFlowTests: XCTestCase {
     ///   - slow: how long the mock should stall every answer, in milliseconds.
     ///     For the two screens that exist to report how long something is
     ///     taking, which cannot be observed against a host that answers instantly.
-    private static func resetMockHost(pending: Bool = true, slow: Int = 0) {
+    private static func resetMockHost(
+        pending: Bool = true,
+        slow: Int = 0,
+        skew: Int = 0,
+        pageLimit: Int? = nil,
+        running: Bool = true,
+    ) {
         var query = pending ? "" : "?pending=0"
         if slow > 0 { query += query.isEmpty ? "?slow=\(slow)" : "&slow=\(slow)" }
+        // A host whose clock is ahead of the phone's, and a host that refuses a
+        // page too large to deliver. Both are states the real host reaches on
+        // its own, and neither can be produced from the app's side.
+        if skew > 0 { query += query.isEmpty ? "?skew=\(skew)" : "&skew=\(skew)" }
+        if let pageLimit { query += query.isEmpty ? "?pageLimit=\(pageLimit)" : "&pageLimit=\(pageLimit)" }
+        // A host whose session has stopped, so no Live Activity is posted. What
+        // this is for is a test that must not be run in the same process as the
+        // widget extension.
+        if !running { query += query.isEmpty ? "?running=0" : "&running=0" }
         guard let url = URL(string: "http://127.0.0.1:19395/reset\(query)") else { return }
         let done = DispatchSemaphore(value: 0)
         var request = URLRequest(url: url)
@@ -148,6 +163,50 @@ final class AppFlowTests: XCTestCase {
         return XCTWaiter().wait(for: [arrived], timeout: Self.patience) == .completed
     }
 
+    /// Open a workspace and wait for a row inside it.
+    ///
+    /// The condition is the row rather than the tap, so a tap that is lost -- to
+    /// the naming sheet still animating away, which is where this went wrong --
+    /// costs a retry instead of twenty seconds of waiting for something that will
+    /// not happen. Tapping the heading's *title* rather than the button is the
+    /// shape the rest of this file already uses, and it is the one that works on
+    /// both layouts: inside a `List` section header the button's own centre is
+    /// empty space beside the title.
+    ///
+    /// - Parameters:
+    ///   - title: the workspace's title, as it is drawn.
+    ///   - row: a row that only exists inside the workspace.
+    ///   - attempts: how many times to try.
+    /// - Returns: whether the row turned up.
+    @discardableResult
+    private func expand(_ title: XCUIElement, revealing row: XCUIElement, attempts: Int = 3) -> Bool {
+        for _ in 0..<attempts {
+            if row.exists { return true }
+            guard title.waitForExistence(timeout: 5), title.isHittable else { continue }
+            title.tap()
+            if row.waitForExistence(timeout: 3) { return true }
+        }
+        return row.exists
+    }
+
+    /// The row for one session, under either name it can be drawn with.
+    ///
+    /// The title is the host's once it has given one, and otherwise the working
+    /// directory and the session's id -- so a query for the pretty name alone
+    /// finds nothing on a phone whose host has not named the session yet, which
+    /// is a test that fails for a reason of its own making.
+    ///
+    /// - Parameters:
+    ///   - app: the running app.
+    ///   - title: the host's title for the session.
+    ///   - directory: the last path component of its working directory.
+    /// - Returns: the element to tap.
+    private func sessionRow(in app: XCUIApplication, titled title: String, in directory: String) -> XCUIElement {
+        app.staticTexts.matching(
+            NSPredicate(format: "label == %@ OR label BEGINSWITH %@", title, "\(directory) · "),
+        ).firstMatch
+    }
+
     /// Scroll through the conversation until an element is in the tree.
     ///
     /// A `LazyVStack` builds only what is near the screen, so an element that is
@@ -185,6 +244,38 @@ final class AppFlowTests: XCTestCase {
         return element.exists
     }
 
+    /// A value written on URLSession's queue and read once the wait is over.
+    ///
+    /// `@unchecked Sendable` with the semaphore below as the synchronisation: the
+    /// write happens before `signal()` and the read after `wait()`.
+    private final class Box: @unchecked Sendable {
+        var value: Int?
+    }
+
+    /// How many sockets the mock host has accepted since the suite last reset it.
+    ///
+    /// A reconnect is invisible from the app's side -- the data looks the same
+    /// afterwards -- so the only way to assert that a failure did *not* cost a
+    /// fresh socket is to count them at the host.
+    ///
+    /// - Returns: the count, or `nil` when the mock is not answering.
+    private static func mockConnections() -> Int? {
+        guard let url = URL(string: "http://127.0.0.1:19395/connections") else { return nil }
+        let done = DispatchSemaphore(value: 0)
+        let box = Box()
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            defer { done.signal() }
+            guard let data,
+                  let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return }
+            box.value = parsed["connections"] as? Int
+        }.resume()
+        _ = done.wait(timeout: .now() + 6)
+        return box.value
+    }
+
     /// Launch the app, optionally pairing and opening a session on the way in.
     /// - Parameters:
     ///   - pairing: whether to pass a pairing URI.
@@ -192,6 +283,14 @@ final class AppFlowTests: XCTestCase {
     ///   - language: a language to force, or `nil` to follow the system.
     ///   - pending: whether the mock should offer a pending approval and question.
     ///   - slow: how long the mock should stall every answer, in milliseconds.
+    ///   - skew: how far ahead of the phone the mock's clock should be, in
+    ///     milliseconds. Zero for every test that is not about the two clocks
+    ///     disagreeing.
+    ///   - pageLimit: the largest page the mock will answer, when a test wants
+    ///     the host to refuse one that will not fit.
+    ///   - running: whether the mock's session reports itself as running. `false`
+    ///     keeps the Live Activity out of the run, for a test about the screens
+    ///     rather than about the island.
     ///   - freshStart: whether to throw the stored data away first.
     ///   - naming: whether to wait for the naming prompt before returning.
     ///     It is offered *after* a first download, so a test about that download
@@ -203,10 +302,13 @@ final class AppFlowTests: XCTestCase {
         language: String? = "en",
         pending: Bool = true,
         slow: Int = 0,
+        skew: Int = 0,
+        pageLimit: Int? = nil,
+        running: Bool = true,
         naming: Bool = true,
         freshStart: Bool = true,
     ) -> XCUIApplication {
-        Self.resetMockHost(pending: pending, slow: slow)
+        Self.resetMockHost(pending: pending, slow: slow, skew: skew, pageLimit: pageLimit, running: running)
         let app = XCUIApplication()
         app.launchArguments = Self.arguments(
             pairing: pairing,
@@ -1466,6 +1568,250 @@ final class AppFlowTests: XCTestCase {
             "the message never reached the conversation (\(candidates.count) elements carry the text, none above the composer)\nHIERARCHY-START\n\(app.debugDescription)\nHIERARCHY-END",
         )
         XCTAssertEqual(composer.value as? String, "Ask your agent…", "the composer never emptied")
+    }
+
+    /// A running turn's clock, when the host's clock is ahead of the phone's.
+    ///
+    /// The start is the host's number and `now` is the phone's, so the two
+    /// disagreeing is ordinary -- a Mac whose clock drifted, a phone that has not
+    /// synced. Subtracting them gave a negative duration, and the row read
+    /// "DeepSeeking for -4 s", which is not a time anybody can act on. The
+    /// clamp is the kit's own rule (``ConversationTurn/elapsed(asOf:)``), which
+    /// the view was not using.
+    func testARunningTurnsClockIsNotNegativeWhenTheHostsClockIsAhead() {
+        // Ten minutes ahead: far enough that no part of the fixture can be in the
+        // past by accident, and short enough that the turn is still running.
+        let app = launch(pending: false, skew: 600_000)
+        // The conversation has to have landed, or this passes on an empty screen.
+        expect(app.staticTexts["And run the whole suite."], "the running turn's prompt is missing")
+
+        let running = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "DeepSeeking for "))
+            .firstMatch
+        expect(running, "no turn is reported as running")
+        XCTAssertFalse(
+            running.label.contains("-"),
+            "a running turn reports a negative duration: \(running.label)",
+        )
+        // And it says the honest thing rather than nothing: the phone cannot know
+        // how long a turn started in the future has been running.
+        XCTAssertEqual(
+            running.label,
+            "DeepSeeking for 0 s",
+            "the running row does not clamp a start the phone has not reached",
+        )
+    }
+
+    /// A page too large to deliver is asked for again smaller, not given up on.
+    ///
+    /// The host's `RESPONSE_TOO_LARGE` is the one failure whose answer is a
+    /// different request: the page was real and the socket could not carry it.
+    /// Before this the app reported it, so a conversation whose history is long
+    /// enough -- which is exactly the conversation somebody opens the app to
+    /// read -- showed "Could not load the conversation" and nothing else.
+    func testAnAnswerTooLargeToDeliverIsAskedForAgainSmaller() {
+        // The host refuses the app's usual 200-message page and answers a small
+        // one, which is what the real host does at its own size limit.
+        let app = launch(pending: false, pageLimit: 50)
+
+        expect(
+            app.staticTexts["Refactor the parser and run the tests."],
+            "the conversation never arrived: a page too large to deliver was not re-asked for",
+        )
+        XCTAssertFalse(
+            app.staticTexts["Could not load the conversation"].exists,
+            "a too-large answer was reported as a failure instead of being re-asked",
+        )
+        // And asking for less is a *request*, not a new socket: tearing the
+        // connection down over an answer the host already sent costs a handshake
+        // and re-subscribes every listener.
+        XCTAssertEqual(
+            Self.mockConnections(),
+            1,
+            "a too-large answer cost a fresh connection",
+        )
+    }
+
+    /// Make the mock host's session report itself as stopped, or running again.
+    ///
+    /// - Parameter running: whether it is running.
+    private static func setMockSessionRunning(_ running: Bool) {
+        guard let url = URL(string: "http://127.0.0.1:19395/session?running=\(running ? 1 : 0)") else { return }
+        let done = DispatchSemaphore(value: 0)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { _, _, _ in done.signal() }.resume()
+        _ = done.wait(timeout: .now() + 6)
+    }
+
+    /// The Live Activity survives the moment everything finishes.
+    ///
+    /// The finished card draws the words "every session has finished" — and any
+    /// `LocalizedStringKey` text (`Text("…")`) aborts the widget extension when
+    /// WidgetKit archives the view to hand it to the process that draws a Live
+    /// Activity, because stripping SwiftUI's localisable-segment attribute out of
+    /// the archived string throws inside `NSAttributedString`. The file that
+    /// documents this fixed it everywhere except these two strings, and the
+    /// running card never draws them: the finished state is only ever reached by
+    /// *updating* an activity that was started for a session that was running.
+    ///
+    /// XCTest fails the test itself when the extension aborts — "Critical process
+    /// DSH-Mizar-LiveActivity crashed" — which is the assertion here.
+    func testTheLiveActivitySurvivesEverythingFinishing() {
+        let app = launch(session: nil, pending: false)
+        expect(app.buttons["sessions.refresh"], "the session list never arrived")
+
+        // Nothing is running any more, which is what the next refresh reports.
+        Self.setMockSessionRunning(false)
+        app.buttons["sessions.refresh"].tap()
+
+        // A full pass over the sessions, which is where the app decides what the
+        // activity should show. Waited for by the control it disables — first
+        // disabled, then enabled again, because the refresh starts from a `Task`
+        // and a single "is it enabled" read can beat it to the screen.
+        let refresh = app.buttons["sessions.refresh"]
+        let busy = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "isEnabled == false"),
+            object: refresh,
+        )
+        _ = XCTWaiter().wait(for: [busy], timeout: 5)
+        let settle = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "isEnabled == true"),
+            object: refresh,
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [settle], timeout: Self.patience),
+            .completed,
+            "the refresh never finished",
+        )
+        let done = app.buttons["sync.done"]
+        if done.exists { done.tap() }
+
+        // The app is still here, with its list. A crashed widget takes the
+        // activity down rather than the app, so this alone would not catch it —
+        // XCTest's own "Critical process DSH-Mizar-LiveActivity crashed" is the
+        // assertion this test is really making.
+        XCTAssertTrue(
+            app.buttons["workspace./Users/you/projects/demo"].waitForExistence(timeout: Self.patience),
+            "the session list was lost",
+        )
+    }
+
+    /// A refusal the host chose to send does not rebuild the socket.
+    ///
+    /// `session.stats` is re-read on every reload, so a host-side failure there
+    /// is the ordinary shape of "this one read did not work". Every failure used
+    /// to reconnect -- a WebSocket, a handshake and a re-subscription -- and then
+    /// ask the same question again, which the same host answered the same way.
+    func testAHostSideRefusalDoesNotRebuildTheConnection() {
+        let app = launch(pending: false)
+        // The screen has to have landed: the reads the launch itself makes are
+        // what the count below is measured from.
+        expect(app.staticTexts["Refactor the parser and run the tests."], "the conversation never arrived")
+        XCTAssertEqual(Self.mockConnections(), 1, "the launch opened more than one connection")
+
+        // From here on the host refuses one method and answers everything else.
+        Self.failMockHost("session.stats")
+        let refresh = app.buttons["session.refresh"]
+        expect(refresh, "there is no way to refresh the conversation")
+        refresh.tap()
+
+        // Wait for the reload to finish, so the count is not read mid-flight.
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "isEnabled == true"),
+            object: refresh,
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [ready], timeout: Self.patience), .completed)
+
+        XCTAssertEqual(
+            Self.mockConnections(),
+            1,
+            "a refusal the host sent over a working socket tore the connection down",
+        )
+        // The conversation is still the conversation: nothing about this failure
+        // was the connection's business.
+        XCTAssertTrue(
+            reveal(app.staticTexts["Refactor the parser and run the tests."], in: app),
+            "a refused usage read emptied the conversation",
+        )
+    }
+
+    /// What belongs to one session does not follow the operator to the next.
+    ///
+    /// One view draws every session, and the parts of it that were not tagged
+    /// with the session they were read for are drawn for whichever session is
+    /// opened next: the composer kept the text typed for the last one — which
+    /// could then be sent to the wrong agent — and the conversation kept "this
+    /// history has been paged to its end", so the new session's older messages
+    /// could not be asked for at all.
+    ///
+    /// Asserted where both columns are on screen at once, which is where the
+    /// detail view survives a change of selection. On a phone the conversation is
+    /// pushed over the list and popping it destroys the view — and the state with
+    /// it — so there is nothing here to break, and a test that pretended
+    /// otherwise would pass with the bug present.
+    func testSwitchingSessionsDoesNotCarryTheOtherOnesState() throws {
+        // Nothing running, so no Live Activity is posted: this is a test about
+        // two conversations, and the widget extension is a second process that
+        // has nothing to do with either of them.
+        let app = launch(session: nil, pending: false, running: false)
+
+        // The first session, opened the way an operator opens one: the workspace
+        // it is filed under, then the row.
+        expect(app.staticTexts["demo"], "the host's first workspace is missing")
+        let first = sessionRow(in: app, titled: "Mock session", in: "demo")
+        XCTAssertTrue(
+            expand(app.staticTexts["demo"], revealing: first),
+            "the first session never appeared under its workspace",
+        )
+        first.tap()
+        let field = app.textFields["composer.field"]
+        expect(field, "the first conversation never opened")
+
+        // Something typed and never sent, and a history that has been paged to
+        // its end, so the row that asks for older messages goes away by itself.
+        field.tap()
+        field.typeText("half a thought for the first session")
+        XCTAssertEqual(field.value as? String, "half a thought for the first session")
+
+        let loadOlder = app.buttons["conversation.loadOlder"]
+        let exhausted = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: loadOlder,
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [exhausted], timeout: Self.patience),
+            .completed,
+            "the first session never reported its history as paged to the end",
+        )
+
+        // Back to the list. A phone pushes the conversation over it; an iPad
+        // keeps both columns, so there is nothing to come back from -- and both
+        // are the app's real layouts, and the subject of the state is the same.
+        let back = app.navigationBars.buttons["BackButton"]
+        if back.exists { back.tap() }
+        expect(app.staticTexts["demo"], "the session list never came back")
+
+        // The second session, which has a conversation of its own — different
+        // prompt, different answer, and older history still to fetch.
+        let orphanRow = sessionRow(in: app, titled: "Orphan session", in: "deleted-workspace")
+        XCTAssertTrue(
+            expand(app.staticTexts["Not in a workspace"], revealing: orphanRow),
+            "the second session never appeared under its heading",
+        )
+        orphanRow.tap()
+        expect(app.textFields["composer.field"], "the second conversation never opened")
+
+        XCTAssertEqual(
+            app.textFields["composer.field"].value as? String,
+            "Ask your agent…",
+            "the first session's draft followed the operator into the second",
+        )
+        XCTAssertTrue(
+            app.staticTexts["Older history from the other session."]
+                .waitForExistence(timeout: Self.patience),
+            "the second session's older page was never asked for: its paging state belonged to the first session",
+        )
     }
 
     /// The selection bar is put away inside a conversation, and comes back.

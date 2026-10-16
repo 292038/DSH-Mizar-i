@@ -41,6 +41,12 @@ public actor MizarConnection {
         public var deviceModel: String?
         /// How long a unary call may take before it is failed.
         public var requestTimeout: Duration
+        /// How long the handshake may take before it is failed.
+        ///
+        /// A socket that completes its upgrade and then says nothing leaves the
+        /// app on "Connecting…" with nothing that can change it, so the wait for
+        /// the welcome is bounded the same way a call is.
+        public var handshakeTimeout: Duration
 
         public init(
             authority: String?,
@@ -50,6 +56,7 @@ public actor MizarConnection {
             deviceModel: String? = nil,
             requestTimeout: Duration = .seconds(60),
             baseURL: String? = nil,
+            handshakeTimeout: Duration = .seconds(20),
         ) {
             self.authority = authority
             self.token = token
@@ -58,6 +65,7 @@ public actor MizarConnection {
             self.deviceModel = deviceModel
             self.requestTimeout = requestTimeout
             self.baseURL = baseURL
+            self.handshakeTimeout = handshakeTimeout
         }
 
         /// Which of the two routes this configuration names.
@@ -125,10 +133,22 @@ public actor MizarConnection {
     /// closes, so a consumer loop ends rather than waiting forever on a socket
     /// that is gone.
     ///
+    /// A connection that is **already** closed finishes the stream at once, for
+    /// the same reason: nothing will ever be delivered and nothing will ever
+    /// close it again, so a subscriber that arrived a moment too late would
+    /// otherwise wait for the life of the process. That is not a hypothetical
+    /// race: the app subscribes from a `Task` started after `connect()` returns,
+    /// and a socket that closes in between used to leave the listener alive
+    /// forever.
+    ///
     /// - Returns: the stream.
     public func events() -> AsyncStream<ServerFrame> {
         let id = UUID()
         return AsyncStream { continuation in
+            if case .failed = state {
+                continuation.finish()
+                return
+            }
             subscribers[id] = continuation
             continuation.onTermination = { [weak self] _ in
                 Task { await self?.removeSubscriber(id) }
@@ -204,7 +224,16 @@ public actor MizarConnection {
             throw error
         }
 
-        return try await awaitHandshake()
+        do {
+            return try await awaitHandshake()
+        } catch {
+            // This route is finished, so the socket goes with it. A half-open
+            // socket left behind is one nobody reads and nobody closes, and the
+            // caller is already dialling the next route.
+            await closeSocket()
+            state = .failed(Self.reason(error))
+            throw error
+        }
     }
 
     /// Wait for the welcome, tolerating one that already arrived.
@@ -220,27 +249,81 @@ public actor MizarConnection {
     /// body runs synchronously on this actor, with no suspension point between
     /// reading the state and storing the continuation.
     ///
+    /// Bounded, like every other wait in this file. A socket that completes its
+    /// upgrade and then says nothing at all — a wedged host, or a relay that
+    /// accepts the connection and forwards nothing — answers no read, so there
+    /// is nothing else to time out: without a deadline here the caller waits for
+    /// the life of the process and the screen behind it says "Connecting…" with
+    /// no way out.
+    ///
     /// - Returns: the host's welcome.
     private func awaitHandshake() async throws -> WelcomeFrame {
-        func settled() -> Result<WelcomeFrame, any Error>? {
-            if let welcome = state.welcome { return .success(welcome) }
-            if case .failed(let reason) = state {
-                return .failure(
-                    MizarError(code: "CONNECTION_CLOSED", message: reason, retryable: true),
+        if let outcome = settledHandshake() { return try outcome.get() }
+
+        return try await withThrowingTaskGroup(of: WelcomeFrame.self) { group in
+            group.addTask { try await self.suspendForHandshake() }
+            group.addTask {
+                try await Task.sleep(for: self.configuration.handshakeTimeout)
+                throw MizarError(
+                    code: "REQUEST_TIMEOUT",
+                    message: "the host did not say hello in time",
+                    retryable: true,
                 )
             }
-            return nil
+
+            do {
+                guard let welcome = try await group.next() else {
+                    throw MizarError(
+                        code: "CONNECTION_CLOSED",
+                        message: "the connection closed during the handshake",
+                        retryable: true,
+                    )
+                }
+                group.cancelAll()
+                return welcome
+            } catch {
+                group.cancelAll()
+                // Whoever is suspended on the handshake has to be resumed here
+                // rather than after the group drains: a task group waits for
+                // every child, and a continuation nothing will ever resume is a
+                // child that never finishes.
+                failHandshake(with: error)
+                throw error
+            }
         }
+    }
 
-        if let outcome = settled() { return try outcome.get() }
+    /// The outcome of the handshake, when it is already decided.
+    /// - Returns: the welcome, the failure, or `nil` while it is still open.
+    private func settledHandshake() -> Result<WelcomeFrame, any Error>? {
+        if let welcome = state.welcome { return .success(welcome) }
+        if case .failed(let reason) = state {
+            return .failure(
+                MizarError(code: "CONNECTION_CLOSED", message: reason, retryable: true),
+            )
+        }
+        return nil
+    }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            if let outcome = settled() {
+    /// Store the continuation the welcome will resume, or settle it at once when
+    /// the state moved while the task was being set up.
+    /// - Returns: the host's welcome.
+    private func suspendForHandshake() async throws -> WelcomeFrame {
+        try await withCheckedThrowingContinuation { continuation in
+            if let outcome = settledHandshake() {
                 continuation.resume(with: outcome)
             } else {
                 handshake = continuation
             }
         }
+    }
+
+    /// Resume a waiting handshake with a failure, once.
+    /// - Parameter error: what to fail it with.
+    private func failHandshake(with error: any Error) {
+        guard let continuation = handshake else { return }
+        handshake = nil
+        continuation.resume(throwing: error)
     }
 
     /// Close the socket and fail anything still in flight.
@@ -471,5 +554,17 @@ public actor MizarConnection {
             throw MizarError(code: "ENCODE_FAILED", message: "frame was not valid UTF-8")
         }
         return text
+    }
+
+    /// An error as the state carries it.
+    ///
+    /// The host's own words when it is a ``MizarError``, because that is what the
+    /// failure screen shows; the full description otherwise, which is all a
+    /// transport failure has.
+    ///
+    /// - Parameter error: what went wrong.
+    /// - Returns: text for the state.
+    private static func reason(_ error: any Error) -> String {
+        (error as? MizarError)?.message ?? String(describing: error)
     }
 }

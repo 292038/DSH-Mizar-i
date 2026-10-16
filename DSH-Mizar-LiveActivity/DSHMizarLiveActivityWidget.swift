@@ -41,6 +41,124 @@ import MizarKit
 import SwiftUI
 import WidgetKit
 
+// MARK: - Why every string here is resolved before SwiftUI sees it
+
+/// A string out of this extension's `Localizable.strings`, translated by hand
+/// rather than by `Text("…")`.
+///
+/// **`Text("…")` — the `LocalizedStringKey` initialiser — cannot be used
+/// anywhere in this widget.** Not for a label, not for content. It is the one
+/// API in this file that crashes the extension, and it does it in this process
+/// rather than in the app's, so what the operator sees is the app's Live
+/// Activity failing to draw and what XCTest reports is a failure of whichever
+/// test happened to be running:
+///
+///     <unknown>:0: error: -[DSH_MizarUITests.AppFlowTests test…] :
+///         Critical process DSH-Mizar-LiveActivity crashed in (null)
+///
+/// The mechanism, from the crash report's own `lastExceptionBacktrace`:
+/// a `LocalizedStringKey` text is marked with SwiftUI's
+/// `ResolvableTextSegmentAttribute` — the process-local note that says "this run
+/// of characters is a localisable segment, re-resolve it if the language
+/// changes". A Live Activity is not drawn where it is built: WidgetKit
+/// *archives* the rendered tree to protobuf and hands the bytes across the
+/// process boundary, and `CodableAttributedString.encode(to:)` strips that
+/// attribute first, because a segment resolved in this process means nothing in
+/// the host. Stripping it goes through `removeAttribute(_:range:)` with a range
+/// that was only ever valid for the string that carried it, and that call
+/// **throws** (`NSRangeException`):
+///
+///     CodableAttributedString.encode(to:)
+///       −[NSAttributedString enumerateAttribute:inRange:options:usingBlock:]
+///         ResolvableTextSegmentAttribute.Value.toggleAttributes(in:of:)
+///           ResolvableTextSegmentAttribute.Value.restoreDefault(in:of:)
+///             −[NSMutableAttributedString removeAttribute:range:]   ← throws
+///
+/// The exception is rethrown out of `enumerateAttribute`, reaches
+/// `_objc_terminate`, and aborts the extension with SIGABRT.
+///
+/// `Text(verbatim:)` carries no such attribute, so there is nothing to strip and
+/// nothing to throw. That is not a way of giving up the translation: it means
+/// the lookup has already happened, here, through `Bundle.main` — which in an
+/// app extension is *this* extension's bundle, the one holding `en.lproj` and
+/// `zh-Hans.lproj`. The keys are the same ones `Text("…")` would have looked up,
+/// so the words on the island, on the Lock Screen and in VoiceOver are the ones
+/// `Localizable.strings` holds, unchanged. What is gone is only the promise that
+/// SwiftUI could re-resolve them later in a different process — a promise this
+/// widget can never keep and must not make.
+///
+/// ## `verbatim` alone was not enough: the clock is the second source
+///
+/// A `LocalizedStringKey` is not the only text SwiftUI resolves *while drawing*.
+/// `Text(_:style:)` holds no string at all — it is a date and a style, and the
+/// words are produced when it is drawn, which is exactly what lets the system
+/// tick it without the app sending anything. `Text`'s storage for it is
+/// `TimeDataFormattingStorage`, not `verbatim`, so the string it resolves to
+/// carries the same process-local segment. Drawn as itself that is what a Live
+/// Activity clock is *for*; it becomes the crash above the moment that string is
+/// merged into another string, which is what accessibility does.
+///
+/// So this file keeps two rules, and they are both about the same archive:
+///
+///  1. **Every string is resolved here**, through `Text.translated` or
+///     `Text(verbatim:)`, before SwiftUI sees it. A key is looked up with
+///     `NSLocalizedString` and never handed to `Text("…")`; a sentence is
+///     assembled out of those strings *here*, with no format specifier left in
+///     it for SwiftUI to find.
+///  2. **Nothing SwiftUI resolves while drawing is handed to accessibility.**
+///     No `.accessibilityElement(children: .combine)` anywhere: an element's
+///     words are put together in this process and attached with
+///     `children: .ignore`. The clock is drawn with `accessibilityHidden(true)`
+///     (see `Clock`) and described in words by whoever draws it. The mark is
+///     `Image(decorative:)`, which has no name-derived label to merge — a named
+///     `Image("…")` is labelled by SwiftUI with the asset's name, resolved the
+///     same localisable way, so it taints whatever element it is merged into
+///     without being a `Text` at all.
+///
+/// `grep -n 'Text(' DSHMizarLiveActivityWidget.swift` should therefore show
+/// `Text(verbatim:)`, `Text.translated(…)` and the one date-styled `Text` inside
+/// `Clock` — which is hidden from accessibility and never used as a label.
+private extension Text {
+    /// - Parameter key: a key in this extension's `Localizable.strings`.
+    /// - Returns: the same text, already in the operator's language, and free of
+    ///   the localisable segment attribute that cannot cross the process
+    ///   boundary.
+    static func translated(_ key: String) -> Text {
+        Text(verbatim: String.translated(key))
+    }
+}
+
+private extension String {
+    /// The words behind a key in this extension's `Localizable.strings`.
+    ///
+    /// Here as well as on `Text` because one label in this file is a *sentence*
+    /// rather than a single string -- `LiveActivityRow.spokenLabel` -- and a
+    /// sentence has to be assembled before SwiftUI sees it.
+    ///
+    /// - Parameter key: a key in this extension's `Localizable.strings`.
+    /// - Returns: the translation, or the key itself when there is none.
+    static func translated(_ key: String) -> String {
+        NSLocalizedString(key, bundle: .main, comment: "")
+    }
+}
+
+/// One row as VoiceOver reads it.
+private extension LiveActivityRow {
+    /// The operator's instruction, then what the number beside it is.
+    ///
+    /// The row is one element and this is its whole label, so the two parts are
+    /// joined here rather than by `.accessibilityElement(children: .combine)` --
+    /// see the note on `SessionRows`. A row whose instruction the app has not
+    /// read yet contributes nothing, and the label is then just the noun: a
+    /// duration announced with no noun is a number about nothing, which is what
+    /// `Localizable.strings` says about this key.
+    var spokenLabel: Text {
+        Text(verbatim: [prompt, String.translated("Running time")]
+            .filter { !$0.isEmpty }
+            .joined(separator: ", "))
+    }
+}
+
 /// The one Live Activity this app posts.
 struct DSHMizarLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
@@ -101,11 +219,18 @@ struct DSHMizarLiveActivityWidget: Widget {
 /// 1024-pixel app icon is larger than every one of them -- at which point the
 /// system may refuse to start the activity at all. The imageset is 32/64/96
 /// pixels, so nothing here can trip that.
+///
+/// `decorative`, not `Image("MizarIcon")`: an image found by name is labelled by
+/// SwiftUI with that name, resolved the localisable way, so the default label is
+/// a localised segment arriving by a route that is not a `Text` -- and a label
+/// merged into another element is the crash the note at the top of this file is
+/// about. `decorative` says there is no such label; the one below is the mark's
+/// only one.
 private struct Mark: View {
     var diameter: CGFloat
 
     var body: some View {
-        Image("MizarIcon")
+        Image(decorative: "MizarIcon")
             .resizable()
             .scaledToFit()
             .frame(width: diameter, height: diameter)
@@ -118,6 +243,11 @@ private struct Mark: View {
 /// The name is `verbatim`: it is the app's name on the App Store and on the
 /// Mac, not a phrase to be translated. An activity that reads 米扎尔 in one
 /// language and DSH-Mizar in another would be a different app's card.
+///
+/// One element with one set of words, assembled here rather than by
+/// `.accessibilityElement(children: .combine)`: see the note at the top of the
+/// file. The mark inside is decorative and says nothing; the words beside it say
+/// everything this row has to say.
 private struct TitleRow: View {
     var body: some View {
         HStack(spacing: 6) {
@@ -126,7 +256,32 @@ private struct TitleRow: View {
                 .font(.caption.weight(.semibold))
                 .lineLimit(1)
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: "DSH-Mizar"))
+    }
+}
+
+/// The system's ticking clock: drawn, and never handed to accessibility.
+///
+/// This is the one text in this file that SwiftUI resolves while drawing, so it
+/// is the one text that must not reach an accessibility node — its own or an
+/// element's, because a segment merged into a label is what throws when
+/// WidgetKit strips the attribute (see the note at the top of the file).
+/// `accessibilityHidden(true)` is why the clock is a view of its own instead of
+/// two lines inside `Headline`: it keeps the string the clock resolves to out of
+/// the accessibility tree, and whoever draws the clock says in words what it is
+/// (`Headline`, `SessionRows`), out of strings that are already plain.
+private struct Clock: View {
+    /// The instant the count starts at.
+    let since: Date
+
+    var body: some View {
+        Text(since, style: .timer)
+            // Monospaced digits so the text does not jitter sideways as the
+            // numbers change.
+            .font(.caption.monospacedDigit())
+            .lineLimit(1)
+            .accessibilityHidden(true)
     }
 }
 
@@ -140,12 +295,12 @@ private struct Headline: View {
     var body: some View {
         if let longest = state.rows.first {
             // The system ticks this. No update from the app, ever, for the
-            // seconds to move -- and monospaced digits so the text does not
-            // jitter sideways as the numbers change.
-            Text(longest.countingSince, style: .timer)
-                .font(.caption.monospacedDigit())
-                .lineLimit(1)
-                .accessibilityLabel(Text("Running time"))
+            // seconds to move.
+            Clock(since: longest.countingSince)
+                // The clock has no words that may cross the process boundary, so
+                // this element's words are these, and it is the element.
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text.translated("Running time"))
         } else {
             FinishedCheck()
         }
@@ -157,7 +312,11 @@ private struct FinishedCheck: View {
     var body: some View {
         Image(systemName: "checkmark.circle.fill")
             .foregroundStyle(.green)
-            .accessibilityLabel(Text("Every session has finished"))
+            // `translated`, not `Text("…")`: see the note at the top of this
+            // file. This is the one string that reaches the card only when
+            // everything has stopped, which is exactly when nobody is watching
+            // closely enough to report a crash.
+            .accessibilityLabel(Text.translated("Every session has finished"))
     }
 }
 
@@ -192,17 +351,40 @@ private struct SessionRows: View {
                     // true; the session id in the operator's place would be the
                     // app talking.
                     if !row.prompt.isEmpty {
-                        Text(row.prompt)
+                        // `verbatim` for the same reason the rest of this file
+                        // is: the instruction is the operator's words, not a key
+                        // to look up.
+                        Text(verbatim: row.prompt)
                             .font(.caption)
                             .lineLimit(1)
                     }
                     Spacer(minLength: 4)
-                    Text(row.countingSince, style: .timer)
-                        .font(.caption.monospacedDigit())
+                    Clock(since: row.countingSince)
                         .foregroundStyle(.white.opacity(0.72))
-                        .accessibilityLabel(Text("Running time"))
                 }
-                .accessibilityElement(children: .combine)
+                // One element for VoiceOver, but its words are put together here
+                // rather than by SwiftUI. `.combine` is the other way to get one
+                // element, and it is the one thing in this file that must not be
+                // used: it builds the element's label by merging the children's
+                // accessibility text, and the second child above is a `Clock` --
+                // a `Text(_:style:.timer)`, a *resolvable* segment, the same kind
+                // of attribute as the localisable one the note at the top of this
+                // file is about. The merged label then carries a segment range
+                // measured against the timer's own string, WidgetKit's archiver
+                // strips that attribute with `removeAttribute(_:range:)`, and
+                // Foundation throws `NSRangeException` -- out of
+                // `enumerateAttribute:inRange:options:usingBlock:`, past every
+                // catch, and into SIGABRT. A label assembled out of plain strings
+                // has no segment to strip.
+                //
+                // `.ignore` is what makes the label the whole element: the two
+                // `Text`s above stay exactly as they are on screen, and VoiceOver
+                // reads the one sentence below instead of their fragments. The
+                // clock is hidden from accessibility inside `Clock` as well, so
+                // there is no version of this element -- combined, ignored or
+                // read on its own -- that can carry the timer's string.
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(row.spokenLabel)
             }
         }
     }
@@ -222,10 +404,16 @@ private struct LiveActivityCard: View {
                 // means work that has just stopped, not an empty start.
                 HStack(spacing: 6) {
                     FinishedCheck()
-                    Text("Every session has finished")
+                    Text.translated("Every session has finished")
                         .font(.caption)
                     Spacer(minLength: 0)
                 }
+                // The check has that sentence as its label and the words beside
+                // it are the same sentence, so without this VoiceOver reads it
+                // twice. One element, one label, and both parts are already
+                // plain -- see the note at the top of the file.
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text.translated("Every session has finished"))
             } else {
                 SessionRows(state: state)
             }

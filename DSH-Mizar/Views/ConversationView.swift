@@ -248,12 +248,19 @@ private struct TurnSummary: View {
     /// Mac for the time every second would be a screen that stopped telling the
     /// time whenever the link hiccuped, which on a phone is constant.
     @ViewBuilder private var headline: some View {
-        if turn.isRunning, let beganAt = turn.beganAt {
+        if turn.isRunning, turn.beganAt != nil {
             TimelineView(.periodic(from: .now, by: 1)) { context in
+                // Through `elapsed(asOf:)` rather than by subtracting two dates
+                // here. The turn's start came off the host's clock and
+                // `context.date` is the phone's, so a Mac running a few seconds
+                // ahead -- a clock that drifted, a phone that has not synced --
+                // put the start in the future and the row read "DeepSeeking for
+                // -3 s". The kit's rule for exactly this is to clamp at zero.
+                let running = turn.elapsed(asOf: context.date) ?? 0
                 Text(
                     String(
                         format: String(localized: "DeepSeeking for %@"),
-                        Self.spell(context.date.timeIntervalSince(beganAt)),
+                        Self.spell(running),
                     ),
                 )
                 .font(.caption.weight(.medium))

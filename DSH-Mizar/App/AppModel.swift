@@ -275,8 +275,6 @@ final class AppModel {
     private(set) var modelCatalog: ModelCatalog?
     /// The permission presets this host offers.
     private(set) var permissionCatalog: PermissionCatalog?
-    /// The idempotency key for the prompt currently being submitted.
-    private var lastRequestId: String?
     /// The poll that watches for pending interactions.
     private var interactionPoll: Task<Void, Never>?
     /// The task consuming host-pushed events.
@@ -763,7 +761,6 @@ final class AppModel {
         ])
         do {
             let result = try await loggedCall("session.prompt", payload: payload, on: connection, as: PromptResult.self)
-            if result.accepted { lastRequestId = result.requestId }
             return result.accepted
         } catch {
             phase = .failed(Self.describe(error, authority: host?.authority))
@@ -1083,6 +1080,10 @@ final class AppModel {
             logRequest(method, payload: payload, since: started, error: nil)
             return result
         } catch {
+            guard Self.isAboutTheConnection(error) else {
+                logRequest(method, payload: payload, since: started, error: error)
+                throw error
+            }
             guard await reconnect() else {
                 logRequest(method, payload: payload, since: started, error: error)
                 throw error
@@ -1096,6 +1097,44 @@ final class AppModel {
                 logRequest(method, payload: payload, since: started, error: error)
                 throw error
             }
+        }
+    }
+
+    /// Whether a failure is one a fresh socket could fix.
+    ///
+    /// The distinction this draws is between a socket that is not working and an
+    /// *answer* the host chose to send over one that is. Every failure used to
+    /// reconnect, so a `NOT_IMPLEMENTED` from an older host tore the connection
+    /// down on every session-list refresh -- which the context figure noticed
+    /// first, and which is why `refreshWorkspaces` was taken off this path by
+    /// hand -- and a `WRITER_HELD` or a `RESPONSE_TOO_LARGE` did the same to a
+    /// request whose answer would be identical over a brand-new socket. A
+    /// reconnect is a WebSocket, a handshake and a re-subscription: real seconds
+    /// on a phone, spent on nothing.
+    ///
+    /// A cancelled read is the other half. The screen that asked has gone away,
+    /// and the app used to answer that by rebuilding the connection underneath
+    /// whatever was still on screen.
+    ///
+    /// - Parameter error: what the call threw.
+    /// - Returns: whether to reconnect and try the request again.
+    private static func isAboutTheConnection(_ error: any Error) -> Bool {
+        if error is CancellationError { return false }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return false }
+        guard let mizar = error as? MizarError else {
+            // A transport failure or a decode failure: something about this
+            // socket or this frame, and worth one fresh attempt.
+            return true
+        }
+        // The host saying "this one might work in a moment".
+        if mizar.retryable { return true }
+        switch mizar.known {
+        // Codes that say the socket itself is finished with this device.
+        case .unauthenticated, .deviceRevoked, .pairingRequired,
+             .malformedFrame, .protocolVersionMismatch:
+            return true
+        default:
+            return false
         }
     }
 
@@ -1296,14 +1335,9 @@ final class AppModel {
         guard cached.hasMore else { return 0 }
 
         do {
-            let result = try await call(
-                "session.messages",
-                payload: .object([
-                    "sessionId": .string(sessionId),
-                    "maxMessages": .number(200),
-                    "beforeSeq": .number(Double(before)),
-                ]),
-                as: SessionMessagesResult.self,
+            let result = try await messages(
+                sessionId: sessionId,
+                beforeSeq: before,
             )
             let fresh = result.conversationItems()
             let reached = result.oldestSeq
@@ -1438,16 +1472,7 @@ final class AppModel {
     @discardableResult
     func syncConversation(for sessionId: String) async -> [ConversationItem] {
         do {
-            let result = try await call(
-                "session.messages",
-                payload: .object([
-                    "sessionId": .string(sessionId),
-                    // The host trims the page to what the transport can carry;
-                    // asking for more only costs a bigger request.
-                    "maxMessages": .number(200),
-                ]),
-                as: SessionMessagesResult.self,
-            )
+            let result = try await messages(sessionId: sessionId)
             let fresh = result.conversationItems()
             let freshTurns = result.conversationTurns()
             let older = result.oldestSeq
@@ -1539,22 +1564,9 @@ final class AppModel {
     /// - Parameter sessionId: the session to read.
     /// - Returns: the items, oldest first.
     func conversation(for sessionId: String) async -> [ConversationItem] {
-        guard let connection else { return [] }
+        guard connection != nil else { return [] }
         do {
-            let payload = JSONValue.object([
-                "sessionId": .string(sessionId),
-                // Enough to cover a working session's history. It counts
-                // messages, not records, and a single prompt emits about nine
-                // records -- so the response is large and the alternative is an
-                // app that only ever shows the last few exchanges.
-                "maxMessages": .number(200),
-            ])
-            let result = try await loggedCall(
-                "session.messages",
-                payload: payload,
-                on: connection,
-                as: SessionMessagesResult.self,
-            )
+            let result = try await messages(sessionId: sessionId)
             lastError = nil
             return result.conversationItems()
         } catch {
@@ -1565,6 +1577,52 @@ final class AppModel {
             let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
             if !message.isEmpty { lastError = message }
             return []
+        }
+    }
+
+    /// Read one page of a session's log.
+    ///
+    /// `RESPONSE_TOO_LARGE` is the one host failure whose answer is a *different*
+    /// request rather than a retry of the same one: the page was real and the
+    /// transport could not carry it, so re-sending it asks for the same refusal.
+    /// A quarter of the size usually fits, and the alternative -- reporting
+    /// failure -- puts nothing on the screen for a conversation that exists and
+    /// that the host is willing to summarise.
+    ///
+    /// - Parameters:
+    ///   - sessionId: the session to read.
+    ///   - beforeSeq: the log position to page back from, when paging.
+    ///   - maxMessages: how much to ask for first.
+    /// - Returns: the page.
+    /// - Throws: the host's failure, when asking for less did not help either.
+    private func messages(
+        sessionId: String,
+        beforeSeq: Int? = nil,
+        maxMessages: Int = 200,
+    ) async throws -> SessionMessagesResult {
+        var ask = maxMessages
+        while true {
+            var fields: [String: JSONValue] = [
+                "sessionId": .string(sessionId),
+                // The host trims the page to what the transport can carry;
+                // asking for more only costs a bigger request.
+                "maxMessages": .number(Double(ask)),
+            ]
+            if let beforeSeq { fields["beforeSeq"] = .number(Double(beforeSeq)) }
+            do {
+                return try await call(
+                    "session.messages",
+                    payload: .object(fields),
+                    as: SessionMessagesResult.self,
+                )
+            } catch let error as MizarError {
+                guard let smaller = error.smallerPage(than: ask) else { throw error }
+                log.add(
+                    .request,
+                    "session \(sessionId): the answer was too large for \(ask) messages; asking for \(smaller)",
+                )
+                ask = smaller
+            }
         }
     }
 
@@ -1914,6 +1972,11 @@ final class AppModel {
                 token: host.deviceToken,
                 appVersion: Self.appVersion,
                 deviceModel: Self.deviceModel,
+                // The handshake is given the same leash as the dial. A socket
+                // that opens and then says nothing is otherwise a screen stuck
+                // on "Connecting…" for as long as the process lives, and this
+                // route has already been given its chance by then.
+                handshakeTimeout: .seconds(timeout),
             )
         case .relay(let baseURL):
             configuration = .init(
@@ -1922,6 +1985,7 @@ final class AppModel {
                 appVersion: Self.appVersion,
                 deviceModel: Self.deviceModel,
                 baseURL: baseURL,
+                handshakeTimeout: .seconds(timeout),
             )
         }
 

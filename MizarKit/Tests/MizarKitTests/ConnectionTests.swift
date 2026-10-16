@@ -298,6 +298,92 @@ struct ConnectionTests {
         #expect(await connection.currentState.welcome != nil)
         #expect(await flaky.attempts == 2)
     }
+    @Test("fails a handshake the host never finishes")
+    func handshakeDeadline() async throws {
+        // A host that completes the upgrade, accepts `hello`, and then says
+        // nothing at all. There is no read to time out -- `receive()` is simply
+        // never answered -- so without a deadline of its own `connect()` waits
+        // for the life of the process and the screen behind it reads
+        // "Connecting…" with nothing that can ever change it.
+        let transport = StubTransport(responder: { _ in [] })
+        let connection = MizarConnection(
+            configuration: .init(
+                authority: "127.0.0.1:19390",
+                token: "mz_test",
+                requestTimeout: .seconds(5),
+                handshakeTimeout: .milliseconds(150),
+            ),
+            makeTransport: { transport },
+        )
+
+        let outcome = ConnectOutcome()
+        let attempt = Task {
+            do {
+                let welcome = try await connection.connect()
+                await outcome.settled(.success(welcome))
+            } catch {
+                await outcome.settled(.failure(error))
+            }
+        }
+        // Polled rather than awaited, because the failure this test exists for is
+        // `connect()` never returning: awaiting it directly would hang the suite
+        // instead of reporting it.
+        let didSettle = await eventually(timeout: 3) { await outcome.isSettled }
+        attempt.cancel()
+        #expect(didSettle, "connect() never settled: a host that never says hello hangs the app")
+
+        guard case .failure(let error) = await outcome.result else {
+            Issue.record("expected the handshake to fail")
+            return
+        }
+        #expect((error as? MizarError)?.code == "REQUEST_TIMEOUT")
+        // And the socket is closed rather than left half-open behind a screen
+        // that has already moved on to the next route.
+        #expect(await transport.didClose, "the socket was left open after the handshake gave up")
+    }
+
+    @Test("ends an event stream asked for after the socket closed")
+    func eventsAfterCloseFinish() async throws {
+        let transport = StubTransport(responder: responder())
+        let connection = makeConnection(transport: transport)
+        _ = try await connection.connect()
+        await transport.pushClose()
+        // Let the read loop notice before subscribing, which is the race the
+        // listener in the app actually runs: `startInteractionPoll` subscribes
+        // from a `Task` started after `connect()` returns.
+        _ = await eventually { await connection.currentState.welcome == nil }
+
+        // A stream registered after the close had nothing left to finish it, so
+        // its consumer waited for the life of the process.
+        let stream = await connection.events()
+        let ended = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                var iterator = stream.makeAsyncIterator()
+                return await iterator.next() == nil
+            }
+            group.addTask {
+                try? await Task.sleep(for: .milliseconds(400))
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+        #expect(ended, "an event stream registered after the close never finished")
+    }
+}
+
+// MARK: - Test doubles
+
+/// Where a connect attempt's outcome lands, for a test that must not await it.
+actor ConnectOutcome {
+    private(set) var isSettled = false
+    private(set) var result: Result<WelcomeFrame, any Error>?
+
+    func settled(_ outcome: Result<WelcomeFrame, any Error>) {
+        isSettled = true
+        result = outcome
+    }
 }
 
 /// A transport that refuses its first dials, for the retry test.

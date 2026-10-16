@@ -50,6 +50,13 @@ public enum MizarErrorCode: String, Sendable, CaseIterable {
     case remoteError = "REMOTE_ERROR"
     case notImplemented = "NOT_IMPLEMENTED"
     case internalError = "INTERNAL"
+    /// The answer exists but is too large for the transport to carry.
+    ///
+    /// Its own code because it is neither a fault in the request nor a bug in
+    /// the host: the answer is real and the socket cannot deliver it. Saying so
+    /// is what lets the client ask for less instead of re-sending the same
+    /// request, which would produce the same answer.
+    case responseTooLarge = "RESPONSE_TOO_LARGE"
 }
 
 /// A failure reported by the host.
@@ -75,6 +82,27 @@ public struct MizarError: Error, Sendable, Equatable {
     /// Whether reconnecting with a fresh pairing is the only way forward.
     public var requiresRepairing: Bool {
         known == .unauthenticated || known == .deviceRevoked
+    }
+
+    /// Whether the host refused the answer because it will not fit the socket.
+    public var isResponseTooLarge: Bool { known == .responseTooLarge }
+
+    /// A smaller page to ask for, when the host said the answer was too large.
+    ///
+    /// The one host failure whose advice is "ask for less" rather than "try
+    /// again": the request was fine and the answer was real, so sending it
+    /// unchanged gets the same refusal. A quarter of what failed, and never
+    /// below `floor` -- a page already at the floor is not asked for again at
+    /// all, which is what stops a caller that keeps being refused from looping.
+    ///
+    /// - Parameters:
+    ///   - requested: what the failed request asked for.
+    ///   - floor: the smallest page worth asking for.
+    /// - Returns: the smaller page, or `nil` when there is nothing left to give.
+    public func smallerPage(than requested: Int, floor: Int = 25) -> Int? {
+        guard isResponseTooLarge else { return nil }
+        let next = max(floor, requested / 4)
+        return next < requested ? next : nil
     }
 }
 

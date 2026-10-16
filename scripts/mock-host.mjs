@@ -77,6 +77,45 @@ let failMethod = null
  */
 let statsVariant = 'full'
 
+/**
+ * A clock offset, in milliseconds, applied to every record the mock sends.
+ *
+ * The host's clock and the phone's are two clocks, and the app does arithmetic
+ * across them: a running turn's start comes off the host, `now` off the phone.
+ * A Mac whose clock is ahead is the case that produced a negative duration on
+ * screen, and it cannot be reproduced by a fixture whose times are all the
+ * phone's. Set by `/reset?skew=NNN`.
+ */
+let clockSkewMs = 0
+
+/**
+ * The largest `maxMessages` the mock will answer, when a test sets one.
+ *
+ * The host refuses an answer it cannot deliver with `RESPONSE_TOO_LARGE` rather
+ * than sending it and closing the socket, and the client's answer to that is to
+ * ask for less. `Infinity` unless `/reset?pageLimit=NNN` says otherwise.
+ */
+let pageLimit = Infinity
+
+/**
+ * Whether the mock's main session reports itself as running.
+ *
+ * The Live Activity has two states, and the finished one -- a check, and the
+ * words "every session has finished" -- is only ever reached by *updating* an
+ * activity that was started while something was running. Flipping this at
+ * runtime is the only way to get there without waiting for an agent to stop.
+ */
+let sessionRunning = true
+
+/**
+ * How many WebSocket connections the mock has accepted since the last reset.
+ *
+ * A reconnect is invisible from the app's screen -- the data looks the same
+ * afterwards -- so the only way to assert that a failure did *not* cost a fresh
+ * socket is to count them from the host's side.
+ */
+let connections = 0
+
 /** A pending approval, shaped like the one the bridge builds. */
 const APPROVAL = {
   requestId: 'a1b2c3d4-0000-4000-8000-000000000001',
@@ -135,6 +174,87 @@ const ORPHANED_SESSION = {
   agentAvailable: false,
   parentSessionId: null,
   origin: null,
+}
+
+/**
+ * The second session's conversation, which says different things.
+ *
+ * One view draws every session, so every value it holds has to belong to the
+ * session it was filled from -- and a fixture where both sessions answer with
+ * the same page cannot tell "the tag works" from "the tag is ignored", because
+ * the screen looks right either way. This one is deliberately *unlike* the
+ * other: its own prompt and answer, and `hasMore: true` on the newest page so
+ * that "can older history still be asked for" is state that differs between the
+ * two sessions too.
+ *
+ * - Parameter beforeSeq: the position the client is paging back from, or `null`
+ *   for the newest page.
+ * - Returns: one page, in the shape `session.messages` answers with.
+ */
+function orphanMessages(beforeSeq) {
+  const now = Date.now()
+  // Positions descend as the pages get older, so the client's `oldestSeq`
+  // arithmetic -- and its decision to stop -- sees what a real log looks like.
+  let counter = beforeSeq === null ? 900 : 780
+  const record = (type, data) => {
+    counter += 1
+    return {
+      type: 'event',
+      event: { type, seq: counter, time: now + clockSkewMs - (950 - counter) * 1000, data },
+    }
+  }
+  if (beforeSeq !== null) {
+    // The page before the one the phone already has. One finished turn, and
+    // nothing older behind it.
+    return {
+      sessionId: ORPHANED_SESSION.sessionId,
+      asOfSeq: 790,
+      hasMore: false,
+      records: [
+        record('turn/start', { turn: 1 }),
+        record('step/start', { turn: 1, step: 1 }),
+        record('user/message', {
+          content: [{ type: 'text', text: 'Older history from the other session.' }],
+          source: { kind: 'user' },
+          role: 'user',
+          id: 'orphan-m1',
+        }),
+        record('assistant/message', {
+          turn: 1,
+          step: 1,
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Answered a long time ago.' }],
+          },
+        }),
+        record('turn/end', { turn: 1, reason: { kind: 'completed' } }),
+      ],
+    }
+  }
+  return {
+    sessionId: ORPHANED_SESSION.sessionId,
+    asOfSeq: 910,
+    hasMore: true,
+    records: [
+      record('turn/start', { turn: 2 }),
+      record('step/start', { turn: 2, step: 1 }),
+      record('user/message', {
+        content: [{ type: 'text', text: 'A prompt from the other session.' }],
+        source: { kind: 'user' },
+        role: 'user',
+        id: 'orphan-m2',
+      }),
+      record('assistant/message', {
+        turn: 2,
+        step: 1,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'A different session, a different answer.' }],
+        },
+      }),
+      record('turn/end', { turn: 2, reason: { kind: 'completed' } }),
+    ],
+  }
 }
 
 const SESSION = {
@@ -206,7 +326,12 @@ function answer(frame) {
       // Two sessions, one of them in a directory `workspace.list` does not
       // mention, so a test can tell "filtered by the host's workspace list"
       // apart from "grouped by working directory".
-      return { v: 1, type: 'ok', id, result: { items: [SESSION, ORPHANED_SESSION] } }
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: { items: [{ ...SESSION, running: sessionRunning }, ORPHANED_SESSION] },
+      }
     case 'interactions.pending':
       return {
         v: 1,
@@ -215,6 +340,29 @@ function answer(frame) {
         result: withPending ? { approvals: [APPROVAL], questions: [QUESTION] } : { approvals: [], questions: [] },
       }
     case 'session.stats':
+      // A frame per session, because the app draws one session at a time out of
+      // one view: a title that is the same for both cannot show whether the
+      // figures on screen belong to the session they were read for.
+      if (frame.payload?.sessionId === ORPHANED_SESSION.sessionId) {
+        return {
+          v: 1,
+          type: 'ok',
+          id,
+          result: {
+            sessionId: ORPHANED_SESSION.sessionId,
+            asOfSeq: 910,
+            stats: {
+              title: 'Orphan session',
+              tokenUsage: null,
+              cacheHit: null,
+              context: null,
+              stats: null,
+              model: null,
+              permissionPreset: null,
+            },
+          },
+        }
+      }
       // The cold shape: the same frame with every projection that needs a warm
       // agent left empty. See `statsVariant`.
       if (statsVariant === 'cold') {
@@ -364,6 +512,28 @@ function answer(frame) {
       }
     }
     case 'session.messages':
+      // A requested page the transport cannot carry. The host's own answer to
+      // this is `RESPONSE_TOO_LARGE` rather than a truncated page or a closed
+      // socket, and the client's answer is to ask for less -- so a page limit
+      // is what makes that reachable in a test.
+      if (typeof frame.payload?.maxMessages === 'number' && frame.payload.maxMessages > pageLimit) {
+        return {
+          v: 1,
+          type: 'error',
+          code: 'RESPONSE_TOO_LARGE',
+          message: `the answer to ${id} is 1400KB, too large to deliver`,
+          retryable: false,
+          id,
+        }
+      }
+      if (frame.payload?.sessionId === ORPHANED_SESSION.sessionId) {
+        return {
+          v: 1,
+          type: 'ok',
+          id,
+          result: orphanMessages(frame.payload?.beforeSeq ?? null),
+        }
+      }
       // Record shapes copied from a real session log, in the shape the host now
       // sends: **summary-only history**. For each finished turn, the operator's
       // prompt, the turn's `turn/start`, its `turn/end`, one `step/start` per
@@ -409,7 +579,12 @@ function answer(frame) {
         counter += 1
         return {
           type: 'event',
-          event: { type, seq: counter, time: now - (20 - counter) * 1000, data },
+          event: {
+            type,
+            seq: counter,
+            time: now + clockSkewMs - (20 - counter) * 1000,
+            data,
+          },
         }
       }
       return {
@@ -565,6 +740,22 @@ function answer(frame) {
 }
 
 const server = createServer((request, response) => {
+  if (request.url?.startsWith('/connections')) {
+    // How many sockets have been opened since the last reset. A reconnect is
+    // invisible from the app's side -- the data looks the same afterwards -- so
+    // this is the only way a test can say that a failure did *not* cost one.
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ connections }))
+    return
+  }
+  if (request.url?.startsWith('/session')) {
+    // Whether the session in the fixture is running, from now on. See
+    // `sessionRunning`.
+    sessionRunning = !(request.url ?? '').includes('running=0')
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ ok: true, sessionRunning }))
+    return
+  }
   if (request.url?.startsWith('/offline')) {
     offline = (request.url ?? '').includes('on=1')
     response.writeHead(200, { 'content-type': 'application/json' })
@@ -605,6 +796,19 @@ const server = createServer((request, response) => {
     sentPrompts.length = 0
     failMethod = null
     statsVariant = 'full'
+    // `?skew=NNN` moves the host's clock ahead of the phone's, which is what a
+    // running turn's negative duration came from. `?pageLimit=NNN` makes the
+    // host refuse a page it cannot carry.
+    const skew = /skew=(\d+)/.exec(request.url ?? '')
+    clockSkewMs = skew === null ? 0 : Number(skew[1])
+    const limit = /pageLimit=(\d+)/.exec(request.url ?? '')
+    pageLimit = limit === null ? Infinity : Number(limit[1])
+    connections = 0
+    // `?running=0` reports the fixture's session as stopped, which is how a test
+    // avoids posting a Live Activity at all -- the widget extension is a separate
+    // process, and a suite that has to draw one is a suite that fails for reasons
+    // that have nothing to do with what it is testing.
+    sessionRunning = !(request.url ?? '').includes('running=0')
     // `?pending=0` takes the two interaction cards off the screen, for a test
     // that is about what is underneath them. The default is to offer them.
     withPending = !(request.url ?? '').includes('pending=0')
@@ -653,6 +857,7 @@ const server = createServer((request, response) => {
 
 const wss = new WebSocketServer({ server, path: '/mizar/v1/ws' })
 wss.on('connection', (socket) => {
+  connections += 1
   if (offline) {
     // Closed immediately rather than left hanging: a socket that opens and then
     // says nothing is what a network failure looks like from the app's side, and
