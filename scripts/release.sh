@@ -10,7 +10,7 @@
 #   scripts/release.sh open      open the archive in Organizer, ready to upload
 #   scripts/release.sh bump      show the current version and build number
 #
-# Output: ${MIZAR_RELEASE_DIR:-../../release/iOS}/DSH-Mizar-<version>.ipa
+# Output: ${MIZAR_RELEASE_DIR:-../release/iOS}/DSH-Mizar-<version>.ipa
 #         the intermediate .xcarchive and the raw export stay under .devcache/
 #
 # Signing needs a paid Apple Developer account with an "Apple Distribution"
@@ -31,7 +31,7 @@ EXPORT_OPTIONS="$ROOT/ExportOptions.plist"
 
 # Where the finished package goes. The release folder sits beside the three
 # repositories, which is why this is not inside the repository itself.
-OUT_DIR="${MIZAR_RELEASE_DIR:-$ROOT/../../release/iOS}"
+OUT_DIR="${MIZAR_RELEASE_DIR:-$ROOT/../release/iOS}"
 
 # Intermediates stay hidden: nobody opens a .xcarchive by hand here, and the
 # package that matters is the .ipa in the release folder.
