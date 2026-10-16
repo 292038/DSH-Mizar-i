@@ -90,6 +90,7 @@ scripts/release.sh upload     # 直接传到 App Store Connect（TestFlight）
 |---|---|
 | `DSH-Mizar/` | App 本体：视图、AppModel、权限、推送 |
 | `MizarKit/` | 协议层（连接、帧、会话模型、缓存），`swift test` 跑的就是它 |
+| `DSH-Mizar-LiveActivity/` | Widget Extension：实时活动的灵动岛和锁定屏幕。图片只在它自己的资源目录里找得到 |
 | `DSH-MizarUITests/` | XCUITest，对着 `scripts/mock-host.mjs` 跑 |
 | `protocol/fixtures/` | 从真主机录下来的帧（golden frames），两个语言共用 |
 | `scripts/` | 编译、测试、假主机、打包 |

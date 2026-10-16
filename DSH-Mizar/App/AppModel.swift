@@ -53,6 +53,16 @@ final class AppModel {
     /// The sessions the host lists, newest activity first.
     private(set) var sessions: [SessionRow] = []
 
+    /// Whether `sessions` is a list somebody actually gave.
+    ///
+    /// The difference between "the Mac says nothing is running" and "this app has
+    /// not asked yet", which is invisible in the array itself and decides whether
+    /// the Live Activity may take a check down or start one. True once a stored
+    /// index has been loaded or a `session.list` has come back, and false again
+    /// when the machine is disconnected, because then the list is nobody's
+    /// answer.
+    private(set) var sessionsAreKnown = false
+
     /// The last thing that went wrong without being fatal.
     ///
     /// Separate from `phase`, and that separation is the fix for a real bug: a
@@ -364,7 +374,11 @@ final class AppModel {
     /// feature off, which is read at the moment of acting rather than remembered
     /// from when an activity started.
     func refreshLiveActivity() async {
-        await liveActivity.refresh(sessions: sessions, conversations: conversations)
+        await liveActivity.refresh(
+            sessions: sessions,
+            conversations: conversations,
+            sessionsAreKnown: sessionsAreKnown,
+        )
     }
 
     /// 实时活动 — whether the Live Activity may run.
@@ -398,6 +412,10 @@ final class AppModel {
             return
         }
         hasStoredIndex = !stored.sessions.isEmpty
+        // The phone knows what the Mac last said, even when what it said was
+        // "nothing". That is a fact the Live Activity may act on; an array that
+        // was never filled is not.
+        sessionsAreKnown = true
         log.add(
             .cache,
             "index: read \(stored.sessions.count) sessions, \(stored.titles.count) titles"
@@ -550,6 +568,7 @@ final class AppModel {
         connection = nil
         welcome = nil
         sessions = []
+        sessionsAreKnown = false
         selectedSessionId = nil
         statsError = nil
         conversationError = nil
@@ -983,6 +1002,7 @@ final class AppModel {
         do {
             let result = try await call("session.list", as: SessionListResult.self)
             sessions = result.items
+            sessionsAreKnown = true
             await refreshWorkspaces()
             lastError = nil
             // Written after the workspaces, so the two halves of one answer land
@@ -1646,7 +1666,11 @@ final class AppModel {
     func setPresence(foreground: Bool) async {
         self.foreground = foreground
         if foreground {
-            await liveActivity.appOpened(sessions: sessions, conversations: conversations)
+            await liveActivity.appOpened(
+                sessions: sessions,
+                conversations: conversations,
+                sessionsAreKnown: sessionsAreKnown,
+            )
         }
         await sendPresence()
     }

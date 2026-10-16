@@ -109,9 +109,19 @@ final class LiveActivityController {
     /// - Parameters:
     ///   - sessions: the session list as the host last gave it.
     ///   - conversations: where the prompts and the running turns are kept.
-    func appOpened(sessions: [SessionRow], conversations: any ConversationCache) async {
+    ///   - sessionsAreKnown: whether that list is something the host said, rather
+    ///     than the empty array a model has before its first read.
+    func appOpened(
+        sessions: [SessionRow],
+        conversations: any ConversationCache,
+        sessionsAreKnown: Bool,
+    ) async {
         appOpened()
-        await refresh(sessions: sessions, conversations: conversations)
+        await refresh(
+            sessions: sessions,
+            conversations: conversations,
+            sessionsAreKnown: sessionsAreKnown,
+        )
     }
 
     /// Read what the app knows, decide, and make the activity match.
@@ -125,12 +135,26 @@ final class LiveActivityController {
     /// - Parameters:
     ///   - sessions: the session list as the host last gave it.
     ///   - conversations: where the prompts and the running turns are kept.
+    ///   - sessionsAreKnown: whether that list is something the host said, rather
+    ///     than the empty array a model has before its first read.
     ///   - now: the instant to measure the clocks to.
     func refresh(
         sessions: [SessionRow],
         conversations: any ConversationCache,
+        sessionsAreKnown: Bool,
         now: Date = Date(),
     ) async {
+        guard sessionsAreKnown else {
+            // Nothing has been read yet: the list is empty because the app has
+            // just started, not because the Mac is idle, and the decision layer
+            // cannot tell those apart from a list. Acting on the second one is not
+            // hypothetical -- measured at launch, the foreground hook fires
+            // before the first `session.list` comes back, an empty list read as
+            // "everything finished and the app has been opened", and a running
+            // activity was taken down and started again a fifth of a second
+            // later.
+            return
+        }
         let running = await runningSessions(in: sessions, conversations: conversations, now: now)
         let decision = LiveActivityDecision.make(
             sessions: running,
@@ -404,9 +428,11 @@ private enum ActivityCalls {
 
     /// What a phase contains, without the prompts.
     ///
-    /// The rows are described by identity: the log is exportable and the
-    /// operator's instructions are theirs, while "which session was on the island
-    /// and how many rows were there" is the part that explains a wrong card.
+    /// The rows are described by session id, whole: the log is exportable and the
+    /// operator's instructions are deliberately left out of it, while "which
+    /// session was on the island and how many rows were there" is the part that
+    /// explains a wrong card. Ids are already all over the request log, so this
+    /// says nothing the export did not already contain.
     ///
     /// - Parameter phase: the phase.
     /// - Returns: one line.
@@ -415,7 +441,7 @@ private enum ActivityCalls {
         case .finished:
             return "nothing running"
         case .running(let rows):
-            let described = rows.map { String($0.id.prefix(8)) }.joined(separator: ", ")
+            let described = rows.map(\.id).joined(separator: ", ")
             return "\(rows.count) row(s): \(described)"
         }
     }
