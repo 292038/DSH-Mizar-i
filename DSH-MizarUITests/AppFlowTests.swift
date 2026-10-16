@@ -78,6 +78,40 @@ final class AppFlowTests: XCTestCase {
         _ = done.wait(timeout: .now() + 6)
     }
 
+    /// Make the mock host fail every answer to one method, from now on.
+    ///
+    /// For the reads a screen makes more than once: what a *later* failure does
+    /// to figures an earlier read already drew. Cleared by the next `/reset`,
+    /// like the rest of the mock's state.
+    ///
+    /// - Parameter method: the wire method to refuse.
+    private static func failMockHost(_ method: String) {
+        guard let url = URL(string: "http://127.0.0.1:19395/fail?method=\(method)") else { return }
+        let done = DispatchSemaphore(value: 0)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { _, _, _ in done.signal() }.resume()
+        _ = done.wait(timeout: .now() + 6)
+    }
+
+    /// Make the mock host answer `session.stats` like a cold session.
+    ///
+    /// Not a failure: the same frame with the projections that need a warm agent
+    /// left empty, which is what a phone gets for a session nothing has run in
+    /// yet. A screen that replaces what it has with it loses the title, the
+    /// model and the context figure.
+    ///
+    /// - Parameter cold: whether to answer that way.
+    private static func setMockStatsCold(_ cold: Bool) {
+        let variant = cold ? "cold" : "full"
+        guard let url = URL(string: "http://127.0.0.1:19395/stats?variant=\(variant)") else { return }
+        let done = DispatchSemaphore(value: 0)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { _, _, _ in done.signal() }.resume()
+        _ = done.wait(timeout: .now() + 6)
+    }
+
     /// Stall every answer the mock host gives, from now on.
     ///
     /// Called mid-test rather than at launch: the launch itself is a download,
@@ -507,6 +541,85 @@ final class AppFlowTests: XCTestCase {
             return true
         }
         return app.staticTexts.allElementsBoundByIndex.contains { $0.label.contains(path) }
+    }
+
+    /// The figures the screen already has are not erased by a read that fails.
+    ///
+    /// Reported from the phone: "刚点进去一个会话，然后该会话的标题、正在使用的
+    /// 模型、上下文用量显示全部消失", repaired by leaving the session and coming
+    /// back or by leaving the app and coming back -- both of which are another
+    /// read. What made them vanish was the *second* read of the same screen: the
+    /// cache drew the figures, and the host's answer was assigned over them
+    /// whether it had anything in it or not.
+    func testTheFiguresSurviveAReadThatFails() {
+        let app = launch(pending: false)
+        let model = app.buttons["composer.model"]
+        let context = app.buttons["composer.context"]
+        expect(model, "the model is not shown above the composer")
+        XCTAssertTrue(
+            labelLands(context, containing: "35"),
+            "the context figure never loaded: \(context.label)",
+        )
+        XCTAssertTrue(
+            labelLands(model, containing: "deepseek-flash"),
+            "the model never loaded: \(model.label)",
+        )
+
+        // The host stops answering `session.stats`, the way a phone link does.
+        Self.failMockHost("session.stats")
+        // Away and back, which is what the operator does to repair it and what
+        // makes this screen re-read everything.
+        XCUIDevice.shared.press(.home)
+        app.activate()
+
+        XCTAssertTrue(
+            labelLands(context, containing: "35"),
+            "the context figure was erased by a failed read: \(context.label)",
+        )
+        XCTAssertTrue(
+            labelLands(model, containing: "deepseek-flash"),
+            "the model was erased by a failed read: \(model.label)",
+        )
+        XCTAssertEqual(
+            app.navigationBars["Mock session"].exists,
+            true,
+            "the session's title was erased by a failed read",
+        )
+    }
+
+    /// An answer that carries less than the last one does not take anything away.
+    ///
+    /// The other half of the same report, and the likelier half: the host
+    /// answers every field from its own projection, so a session whose agent is
+    /// cold answers with a token meter and no title, no model and no context
+    /// pressure. That reply is delivered successfully, which is exactly why the
+    /// screen has to merge it rather than take it as the truth.
+    func testTheFiguresSurviveAColdAnswer() {
+        let app = launch(pending: false)
+        let model = app.buttons["composer.model"]
+        let context = app.buttons["composer.context"]
+        expect(model, "the model is not shown above the composer")
+        XCTAssertTrue(labelLands(context, containing: "35"), "the context figure never loaded")
+        XCTAssertEqual(app.navigationBars["Mock session"].exists, true, "the title never loaded")
+
+        // The session goes cold: the host still answers, with less.
+        Self.setMockStatsCold(true)
+        XCUIDevice.shared.press(.home)
+        app.activate()
+
+        XCTAssertTrue(
+            labelLands(context, containing: "35"),
+            "a colder answer took the context figure away: \(context.label)",
+        )
+        XCTAssertTrue(
+            labelLands(model, containing: "deepseek-flash"),
+            "a colder answer took the model away: \(model.label)",
+        )
+        XCTAssertEqual(
+            app.navigationBars["Mock session"].exists,
+            true,
+            "a colder answer took the session's title away",
+        )
     }
 
     /// The three figures above the field, each of which is a control.

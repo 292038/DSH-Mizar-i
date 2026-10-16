@@ -163,6 +163,13 @@ public struct SessionStatsResult: Decodable, Sendable, Equatable {
 }
 
 /// Everything the usage screen renders.
+///
+/// Every field is optional because the host reads each of them from a separate
+/// projection, and a projection answers with what it has *right now*: a session
+/// whose agent is cold has no model selection and no context pressure, and a
+/// title only exists once a model has read the conversation. A frame carrying
+/// less than the last one is therefore the ordinary case rather than a failure
+/// — which is why one is merged into the last rather than replacing it.
 public struct SessionStatsFrame: Codable, Sendable, Equatable {
     public let tokenUsage: TokenUsage?
     public let cacheHit: CacheHit?
@@ -171,6 +178,85 @@ public struct SessionStatsFrame: Codable, Sendable, Equatable {
     public let model: ModelSelectionPair?
     public let permissionPreset: String?
     public let title: String?
+
+    /// This frame's fields, over another's.
+    ///
+    /// A field the newer frame does not carry keeps the value it had. That is
+    /// the rule the whole app is built on — a screen that has an answer and
+    /// loses it is worse than one that never had it — applied to the frame
+    /// rather than to the screen.
+    ///
+    /// Reported from the phone as the figures *vanishing* on the way into a
+    /// session: "刚点进去一个会话，然后该会话的标题、正在使用的模型、上下文用量
+    /// 显示全部消失，解决办法是尝试重新进入会话". The stored frame drew them and
+    /// the host's answer replaced it a moment later — and an answer from a cold
+    /// session is a frame with no title, no model and no context pressure,
+    /// because none of those projections has anything to say until the agent has
+    /// run. Merging is what makes the second read an improvement on the first
+    /// rather than a coin toss.
+    ///
+    /// Nested values are taken whole rather than merged field by field: a
+    /// projection the host did answer with is a better answer than a mixture of
+    /// two reads taken at different moments, and `context.percent` is computed
+    /// from the tokens beside it.
+    ///
+    /// - Parameter previous: the last frame the phone had, or `nil`.
+    /// - Returns: the frame to keep.
+    public func merging(_ previous: SessionStatsFrame?) -> SessionStatsFrame {
+        guard let previous else { return self }
+        return SessionStatsFrame(
+            tokenUsage: tokenUsage ?? previous.tokenUsage,
+            cacheHit: cacheHit ?? previous.cacheHit,
+            context: context ?? previous.context,
+            stats: stats ?? previous.stats,
+            model: model ?? previous.model,
+            // The two that are names rather than numbers: an empty one is not a
+            // name, and it is what a projection answers with while it is still
+            // working something out. Showing it would blank the navigation
+            // title, which is the same loss by another route.
+            permissionPreset: Self.named(permissionPreset, previous.permissionPreset),
+            title: Self.named(title, previous.title),
+        )
+    }
+
+    /// The newer of two names, treating an empty one as absent.
+    ///
+    /// - Parameters:
+    ///   - fresh: the name from the frame just read.
+    ///   - previous: the name from the frame before it.
+    /// - Returns: the name to keep.
+    private static func named(_ fresh: String?, _ previous: String?) -> String? {
+        guard let fresh, !fresh.isEmpty else { return previous }
+        return fresh
+    }
+
+    public init(
+        tokenUsage: TokenUsage? = nil,
+        cacheHit: CacheHit? = nil,
+        context: ContextPressure? = nil,
+        stats: Throughput? = nil,
+        model: ModelSelectionPair? = nil,
+        permissionPreset: String? = nil,
+        title: String? = nil,
+    ) {
+        self.tokenUsage = tokenUsage
+        self.cacheHit = cacheHit
+        self.context = context
+        self.stats = stats
+        self.model = model
+        self.permissionPreset = permissionPreset
+        self.title = title
+    }
+
+    /// Whether this frame has nothing to say.
+    ///
+    /// A session nobody has run yet answers with a frame shaped exactly like a
+    /// cold one, and "no answer" and "an empty answer" are different things to
+    /// the screen deciding what to draw.
+    public var isEmpty: Bool {
+        tokenUsage == nil && cacheHit == nil && context == nil && stats == nil
+            && model == nil && permissionPreset == nil && title == nil
+    }
 }
 
 /// Cumulative billed tokens over the whole durable log.

@@ -1204,15 +1204,25 @@ final class AppModel {
                 as: SessionStatsResult.self,
             )
             statsError = nil
-            if let frame = result.stats {
-                // Written down as well as returned. The figures above the
-                // composer are read from this, and a session screen that has to
-                // wait for the network before it can say which model is
-                // answering says nothing at all when the network does not come
-                // back -- which on a phone is the ordinary case.
-                await storeStats(frame, for: sessionId)
+            // Merged, not replaced, and returned merged. The host answers each
+            // field from its own projection, so a reply from a session whose
+            // agent is cold carries no title, no model and no context pressure
+            // -- and assigning that over the frame the phone already had is what
+            // took those three off the screen a moment after drawing them.
+            let known = await cachedStats(for: sessionId)
+            guard let frame = result.stats else {
+                // An answer with no frame at all. Same rule: it says nothing, so
+                // it changes nothing.
+                return known
             }
-            return result.stats
+            let merged = frame.merging(known)
+            // Written down as well as returned. The figures above the composer
+            // are read from this, and a session screen that has to wait for the
+            // network before it can say which model is answering says nothing at
+            // all when the network does not come back -- which on a phone is the
+            // ordinary case.
+            await storeStats(merged, for: sessionId)
+            return merged
         } catch {
             // Reported rather than swallowed. This returned `nil` for every
             // failure, so a decode problem and a session with no usage looked

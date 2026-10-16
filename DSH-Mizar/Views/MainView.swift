@@ -333,12 +333,24 @@ struct SessionDetailView: View {
     /// Whether this screen is a whole screen rather than a pane of a split view.
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var stats: SessionStatsFrame?
+    /// The session `stats` was read for.
+    ///
+    /// One view draws every session, so `@State` outlives the conversation it
+    /// was filled from. The figures are now deliberately never blanked by a read
+    /// that fails -- that is what made them vanish on the way into a session --
+    /// so without this tag a failed read would leave the *previous* session's
+    /// title, model and context on screen instead, which is worse than blank.
+    @State private var statsSessionId: String?
     @State private var loading = true
     @State private var showingModelPicker = false
     @State private var showingContextDetail = false
     @State private var showingCommands = false
     @State private var showingPermissionPicker = false
     @State private var items: [ConversationItem] = []
+    /// The session `items` and `turns` belong to, for the same reason as
+    /// ``statsSessionId``: one view, many sessions, and a read that returns
+    /// nothing must not be able to throw away what is on screen.
+    @State private var conversationSessionId: String?
     /// The same conversation grouped into turns, when the host gave turn numbers.
     @State private var turns: [ConversationTurn] = []
     @State private var loadingConversation = true
@@ -388,6 +400,27 @@ struct SessionDetailView: View {
         }
     }
 
+    /// The figures for the session on screen, or nothing.
+    ///
+    /// The screen is one view for every session: what it has read for one is
+    /// still in `@State` when another is opened. Tagging rather than clearing is
+    /// what makes both directions right -- a read that fails for the session
+    /// already on screen keeps what it has, and a session that has not answered
+    /// yet shows nothing rather than somebody else's model name.
+    private var shownStats: SessionStatsFrame? {
+        statsSessionId == sessionId ? stats : nil
+    }
+
+    /// The conversation for the session on screen, or nothing. See ``shownStats``.
+    private var shownItems: [ConversationItem] {
+        conversationSessionId == sessionId ? items : []
+    }
+
+    /// The same, grouped into turns.
+    private var shownTurns: [ConversationTurn] {
+        conversationSessionId == sessionId ? turns : []
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // No segmented control here any more. The conversation and the usage
@@ -401,10 +434,10 @@ struct SessionDetailView: View {
                         InteractionsView()
 
                         ConversationView(
-                            items: items,
-                            turns: turns,
+                            items: shownItems,
+                            turns: shownTurns,
                             loading: loadingConversation,
-                            failure: items.isEmpty ? model.conversationError : nil,
+                            failure: shownItems.isEmpty ? model.conversationError : nil,
                             onLoadOlder: {
                                 let arrived = await model.loadOlder(sessionId: sessionId)
                                 // Re-read what is on screen; the page was folded
@@ -414,6 +447,7 @@ struct SessionDetailView: View {
                                        let cached = await model.cachedConversation(for: sessionId) {
                                         items = cached.items
                                         turns = cached.turns ?? []
+                                        conversationSessionId = sessionId
                                     }
                                     return arrived
                                 },
@@ -476,7 +510,7 @@ struct SessionDetailView: View {
                     VStack(spacing: 0) {
                         ComposerBar(
                             sessionId: sessionId,
-                            stats: stats,
+                            stats: shownStats,
                             draft: $draft,
                             focused: $composerFocused,
                             showingModel: $showingModelPicker,
@@ -502,7 +536,7 @@ struct SessionDetailView: View {
                 .contentMargins(.bottom, composerHeight, for: .scrollContent)
             }
         }
-        .navigationTitle(stats?.title ?? String(localized: "Session"))
+        .navigationTitle(shownStats?.title ?? String(localized: "Session"))
         .navigationBarTitleDisplayMode(.inline)
         // The selection bar is put away while a conversation is open.
         //
@@ -567,7 +601,7 @@ struct SessionDetailView: View {
     ///
     /// - Parameter proxy: the scroll view to move.
     private func reachBottom(_ proxy: ScrollViewProxy) {
-        guard !didReachBottom, !items.isEmpty else { return }
+        guard !didReachBottom, !shownItems.isEmpty else { return }
         didReachBottom = true
         Task { @MainActor in
             // One turn of the runloop, so the lazy stack has laid the rows out
@@ -596,9 +630,19 @@ struct SessionDetailView: View {
             // stored conversation, from a previous visit, happened to contain an
             // equivalent prompt: pull-to-refresh fixed it, and a fresh install
             // did not need fixing.
-            items = await model.syncConversation(for: sessionId)
-            turns = (await model.cachedConversation(for: sessionId))?.turns ?? []
-            let arrived = items.contains { item in
+            // Only a page with something in it replaces what is on screen: a
+            // sync that failed returns an empty list, and assigning that over a
+            // conversation the operator is reading is the same erasure this
+            // screen just stopped doing to its figures.
+            let synced = await model.syncConversation(for: sessionId)
+            if !synced.isEmpty {
+                items = synced
+                conversationSessionId = sessionId
+            }
+            if let cached = await model.cachedConversation(for: sessionId) {
+                turns = cached.turns ?? []
+            }
+            let arrived = shownItems.contains { item in
                 if case .message(_, .user, let text, _) = item { return text == sent }
                 return false
             }
@@ -616,7 +660,7 @@ struct SessionDetailView: View {
 
     /// The permission preset, as a word rather than a raw value.
     private var permissionLabel: String {
-        guard let preset = stats?.permissionPreset else { return String(localized: "Permissions") }
+        guard let preset = shownStats?.permissionPreset else { return String(localized: "Permissions") }
         switch preset {
         case "read-only": return String(localized: "Read only")
         case "workspace-write": return String(localized: "Workspace write")
@@ -653,19 +697,23 @@ struct SessionDetailView: View {
         reloading = true
         defer { reloading = false }
 
-        await load()
-        // A read that came back with nothing, on a connection that is up, is
-        // worth asking about once more.
+        var landed = await load()
+        // A read that did not land, on a connection that is up, is worth asking
+        // about again -- twice more, and the second attempt is the one that
+        // matters most.
         //
         // The first request after a launch lands while the socket is still
-        // settling, and this screen had no second chance: the figures above the
-        // composer and the conversation itself stayed blank until the operator
-        // left the session and came back -- which is the shape of "进去是空的，
-        // 退出来再进就有了". A failure with the connection down is a different
-        // thing and is left alone.
-        if model.phase == .ready, stats == nil || items.isEmpty {
+        // settling; a reconnect holds `connection` at nil for anything from a
+        // second to ten, and a read asked for during that window fails without
+        // the host ever hearing about it. This screen used to have one retry
+        // conditioned on the figures being *blank*, and the figures are no longer
+        // blanked by a failure (see `load`), so the condition follows what the
+        // reads actually did rather than what is drawn. A failure with the
+        // connection down is a different thing and is left alone -- `reconnect`
+        // is already working on it.
+        for _ in 0..<2 where model.phase == .ready && !landed {
             try? await Task.sleep(for: .milliseconds(700))
-            await load()
+            landed = await load()
         }
         while reloadWanted {
             reloadWanted = false
@@ -674,7 +722,21 @@ struct SessionDetailView: View {
     }
 
     /// One pass over everything this screen draws.
-    private func load() async {
+    ///
+    /// Writes only what a read actually produced, and that rule is the whole
+    /// point of this function. Every value here was assigned unconditionally
+    /// once, so a read that failed -- or a socket that answered nothing while it
+    /// was reconnecting -- took the title, the model and the context figure off
+    /// the screen together, having drawn them from the cache a moment earlier.
+    /// Reported exactly that way: "刚点进去一个会话，然后该会话的标题、正在使用的
+    /// 模型、上下文用量显示全部消失", repaired by leaving the session and coming
+    /// back. A screen that has an answer and loses it is worse than one that
+    /// never had it.
+    ///
+    /// - Returns: whether every read landed. The caller asks again when one did
+    ///   not -- a failure is not fatal here, it just is not an answer.
+    @discardableResult
+    private func load() async -> Bool {
         loading = true
         loadingConversation = true
         // The phone's own copy first. It is instant, it is there when the
@@ -682,6 +744,7 @@ struct SessionDetailView: View {
         if let cached = await model.cachedConversation(for: sessionId), !cached.items.isEmpty {
             items = cached.items
             turns = cached.turns ?? []
+            conversationSessionId = sessionId
             loadingConversation = false
         }
         // The last known figures, drawn before the network is asked. Without
@@ -690,11 +753,20 @@ struct SessionDetailView: View {
         // appeared and disappeared from one visit to the next.
         if let known = await model.cachedStats(for: sessionId) {
             stats = known
+            statsSessionId = sessionId
         }
         // Run together: the two reads are independent, and a conversation that
         // waits for a stats call would make the screen feel slower than it is.
         async let statsResult = model.stats(for: sessionId)
-        stats = await statsResult
+        let freshStats = await statsResult
+        // `statsError` is how a *read* is told apart from a session that has no
+        // usage yet: both come back as no frame, and only the first is worth
+        // asking about again.
+        let statsLanded = model.statsError == nil
+        if let freshStats {
+            stats = freshStats
+            statsSessionId = sessionId
+        }
         // Synced rather than merely read: the result is folded into the cache,
         // so what is on screen and what is on disk are the same thing.
         let conversationResult = await model.syncConversation(for: sessionId)
@@ -703,13 +775,26 @@ struct SessionDetailView: View {
         // cache can be empty on a first visit -- and assigning that over a
         // populated screen is what "pull to refresh loses my history" was.
         let fresh = conversationResult
-        if !fresh.isEmpty || items.isEmpty { items = fresh }
-        turns = (await model.cachedConversation(for: sessionId))?.turns ?? []
+        if !fresh.isEmpty {
+            items = fresh
+            conversationSessionId = sessionId
+        }
+        // The cache again, for the turns: the page was just folded into it. A
+        // read that fails here keeps the grouping that is on screen rather than
+        // flattening the conversation into a list of messages.
+        if let cached = await model.cachedConversation(for: sessionId) {
+            turns = cached.turns ?? []
+        }
         loading = false
         loadingConversation = false
         await model.refreshInteractions()
         // Last, so the scroll anchor runs against the content that is actually
         // staying on screen.
         loadGeneration += 1
+        // The conversation counts as landed only when this session is the one
+        // drawn: an empty page for a session nobody has typed into yet is an
+        // answer, but an empty page on a screen showing another session's rows
+        // means the read did not arrive.
+        return statsLanded && conversationSessionId == sessionId
     }
 }
