@@ -158,7 +158,7 @@
 "Unknown" = "Unknown";
 "Checking…" = "Checking…";
 "A notification whose kind is switched off is dropped when it arrives, whatever iOS is set to. The line above is the system permission: if it says notifications are off, no switch here can bring them back." = "A notification whose kind is switched off is dropped when it arrives, whatever iOS is set to. The line above is the system permission: if it says notifications are off, no switch here can bring them back.";
-"Shows a running turn on the Lock Screen. Switching it off stops a new activity from starting; it does not touch the conversation." = "Shows a running turn on the Lock Screen. Switching it off stops a new activity from starting; it does not touch the conversation.";
+"Shows a running turn on the Lock Screen. Switching it off takes an activity that is up down with it and stops a new one from starting; it does not touch the conversation." = "Shows a running turn on the Lock Screen. Switching it off takes an activity that is up down with it and stops a new one from starting; it does not touch the conversation.";
 "Export logs" = "Export logs";
 "Packing the log…" = "Packing the log…";
 "Entries recorded" = "Entries recorded";

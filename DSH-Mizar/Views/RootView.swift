@@ -61,6 +61,15 @@ struct RootView: View {
             // becoming active.
             Task { await model.setPresence(foreground: phase == .active) }
         }
+        .onChange(of: model.settings.values.liveActivitiesEnabled) { _, _ in
+            // The switch, acted on where it is read. Off has to take down an
+            // activity that is already up -- a switch that only stops the *next*
+            // one from starting is a switch that leaves the thing the operator
+            // just turned off on their Lock Screen -- and on has to be able to
+            // start one without waiting for the next sync. The change itself is
+            // already in the log; see `AppSettings.note(changeFrom:)`.
+            Task { await model.refreshLiveActivity() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: PushAppDelegate.tokenReceived)) { _ in
             // iOS has just issued a token, and the host has never heard of it.
             Task { await model.syncPushRegistration() }

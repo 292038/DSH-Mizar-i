@@ -1,0 +1,11 @@
+{
+  "name": "dsh-mizar-ios-tools",
+  "private": true,
+  "description": "The one dependency the UI tests' fixture host needs. The app itself has none: this file exists so a fresh clone can run `scripts/ios.sh test`.",
+  "scripts": {
+    "prepare": "node -e \"console.log('dsh-mizar: ws installed for scripts/mock-host.mjs')\""
+  },
+  "devDependencies": {
+    "ws": "^8.18.0"
+  }
+}

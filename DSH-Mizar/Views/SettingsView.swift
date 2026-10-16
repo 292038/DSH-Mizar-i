@@ -161,7 +161,7 @@ struct SettingsView: View {
         } footer: {
             Text(
                 String(
-                    localized: "Shows a running turn on the Lock Screen. Switching it off stops a new activity from starting; it does not touch the conversation.",
+                    localized: "Shows a running turn on the Lock Screen. Switching it off takes an activity that is up down with it and stops a new one from starting; it does not touch the conversation.",
                 ),
             )
         }

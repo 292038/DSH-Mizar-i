@@ -99,7 +99,11 @@ public struct RunningSession: Codable, Sendable, Equatable, Identifiable {
 /// app made it, and the instant is what the widget's own ticking text counts
 /// from, so a second can pass on the lock screen without the app being asked
 /// for anything.
-public struct LiveActivityRow: Codable, Sendable, Equatable, Identifiable {
+/// `Hashable` as well as `Equatable`, and not for the widget's own use:
+/// `ActivityAttributes.ContentState` is required to be `Hashable`, so the state
+/// an activity carries has to be. The row is a value with no reference in it, so
+/// this is a conformance the compiler writes and nothing here has to maintain.
+public struct LiveActivityRow: Codable, Sendable, Hashable, Identifiable {
     /// The session this row is about.
     public let id: String
     /// The operator's instruction, already cut short.
@@ -127,7 +131,7 @@ public struct LiveActivityRow: Codable, Sendable, Equatable, Identifiable {
 /// This is the value an activity's `ContentState` holds. The widget draws it and
 /// decides nothing: which of the two it is *is* the difference between a clock
 /// and a green check.
-public enum LiveActivityPhase: Codable, Sendable, Equatable {
+public enum LiveActivityPhase: Codable, Sendable, Hashable {
     /// At least one session is running: the longest-running one first, one row
     /// or two.
     case running(rows: [LiveActivityRow])

@@ -63,7 +63,13 @@ final class ActivityLog {
         // and the app never puts a token in it; the alternative -- redacting
         // every interpolation -- makes the one log a developer reads while
         // debugging unreadable, which is how a logging system gets abandoned.
-        logger.debug("[\(category.rawValue, privacy: .public)] \(message, privacy: .public)")
+        //
+        // `info` rather than `debug`, and that is the difference between a mirror
+        // somebody can read and one they cannot: debug-level messages are not
+        // kept, so `log show` on a simulator prints nothing at all for them --
+        // measured, not assumed. `info` is in memory for the life of the log and
+        // in Console.app with no flags.
+        logger.info("[\(category.rawValue, privacy: .public)] \(message, privacy: .public)")
     }
 
     /// How many records are held.

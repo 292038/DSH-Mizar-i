@@ -62,9 +62,11 @@ scripts/swift.sh test         # MizarKit（协议层）全部测试，跑在 Mac
 scripts/ios.sh build          # 编译 App
 ```
 
-UI 测试要一个假主机（不需要真的 DSH）：
+UI 测试要一个假主机（不需要真的 DSH）。它需要 `ws` 来起 WebSocket 服务端，所以**先装一次依赖**：
 
 ```sh
+npm install                   # 只装 ws，给假主机用；App 本身没有依赖
+
 node scripts/mock-host.mjs 19395 &
 scripts/ios.sh test           # 全部 UI 测试（约 6 分钟）
 scripts/ios.sh test "iPhone 18 Pro" -only-testing:DSH-MizarUITests/AppFlowTests/<名字>

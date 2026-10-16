@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Supplemental Info.plist for the Live Activity extension.
+
+  One key, and without it the extension is not an extension: `NSExtension` with
+  the WidgetKit point identifier is what tells the system that this bundle
+  provides widgets and Live Activities. It cannot be expressed as an
+  `INFOPLIST_KEY_` build setting, because that mechanism carries scalars and
+  arrays rather than dictionaries -- which is why this file exists at all, and
+  why it lives beside the app's own `DSH-Mizar-Info.plist` rather than inside
+  the target's synchronized folder. (A file inside that folder is a resource of
+  the target, and a plist that is both the target's Info.plist and one of its
+  resources is two build commands producing one path.)
+
+  Everything else -- the identifier, the name, the versions, the minimum OS --
+  is generated and merged with this, the same arrangement the app uses.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.widgetkit-extension</string>
+	</dict>
+</dict>
+</plist>

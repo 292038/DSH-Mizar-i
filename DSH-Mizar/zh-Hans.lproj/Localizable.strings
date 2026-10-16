@@ -159,7 +159,7 @@
 "Unknown" = "未知";
 "Checking…" = "正在检查…";
 "A notification whose kind is switched off is dropped when it arrives, whatever iOS is set to. The line above is the system permission: if it says notifications are off, no switch here can bring them back." = "关闭某一类后，这类通知到达时会直接被丢弃，与 iOS 的设置无关。上面一行是系统权限：如果那里显示已关闭，这里的开关都救不回来。";
-"Shows a running turn on the Lock Screen. Switching it off stops a new activity from starting; it does not touch the conversation." = "在锁定屏幕上显示正在进行的回合。关闭后不会再启动新的实时活动，也不影响对话本身。";
+"Shows a running turn on the Lock Screen. Switching it off takes an activity that is up down with it and stops a new one from starting; it does not touch the conversation." = "在锁定屏幕上显示正在进行的回合。关闭会把已经在显示的活动一并撤下，也不会再启动新的；对话本身不受影响。";
 "Export logs" = "导出日志";
 "Packing the log…" = "正在打包日志…";
 "Entries recorded" = "已记录条目";

@@ -20,6 +20,20 @@
                ReferencedContainer = "container:DSH-Mizar.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "BB0000000000000000000020"
+               BuildableName = "DSH-Mizar-LiveActivity.appex"
+               BlueprintName = "DSH-Mizar-LiveActivity"
+               ReferencedContainer = "container:DSH-Mizar.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction

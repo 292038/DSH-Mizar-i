@@ -323,6 +323,41 @@ final class AppFlowTests: XCTestCase {
         return nil
     }
 
+    /// Tap a switch, aiming at the control rather than at the row.
+    ///
+    /// `element.tap()` taps the centre of whatever frame the element reports, and
+    /// a SwiftUI `Toggle` row is exposed as a switch whose frame is sometimes the
+    /// whole row -- so the centre of it is the *label*, and a tap there did
+    /// nothing at all. Aiming near the trailing edge lands on the switch in both
+    /// cases: it is still inside a switch that reports its own frame, and it is
+    /// the switch that lives at the trailing edge of a row that reports the row's.
+    ///
+    /// - Parameters:
+    ///   - control: the element to tap.
+    ///   - app: the running app, for nothing but symmetry with the other helpers.
+    private func flip(_ control: XCUIElement, in app: XCUIApplication) {
+        _ = app
+        control.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+    }
+
+    /// Wait until a switch reports a different state.
+    ///
+    /// Polled rather than read once: the write goes through SwiftUI's binding and
+    /// comes back as a re-render, which is a frame later than the tap.
+    ///
+    /// - Parameters:
+    ///   - identifier: the row's accessibility identifier.
+    ///   - app: the running app.
+    ///   - before: the state it had.
+    /// - Returns: whether it moved.
+    private func settingChanges(_ identifier: String, in app: XCUIApplication, from before: Bool?) -> Bool {
+        let moved = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in self.settingState(identifier, in: app) != before },
+            object: nil,
+        )
+        return XCTWaiter().wait(for: [moved], timeout: 5) == .completed
+    }
+
     /// A switch's value, as a `Bool`.
     /// - Parameter element: the element to read.
     /// - Returns: whether it is on, or `nil` when it reports nothing.
@@ -462,7 +497,11 @@ final class AppFlowTests: XCTestCase {
             "the about section is missing",
         )
         // Both tabs, so a bar that switched to a screen it cannot leave would
-        // not pass.
+        // not pass. Scrolled back to the top first: on iOS 26 the tab bar steps
+        // out of the way while a list is scrolled down, and a tap on a minimised
+        // bar does not switch tabs -- which is correct behaviour, and meant this
+        // test was tapping a bar that had put itself away.
+        for _ in 0..<4 { app.swipeDown() }
         let conversation = app.tabBars.buttons.element(boundBy: 0)
         conversation.tap()
         expect(app.buttons["sessions.new"], "the conversation tab does not come back")
@@ -489,10 +528,12 @@ final class AppFlowTests: XCTestCase {
             before,
             "the switch reports no state to read: \(control.debugDescription)",
         )
-        control.tap()
+        flip(control, in: app)
+        XCTAssertTrue(
+            settingChanges(identifier, in: app, from: before),
+            "the switch did not move when it was tapped: \(control.debugDescription)",
+        )
         let after = settingState(identifier, in: app)
-        XCTAssertNotNil(after, "the switch reports no state after being tapped")
-        XCTAssertNotEqual(before, after, "the switch did not move when it was tapped")
 
         // The same phone, the same app, a new process. Nothing here is in memory
         // only, or this is where it shows.
@@ -506,7 +547,7 @@ final class AppFlowTests: XCTestCase {
             "the switch did not survive a relaunch",
         )
         // Put it back, so the next run of this suite starts where this one did.
-        settingControl(identifier, in: reopened).tap()
+        flip(settingControl(identifier, in: reopened), in: reopened)
     }
 
     /// The export button produces a zip and offers it.

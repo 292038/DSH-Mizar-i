@@ -68,5 +68,24 @@
 	<!-- The pairing QR is scanned in-app, so the camera is used only for that. -->
 	<key>NSCameraUsageDescription</key>
 	<string>Scan the pairing code shown on your Mac.</string>
+	<!--
+	  Live Activities, declared on the app rather than on the extension.
+
+	  This is the key that decides whether this app may post one at all: without
+	  it `Activity.request` fails with `unsupported`, and a widget extension that
+	  is present and correct changes nothing. It belongs to the *app* because the
+	  app is what asks for the activity; the extension only draws the one it is
+	  handed.
+
+	  `NSSupportsLiveActivitiesFrequentUpdates` is deliberately **not** here. That
+	  key is for activities whose content is pushed at a high rate -- alerts, a
+	  score changing every few seconds -- and this activity's one moving number is
+	  a `Text(_:style:.timer)` that the *system* ticks, with no update from the app
+	  at all. What the app sends is a change of state: a session appeared, a
+	  session stopped, or a fresh figure arrived from the Mac. Claiming frequent
+	  updates would be asking for a budget nothing here spends.
+	-->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 </dict>
 </plist>

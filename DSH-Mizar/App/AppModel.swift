@@ -314,6 +314,15 @@ final class AppModel {
     /// The activity log the export button hands over.
     let log: ActivityLog
 
+    /// The Live Activity: what the island shows, and when it comes down.
+    ///
+    /// Owned here rather than created by whichever screen happens to be open,
+    /// because the moments that change its answer have nothing to do with the
+    /// screens: a session list arriving, a conversation being folded into the
+    /// cache, the app coming back to the foreground, and a switch moving on the
+    /// settings tab.
+    let liveActivity: LiveActivityController
+
     /// The archive the last successful export produced.
     ///
     /// Kept so the screen can keep saying that it happened, with the file's name
@@ -343,6 +352,19 @@ final class AppModel {
         self.indexStore = index
         self.settings = settings
         self.log = log
+        self.liveActivity = LiveActivityController(settings: settings, log: log)
+    }
+
+    /// Read what this phone already knows and make the island match it.
+    ///
+    /// The single entry point to the Live Activity, called from the four moments
+    /// that can change its answer. It decides nothing itself: the decision layer
+    /// in `MizarKit` says what to show, and ``LiveActivityController`` puts that
+    /// on screen -- including the case where the operator has switched the whole
+    /// feature off, which is read at the moment of acting rather than remembered
+    /// from when an activity started.
+    func refreshLiveActivity() async {
+        await liveActivity.refresh(sessions: sessions, conversations: conversations)
     }
 
     /// 实时活动 — whether the Live Activity may run.
@@ -422,6 +444,10 @@ final class AppModel {
     /// typing into fields or tapping through an alert. It is the same payload
     /// the QR carries, so the path exercised is the real one.
     func start() async {
+        // Launching is opening the app, so the Live Activity's flag starts set.
+        // Only the flag: the session list has not been read yet, and "nothing is
+        // running" must not be confused with "nothing is known".
+        liveActivity.appOpened()
         log.add(
             .app,
             "launch \(Self.versionLine) on \(Self.deviceModel); flags: \(Self.launchFlags.joined(separator: " "))",
@@ -962,6 +988,9 @@ final class AppModel {
             // Written after the workspaces, so the two halves of one answer land
             // together rather than as a list with the previous workspace set.
             await persistIndex()
+            // Which sessions are running is half of what the island shows, and
+            // this is the read that knows.
+            await refreshLiveActivity()
         } catch {
             if reconnectingIfNeeded, await reconnect() {
                 await refreshSessions(reconnectingIfNeeded: false)
@@ -1373,6 +1402,10 @@ final class AppModel {
         let elapsed = Date().timeIntervalSince(startedAt)
         log.add(.sync, String(format: "history sync: finished in %.1f s", elapsed))
         await persistIndex()
+        // A pass over every session can see a session stop running without that
+        // session being the one whose page was just fetched, which is the one
+        // case the per-page refresh above cannot notice.
+        await refreshLiveActivity()
         // The pass ran to the end. Whatever went wrong inside it is already in
         // `lastError`, and this is the line that lets the window stop saying it.
         syncProblem = lastError
@@ -1426,6 +1459,12 @@ final class AppModel {
             lastError = nil
             conversationError = nil
             log.add(.cache, "session \(sessionId): stored \(stored.items.count) items")
+            // The other half of what the island shows just arrived: the running
+            // turn's own clock and the instruction it is working on. Refreshed
+            // here rather than at the end of a full pass so that the first page
+            // fetched -- normally the session the operator opened -- is enough to
+            // put a real figure on the card instead of a clock started at zero.
+            await refreshLiveActivity()
             return stored.items
         } catch {
             let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
@@ -1597,9 +1636,18 @@ final class AppModel {
     /// is. Together they would put an HTTP request to the relay behind every
     /// switch away from the app.
     ///
+    /// Coming back to the foreground is also one of the moments the Live Activity
+    /// is decided at, and the most important one: the operator is looking, so a
+    /// check left over from a finished session has been seen and comes down -- and
+    /// a session that started while the phone was in a pocket gets its activity
+    /// now, because a start is only documented to work from here.
+    ///
     /// - Parameter foreground: whether the app is in the foreground.
     func setPresence(foreground: Bool) async {
         self.foreground = foreground
+        if foreground {
+            await liveActivity.appOpened(sessions: sessions, conversations: conversations)
+        }
         await sendPresence()
     }
 
