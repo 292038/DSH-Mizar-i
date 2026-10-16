@@ -132,6 +132,13 @@ struct SettingsView: View {
     }
 
     /// The accessibility identifier for one kind's switch.
+    ///
+    /// Built from the kind's *wire* name rather than from its Swift case name, so
+    /// the identifier is one derivation in one place: `settings.notify.turn-finished`,
+    /// not `settings.notify.turnFinished`. A UI test asks for the hyphenated form,
+    /// and asking for the other one finds nothing at all -- which is how this was
+    /// learned.
+    ///
     /// - Parameter kind: the notification kind.
     /// - Returns: the identifier a UI test looks for.
     private func identifier(for kind: NotificationKind) -> String {
