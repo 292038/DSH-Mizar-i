@@ -860,28 +860,47 @@ function answer(frame) {
               id: 'm4',
             }),
 
-            // The end of turn 4, but only while the session has stopped. The
-            // fixture has to be consistent about what "running" means: the
-            // session list says whether a turn is executing, and a page that
-            // still showed turn 4 open after the session reported it stopped
-            // would make "the running row goes away" untestable -- the host
-            // would be telling the app two different things. Flipped at runtime
-            // by `/session?running=0`, which is the endpoint the report's own
-            // reproduction uses: the turn finishes under the open conversation
-            // and the phone has to notice without a tap.
-            ...(sessionRunning ? [] : [record('turn/end', { turn: 4, reason: { kind: 'completed' } })]),
+            // The end of turn 4, but only while the session has stopped and
+            // nothing has been sent since. The fixture has to be consistent
+            // about what "running" means: the session list says whether a turn
+            // is executing, and a page that still showed turn 4 open after the
+            // session reported it stopped would make "the running row goes
+            // away" untestable -- the host would be telling the app two
+            // different things. Flipped at runtime by `/session?running=0`,
+            // which is the endpoint the report's own reproduction uses: the turn
+            // finishes under the open conversation and the phone has to notice
+            // without a tap. A prompt sent afterwards supersedes turn 4, so it
+            // ends even while the fixture keeps the session running.
+            ...(sessionRunning && sentPrompts.length === 0
+              ? []
+              : [record('turn/end', { turn: 4, reason: { kind: 'completed' } })]),
 
             // Anything the client has sent since, appended the way a host would:
-            // a prompt with no turn after it, which is the state every message is
-            // in for a moment.
-            ...sentPrompts.map((text, index) =>
-              record('user/message', {
-                content: [{ type: 'text', text }],
-                source: { kind: 'user' },
-                role: 'user',
-                id: `sent-${index}`,
-              }),
-            ),
+            // each prompt opens a turn of its own, in the host's own record
+            // order -- `turn/start`, then its marker, then the operator's
+            // message. The newest of those turns is the one the session's
+            // `running` flag is about, so stopping the fixture ends exactly the
+            // turn the operator is watching. A prompt with no turn after it
+            // would be the state every message is in for a moment, and would
+            // leave a test that sends a prompt with nothing running to watch.
+            ...sentPrompts.flatMap((text, index) => {
+              const turn = 5 + index
+              return [
+                record('turn/start', { turn }),
+                record('step/start', { turn, step: 1 }),
+                record('user/message', {
+                  content: [{ type: 'text', text }],
+                  source: { kind: 'user' },
+                  role: 'user',
+                  id: `sent-${index}`,
+                }),
+                // Every earlier prompt ended when the next one was sent; the
+                // newest follows the session's flag.
+                ...(index < sentPrompts.length - 1 || !sessionRunning
+                  ? [record('turn/end', { turn, reason: { kind: 'completed' } })]
+                  : []),
+              ]
+            }),
           ],
         },
       }

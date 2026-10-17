@@ -269,6 +269,11 @@ final class AppModel {
             // Dropped rather than kept: the cards on screen belong to the session
             // being left, and the read below is what puts this one's up.
             pendingState.clear()
+            // The turn evidence belongs to the conversation that was open. The
+            // list still says what it says, but a poll that was only up because
+            // of the page the operator just left has nothing left to watch.
+            openConversationTurnIsRunning = false
+            updateRunningPoll()
             Task { await refreshInteractions() }
         }
     }
@@ -334,6 +339,16 @@ final class AppModel {
     /// `BGAppRefreshTask` arrives before any scene -- does not start a poll that
     /// can only be suspended. Set from the `scenePhase` the app already watches.
     private var appIsActive = false
+    /// Whether the conversation on screen holds a turn that has not ended.
+    ///
+    /// The second source the poll is allowed to start from, and the reason it
+    /// needs one: after a send the app refreshes the *conversation* and never
+    /// re-reads the session list, so the list can go on saying the session is
+    /// not running while the operator is looking at the turn. This is what the
+    /// screen is drawing, reported by the screen (see
+    /// ``noteConversationTurns(_:for:)``); the list cannot overrule it until a
+    /// read of the page says the turn has ended.
+    private var openConversationTurnIsRunning = false
     /// Bumped after every running-poll tick.
     ///
     /// The view's half of the poll. The tick itself only knows about the model:
@@ -910,16 +925,63 @@ final class AppModel {
         updateRunningPoll()
     }
 
-    /// Start or stop the running poll from what the last list said.
+    /// Tell the running poll what the open conversation is drawing.
+    ///
+    /// Called by the conversation screen whenever it puts turns on screen --
+    /// from the cache before the network is asked, and from the page afterwards
+    /// -- because the screen is the only place that knows what "the open
+    /// conversation" is. Only the session on screen counts: a running turn in a
+    /// conversation nobody is looking at is not the answer the list failed to
+    /// give.
+    ///
+    /// The value is replaced, not latched on. A page whose running turn has
+    /// ended is the evidence that the turn stopped, and with the list also
+    /// saying nothing is running that is what lets the poll stand down. A failed
+    /// or cancelled read never reaches here, which is deliberate: it is not
+    /// evidence about the turn.
+    ///
+    /// - Parameters:
+    ///   - turns: the turns the conversation screen is drawing.
+    ///   - sessionId: the session they belong to.
+    func noteConversationTurns(_ turns: [ConversationTurn], for sessionId: String) {
+        guard sessionId == selectedSessionId else { return }
+        let running = turns.contains(where: \.isRunning)
+        guard running != openConversationTurnIsRunning else { return }
+        openConversationTurnIsRunning = running
+        updateRunningPoll()
+    }
+
+    /// Mark a session as running because the host accepted a prompt for it.
+    ///
+    /// The session list is not re-read after a send -- the conversation is -- so
+    /// the list can keep saying the session is stopped for as long as nothing
+    /// else asks. An accepted `session.prompt` (or an answer that continues the
+    /// turn) is direct evidence that a turn is executing; the row is marked
+    /// locally so the poll's existing start condition sees it at once, and the
+    /// poll's own list read replaces it with the host's answer at the first
+    /// tick. That is the cheapest correct thing: no extra request, no race with
+    /// the host recording the turn, and nothing that can stay wrong beyond one
+    /// interval.
+    ///
+    /// - Parameter sessionId: the session the prompt was accepted for.
+    private func notePromptAccepted(for sessionId: String) {
+        let marked = RunningPoll.markingSessionRunning(in: sessions, sessionId: sessionId)
+        guard marked != sessions else { return }
+        sessions = marked
+    }
+
+    /// Start or stop the running poll from what the last list and page said.
     ///
     /// The one place the decision is made, called from `sessions`'s observer --
     /// so every assignment of the list, from every read, is enough -- and from
-    /// the app's active flag. The state machine answers `.none` when the task is
-    /// already in the right state, which is what keeps a manual refresh from
-    /// restarting the tick clock.
+    /// the app's active flag, a prompt being accepted, and the conversation
+    /// screen reporting its turns. The state machine answers `.none` when the
+    /// task is already in the right state, which is what keeps a manual refresh
+    /// from restarting the tick clock.
     private func updateRunningPoll() {
         switch runningPollState.observe(
             anySessionRunning: RunningPoll.anySessionRunning(in: sessions),
+            conversationTurnIsRunning: openConversationTurnIsRunning,
             appIsActive: appIsActive,
         ) {
         case .start:
@@ -1122,7 +1184,18 @@ final class AppModel {
             "requestId": .string(approval.requestId),
             "outcome": .string(outcome.rawValue),
         ])
-        _ = try? await loggedCall("approval.answer", payload: payload, on: connection, as: AcceptanceResult.self)
+        let accepted = (try? await loggedCall(
+            "approval.answer",
+            payload: payload,
+            on: connection,
+            as: AcceptanceResult.self,
+        ))?.accepted ?? false
+        // An approval that lets the agent continue is a prompt by another name:
+        // the host is about to run a turn for this session, and the app does not
+        // re-read the list after answering. Direct evidence, like a send.
+        if accepted, let sessionId = approval.sessionId {
+            notePromptAccepted(for: sessionId)
+        }
         // Re-read rather than removing locally: the host is the authority on
         // what is still outstanding, and a racing device may have answered it.
         await refreshInteractions()
@@ -1144,7 +1217,18 @@ final class AppModel {
             for (key, fieldValue) in batchFields { fields[key] = fieldValue }
             merged = .object(fields)
         }
-        _ = try? await loggedCall("question.answer", payload: merged, on: connection, as: AcceptanceResult.self)
+        let accepted = (try? await loggedCall(
+            "question.answer",
+            payload: merged,
+            on: connection,
+            as: AcceptanceResult.self,
+        ))?.accepted ?? false
+        // An answer that continues a turn is a prompt by another name. The
+        // list is not re-read after this call, so the accepted answer is the
+        // evidence the running poll starts from.
+        if accepted, let sessionId = question.sessionId {
+            notePromptAccepted(for: sessionId)
+        }
         await refreshInteractions()
     }
 
@@ -1191,6 +1275,10 @@ final class AppModel {
         ])
         do {
             let result = try await loggedCall("session.prompt", payload: payload, on: connection, as: PromptResult.self)
+            // Direct evidence, before any list read: the host has accepted a
+            // prompt, so a turn is executing for this session whether or not the
+            // list the app holds says so. See ``notePromptAccepted(for:)``.
+            if result.accepted { notePromptAccepted(for: sessionId) }
             return result.accepted
         } catch {
             phase = .failed(Self.describe(error, authority: host?.authority))

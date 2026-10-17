@@ -493,8 +493,7 @@ struct SessionDetailView: View {
                                 if let arrived, arrived > 0,
                                        let cached = await model.cachedConversation(for: sessionId) {
                                         items = cached.items
-                                        turns = cached.turns ?? []
-                                        conversationSessionId = sessionId
+                                        show(turns: cached.turns ?? [])
                                     }
                                     return arrived
                                 },
@@ -657,6 +656,12 @@ struct SessionDetailView: View {
             didReachBottom = false
             await reload()
         }
+        .onDisappear {
+            // The turns leave with the screen. The list still says what it says;
+            // this drops only the page's evidence, which is what stops a poll
+            // that was up for a conversation nobody is looking at any more.
+            model.noteConversationTurns([], for: sessionId)
+        }
         .onChange(of: model.runningPollTicks) { _, _ in
             // The model's poll found a new session list. This screen is the
             // other half of what it is for: the turn rows live in `@State` here,
@@ -676,6 +681,22 @@ struct SessionDetailView: View {
             guard phase == .active, !reloading else { return }
             Task { await reload() }
         }
+    }
+
+    /// Put the conversation's turns on screen, and tell the model whether one is
+    /// running.
+    ///
+    /// The model cannot see this screen's `@State`, but the running poll's start
+    /// condition needs this evidence as much as the session list does: after a
+    /// send, and on a launch with a stored list, the page can be the newer
+    /// answer. Every assignment of `turns` goes through here, so no read path
+    /// can put a running turn on screen without saying so.
+    ///
+    /// - Parameter turns: the turns the screen is about to draw.
+    private func show(turns: [ConversationTurn]) {
+        self.turns = turns
+        conversationSessionId = sessionId
+        model.noteConversationTurns(turns, for: sessionId)
     }
 
     /// Move the conversation to its newest message, once per appearance.
@@ -737,7 +758,7 @@ struct SessionDetailView: View {
                 conversationSessionId = sessionId
             }
             if let cached = await model.cachedConversation(for: sessionId) {
-                turns = cached.turns ?? []
+                show(turns: cached.turns ?? [])
             }
             let arrived = shownItems.contains { item in
                 if case .message(_, .user, let text, _) = item { return text == sent }
@@ -787,8 +808,7 @@ struct SessionDetailView: View {
             conversationSessionId = sessionId
         }
         if let cached = await model.cachedConversation(for: sessionId) {
-            turns = cached.turns ?? []
-            conversationSessionId = sessionId
+            show(turns: cached.turns ?? [])
         }
     }
 
@@ -946,8 +966,7 @@ struct SessionDetailView: View {
         // network is not, and the fetch below replaces it when it lands.
         if let cached = await model.cachedConversation(for: sessionId), !cached.items.isEmpty {
             items = cached.items
-            turns = cached.turns ?? []
-            conversationSessionId = sessionId
+            show(turns: cached.turns ?? [])
             loadingConversation = false
         }
         // The last known figures, drawn before the network is asked. Without
@@ -992,8 +1011,7 @@ struct SessionDetailView: View {
         // When the cache does not answer, keep the grouping only if it is
         // already this session's, and drop it if it belongs to another.
         if let cached = await model.cachedConversation(for: sessionId) {
-            turns = cached.turns ?? []
-            conversationSessionId = sessionId
+            show(turns: cached.turns ?? [])
         } else if conversationSessionId != sessionId {
             turns = []
         }

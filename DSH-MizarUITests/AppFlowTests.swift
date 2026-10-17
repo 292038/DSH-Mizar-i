@@ -1696,6 +1696,131 @@ final class AppFlowTests: XCTestCase {
         )
     }
 
+    /// A send starts the running poll by itself, with no list read to wait for.
+    ///
+    /// The operator's report: the poll stopped once a real read said nothing was
+    /// running, and the machine never went back to asking when a prompt was
+    /// sent. `session.prompt` being accepted is direct evidence that a turn is
+    /// executing; the session list is the stale one.
+    ///
+    /// The fixture is stopped at launch, so no poll exists, and is put back to
+    /// running before the send. From the send onward nothing is tapped: the only
+    /// thing that can make a `session.list` reach the host is the poll. Counted
+    /// at the host, because a request that is never made has no screen symptom.
+    func testASendStartsTheRunningPollWithoutATap() {
+        let app = launch(pending: false, running: false)
+        let field = app.textFields["composer.field"]
+        expect(field, "the composer is missing")
+        // The host records the prompt a moment later, and is left running from
+        // here -- the app's list still says the session is stopped.
+        Self.setMockSessionRunning(true)
+
+        field.tap()
+        field.typeText("Keep working while I watch")
+        app.buttons["composer.send"].tap()
+
+        // Accepted: the composer clears only on success.
+        let cleared = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in (field.value as? String) == "Ask your agent…" },
+            object: nil,
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [cleared], timeout: Self.patience),
+            .completed,
+            "the send never settled, so there is nothing to poll about",
+        )
+
+        // From here the host counts only what happens after the send. The
+        // launch's own list reads are not the poll.
+        _ = Self.mockLoads()
+
+        // The tick is 10 s, so the first read belongs in the next sixteen.
+        var counts: [String: Int] = [:]
+        var firstTick: Date?
+        let firstDeadline = Date().addingTimeInterval(16)
+        while Date() < firstDeadline {
+            counts = Self.mockMethodCounts()
+            if (counts["session.list"] ?? 0) >= 1 {
+                firstTick = Date()
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+        XCTAssertNotNil(
+            firstTick,
+            "no session.list read after a send: the running poll never started (methods: \(counts))",
+        )
+
+        // And it keeps asking, at the interval it shipped with. Two ticks are
+        // what tells a start apart from one read that happened to land.
+        var secondTick: Date?
+        let secondDeadline = Date().addingTimeInterval(14)
+        while Date() < secondDeadline {
+            counts = Self.mockMethodCounts()
+            if (counts["session.list"] ?? 0) >= 2 {
+                secondTick = Date()
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+        XCTAssertNotNil(
+            secondTick,
+            "the poll asked once and stopped while the session was still running (methods: \(counts))",
+        )
+        if let firstTick, let secondTick {
+            let interval = secondTick.timeIntervalSince(firstTick)
+            XCTAssertGreaterThanOrEqual(interval, 5, "two session.list reads \(interval) s apart: not the 10 s poll")
+            XCTAssertLessThanOrEqual(interval, 20, "the poll waited \(interval) s between reads")
+        }
+    }
+
+    /// The operator's scenario end to end: send, the turn ends, nothing is tapped.
+    ///
+    /// The existing test for this starts from launch, which is exactly why it
+    /// passed while the device failed: the launch list said a session was
+    /// running, so the poll was already up before the send. On the phone the
+    /// poll had read a list with nothing running and stopped; the send was the
+    /// only evidence left, and nothing acted on it. Here the fixture is stopped
+    /// at launch and put back to running before the prompt is sent, so the list
+    /// the app holds says stopped and no poll exists. The host then stops the
+    /// turn a few seconds after the send. The running row may only leave because
+    /// something asked again.
+    func testATurnThatEndsAfterASendIsNoticedWithoutATap() {
+        let app = launch(pending: false, running: false)
+        let field = app.textFields["composer.field"]
+        expect(field, "the composer is missing")
+        Self.setMockSessionRunning(true)
+
+        field.tap()
+        field.typeText("Finish this turn while I wait")
+        app.buttons["composer.send"].tap()
+
+        // The turn the send started is the row being watched. It comes from the
+        // page the send's own refresh reads, so its arrival also says the send
+        // settled -- which is what stops a late post-send retry from being
+        // mistaken for the poll noticing the end.
+        let running = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "DeepSeeking for "))
+            .firstMatch
+        expect(running, "the turn started by the send is not on screen")
+
+        // The host finishes it, with nothing tapped on the phone. A few seconds
+        // is the report's own timing: long enough that the post-send refresh has
+        // settled, short enough that the first poll tick has not happened yet.
+        Thread.sleep(forTimeInterval: 2)
+        Self.setMockSessionRunning(false)
+
+        let stopped = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: running,
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [stopped], timeout: 15),
+            .completed,
+            "the running row is still on screen 15 s after the turn ended: nothing asked the host again",
+        )
+    }
+
     /// The context figure opens the breakdown it is computed from.
     ///
     /// This replaces a test for a Usage *tab*. The tab is gone: the figure lives

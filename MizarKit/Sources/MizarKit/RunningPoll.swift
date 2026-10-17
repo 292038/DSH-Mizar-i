@@ -19,10 +19,24 @@
 //  every ten seconds for a day of not being used. The rules are:
 //
 //    - start when a session-list read says at least one session is running,
-//    - stop as soon as a read says none is,
+//    - **or when a prompt was just accepted for a session** (the caller marks
+//      that row running, because the host accepting a prompt is direct evidence
+//      that a turn is executing) -- the list may be a read from before the send,
+//    - **or when the open conversation holds a turn that has not ended**
+//      (``ConversationTurn/isRunning``) -- a stale list must not be able to hide
+//      a turn the operator can see on screen,
+//    - stop when none of those says a turn is executing. For the conversation
+//      that means after a read of its page says the running turn has ended,
 //    - stop while the app is not active, because a backgrounded phone costs
 //      nothing and iOS suspends the process anyway,
 //    - and never start a second one while the first is up.
+//
+//  The second and third rules are the fix for a real report against the first
+//  version: its only input was `sessions`, and after a send the app refreshes
+//  the *conversation* and never re-reads the list. So the list went on saying
+//  the session was not running, the poll never started, and the only thing that
+//  could correct it was a manual pull-to-refresh. A send, and a running turn on
+//  the page, are both evidence the list is too stale to decide alone.
 //
 //  Nothing here sleeps, owns a task, or knows about a screen. ``RunningPoll`` is
 //  the state machine the app's one task is started and stopped by, so the rules
@@ -71,12 +85,21 @@ public struct RunningPoll: Sendable, Equatable {
     /// - Parameters:
     ///   - anySessionRunning: whether the session list's latest read says a turn
     ///     is executing.
+    ///   - conversationTurnIsRunning: whether the open conversation's turns hold
+    ///     a turn that has begun and not ended. The list and the page can be
+    ///     read at different moments, and either can be the newer one; a page
+    ///     showing a running turn is the operator looking at work in progress,
+    ///     so it is evidence in its own right.
     ///   - appIsActive: whether the app is on screen. A poll while the process
     ///     is suspended never fires, and one that starts the instant the app
     ///     comes back would ask before the foreground refresh has a chance to.
     /// - Returns: whether one should be up.
-    public static func shouldPoll(anySessionRunning: Bool, appIsActive: Bool) -> Bool {
-        anySessionRunning && appIsActive
+    public static func shouldPoll(
+        anySessionRunning: Bool,
+        conversationTurnIsRunning: Bool = false,
+        appIsActive: Bool,
+    ) -> Bool {
+        (anySessionRunning || conversationTurnIsRunning) && appIsActive
     }
 
     /// Take one observation and say what the caller should do to its task.
@@ -89,10 +112,20 @@ public struct RunningPoll: Sendable, Equatable {
     /// - Parameters:
     ///   - anySessionRunning: whether any row in the latest session list says a
     ///     turn is executing.
+    ///   - conversationTurnIsRunning: whether the open conversation holds a turn
+    ///     that has not ended. See ``shouldPoll(anySessionRunning:conversationTurnIsRunning:appIsActive:)``.
     ///   - appIsActive: whether the app is on screen.
     /// - Returns: the transition, if there is one.
-    public mutating func observe(anySessionRunning: Bool, appIsActive: Bool) -> Action {
-        let wanted = Self.shouldPoll(anySessionRunning: anySessionRunning, appIsActive: appIsActive)
+    public mutating func observe(
+        anySessionRunning: Bool,
+        conversationTurnIsRunning: Bool = false,
+        appIsActive: Bool,
+    ) -> Action {
+        let wanted = Self.shouldPoll(
+            anySessionRunning: anySessionRunning,
+            conversationTurnIsRunning: conversationTurnIsRunning,
+            appIsActive: appIsActive,
+        )
         switch (wanted, isPolling) {
         case (true, false):
             isPolling = true
@@ -103,6 +136,43 @@ public struct RunningPoll: Sendable, Equatable {
         default:
             return .none
         }
+    }
+
+    /// The session list, with one session marked as running.
+    ///
+    /// A send is the second way the poll can start, and the caller does not need
+    /// a round trip to use it: the host accepted the prompt, which is direct
+    /// evidence that a turn is executing. Marking the row is cheaper and more
+    /// immediate than re-reading the list after every send -- and it is
+    /// self-correcting, because the poll's own tick replaces the list with the
+    /// host's answer ten seconds later. A list read immediately after a send
+    /// would race the host recording the turn, which is the same stale answer
+    /// this fixes.
+    ///
+    /// Nothing is invented: a session the list does not hold is left alone, and
+    /// a row already saying running is returned unchanged.
+    ///
+    /// - Parameters:
+    ///   - sessions: the list as the host last gave it.
+    ///   - sessionId: the session a prompt was just accepted for.
+    /// - Returns: the list, with that one row's running flag set.
+    public static func markingSessionRunning(in sessions: [SessionRow], sessionId: String) -> [SessionRow] {
+        guard let index = sessions.firstIndex(where: { $0.sessionId == sessionId }),
+              !sessions[index].running
+        else { return sessions }
+        let row = sessions[index]
+        var marked = sessions
+        marked[index] = SessionRow(
+            sessionId: row.sessionId,
+            updatedAt: row.updatedAt,
+            running: true,
+            blank: row.blank,
+            agentAvailable: row.agentAvailable,
+            cwd: row.cwd,
+            parentSessionId: row.parentSessionId,
+            origin: row.origin,
+        )
+        return marked
     }
 
     /// Whether any row in a session list says it is running.
