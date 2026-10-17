@@ -2570,6 +2570,63 @@ final class AppFlowTests: XCTestCase {
         )
     }
 
+    /// The phone reopens the Mac the operator last chose, not the one paired last.
+    ///
+    /// With two Macs paired, the launch path used to open the most recently
+    /// paired machine whatever the operator had been using: the app looked
+    /// connected, but its session list, its approvals, its notifications and its
+    /// Live Activity belonged to the other Mac. Being paired is not the same as
+    /// being chosen, and the difference is visible on the first screen.
+    func testTheLastOpenedMacIsTheOneReopened() {
+        Self.resetSecondMockHost()
+        let app = launch(
+            session: nil,
+            pending: false,
+            running: false,
+            pairingURIs: [Self.mockPairingURI, Self.secondMockPairingURI],
+        )
+        // The second Mac was paired last, so this first launch legitimately
+        // opens it: with no choice recorded yet, "the machine given most
+        // recently" is the only answer the phone has.
+        XCTAssertTrue(
+            app.staticTexts["Mock Mac (second)"].waitForExistence(timeout: Self.patience),
+            "the launch did not open the most recently paired Mac",
+        )
+
+        // Now choose the other one, exactly as the operator would.
+        expect(app.buttons["sessions.hosts"], "the session list never came back")
+        app.buttons["sessions.hosts"].tap()
+        let first = app.buttons["host.row.mock-host-0000-4000-8000-000000000000"]
+        expect(first, "the first Mac is not in the list")
+        first.tap()
+        expect(app.navigationBars.buttons.element(boundBy: 0), "there is no way back from the host list")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(
+            app.staticTexts["Mock Mac (fixture)"].waitForExistence(timeout: Self.patience),
+            "choosing the first Mac did not open it",
+        )
+
+        // A new process, no pairing arguments: what the app opens is what it
+        // remembered, which is the whole question.
+        app.terminate()
+        let reopened = XCUIApplication()
+        reopened.launchArguments = Self.arguments(
+            pairing: false,
+            session: nil,
+            language: "en",
+            freshStart: false,
+        )
+        reopened.launch()
+        XCTAssertTrue(
+            reopened.staticTexts["Mock Mac (fixture)"].waitForExistence(timeout: Self.patience),
+            "the relaunch opened a Mac other than the one the operator last chose",
+        )
+        XCTAssertFalse(
+            reopened.staticTexts["Mock Mac (second)"].exists,
+            "the relaunch kept the Mac paired last instead of the one last chosen",
+        )
+    }
+
     /// A send during a reload is one load on the socket, not two.
     ///
     /// `reload()` is the screen's load-bearing gate: it documents that two

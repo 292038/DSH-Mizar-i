@@ -764,11 +764,23 @@ final class AppModel {
         }
         do {
             hosts = try await credentials.loadAll().sorted { $0.pairedAt < $1.pairedAt }
-            guard let stored = hosts.last else {
+            // The machine the operator last opened, not the one paired last:
+            // with several Macs paired, "paired last" is a fact about a past
+            // setup step, and opening it leaves the session list, the pending
+            // approvals, the Live Activity and the push registration on a Mac
+            // the operator was not using. `HostSelection` also owns the fallback
+            // for a fresh install and a forgotten machine.
+            guard let stored = HostSelection.preferred(
+                in: hosts,
+                lastOpenedId: LastOpenedHostStore.stored(),
+            ) else {
                 phase = .unpaired
                 return
             }
             host = stored
+            // Written back so an install from before this rule starts keeping
+            // the memory from the machine it is opening now.
+            LastOpenedHostStore.store(stored.hostId)
             try await connect(using: stored)
         } catch {
             phase = .failed(Self.describe(error, authority: host?.authority))
@@ -793,6 +805,10 @@ final class AppModel {
         // machine, where it is still this session's last instruction.
         if leaving { modelChoice = [:] }
         host = next
+        // The next launch opens this one. Remembered here, when the operator
+        // chose it, rather than when a connection happens to succeed: where they
+        // chose to be is the question the next launch asks.
+        LastOpenedHostStore.store(next.hostId)
         do {
             try await connect(using: next)
         } catch {
@@ -831,10 +847,12 @@ final class AppModel {
             // told to use was told to the machine that has just been forgotten.
             modelChoice = [:]
             host = next
+            LastOpenedHostStore.store(next.hostId)
             try? await connect(using: next)
         } else {
             modelChoice = [:]
             host = nil
+            LastOpenedHostStore.store(nil)
             phase = .unpaired
         }
     }
@@ -1473,6 +1491,7 @@ final class AppModel {
         let forgetting = hosts.map(\.hostId)
         host = nil
         hosts = []
+        LastOpenedHostStore.store(nil)
         try? await credentials.clear()
         for forgotten in forgetting { await indexStore.remove(hostId: forgotten) }
         titles = [:]
@@ -2568,6 +2587,7 @@ final class AppModel {
             disconnectCurrent()
             modelChoice = [:]
             host = paired
+            LastOpenedHostStore.store(paired.hostId)
             // Offered once, now, while the operator still knows which machine
             // they just scanned. The connection is opened first so the name is
             // asked for over a working screen rather than a spinner.
