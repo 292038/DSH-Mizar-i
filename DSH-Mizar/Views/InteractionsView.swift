@@ -51,7 +51,11 @@ struct ApprovalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label {
-                Text("Wants to run \(approval.toolName)")
+                // The identifier is protocol data, not a name. `ToolNames` is
+                // the one table that maps the tools this app knows to words in
+                // the operator's language; anything it does not know is shown
+                // exactly as the host sent it.
+                Text("Wants to run \(ToolNames.localized(approval.toolName))")
                     .font(.headline)
             } icon: {
                 Image(systemName: "hand.raised.fill")

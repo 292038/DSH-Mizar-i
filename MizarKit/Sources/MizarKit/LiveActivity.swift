@@ -35,8 +35,10 @@ import Foundation
 /// One session that is running, as the app last saw it.
 ///
 /// The app builds one of these per running turn in its conversation cache: the
-/// instruction is that turn's most recent prompt, and the two clock fields are
-/// the figure the host last gave for the turn and the moment it arrived.
+/// instruction is that turn's most recent prompt, the title is what the host
+/// calls the session when it has got round to naming it, and the two clock
+/// fields are the figure the host last gave for the turn and the moment it
+/// arrived.
 public struct RunningSession: Codable, Sendable, Equatable, Identifiable {
     /// The session.
     ///
@@ -49,6 +51,13 @@ public struct RunningSession: Codable, Sendable, Equatable, Identifiable {
     /// Cut to size when a row is built; see
     /// ``LiveActivityDecision/promptSnippetLength``.
     public let prompt: String
+    /// What the host calls the session, when it has named it.
+    ///
+    /// A title exists only once the model has produced one, so `nil` is the
+    /// ordinary case rather than a failure: a session that has not run yet has
+    /// no title, and neither does one whose usage frame has not been read. The
+    /// row then falls back to the operator's own instruction.
+    public let title: String?
     /// How long the session had been running when the app last read the host.
     ///
     /// The figure behind "深度求索中，用时 xx 分 xx 秒", and the only measurement
@@ -62,11 +71,19 @@ public struct RunningSession: Codable, Sendable, Equatable, Identifiable {
     /// - Parameters:
     ///   - id: the session.
     ///   - prompt: the operator's most recent instruction to it.
+    ///   - title: what the host calls it, when it has named it.
     ///   - elapsedWhenSeeded: how long it had been running at `seededAt`.
     ///   - seededAt: when that figure was read.
-    public init(id: String, prompt: String, elapsedWhenSeeded: TimeInterval, seededAt: Date) {
+    public init(
+        id: String,
+        prompt: String,
+        title: String? = nil,
+        elapsedWhenSeeded: TimeInterval,
+        seededAt: Date,
+    ) {
         self.id = id
         self.prompt = prompt
+        self.title = title
         self.elapsedWhenSeeded = elapsedWhenSeeded
         self.seededAt = seededAt
     }
@@ -103,9 +120,10 @@ extension RunningSession {
     /// card, and the difference would only ever show up on a phone in a pocket.
     ///
     /// One per session whose row says it is running, with the operator's most
-    /// recent instruction to it and the figure the running turn's own row is
-    /// drawn from -- `ConversationTurn.elapsed(asOf:)`, which is the clock
-    /// behind "深度求索中，用时 xx 分 xx 秒".
+    /// recent instruction to it, its title when the host has named it, and the
+    /// figure the running turn's own row is drawn from --
+    /// `ConversationTurn.elapsed(asOf:)`, which is the clock behind
+    /// "深度求索中，用时 xx 分 xx 秒".
     ///
     /// Two deliberate omissions, both of them things the app cannot answer:
     ///
@@ -128,12 +146,17 @@ extension RunningSession {
     /// - Parameters:
     ///   - sessions: the session list as the host last gave it.
     ///   - conversations: the cache the prompts are read from.
+    ///   - titles: the app's title list, keyed by session id. The list itself
+    ///     does not carry titles -- they arrive with the usage frame -- so this
+    ///     is the one place the two are joined. A session with no entry keeps
+    ///     `nil` and the row falls back to its instruction.
     ///   - now: the instant the figures are measured to, and the instant they are
     ///     seeded from.
     /// - Returns: the sessions to hand to the decision layer, in the list's order.
     public static func running(
         in sessions: [SessionRow],
         conversations: any ConversationCache,
+        titles: [String: String],
         now: Date,
     ) async -> [RunningSession] {
         var out: [RunningSession] = []
@@ -144,6 +167,7 @@ extension RunningSession {
                 RunningSession(
                     id: row.sessionId,
                     prompt: prompt(of: turn, in: cached) ?? "",
+                    title: titles[row.sessionId],
                     elapsedWhenSeeded: turn?.elapsed(asOf: now) ?? 0,
                     seededAt: now,
                 ),
@@ -212,7 +236,18 @@ public struct LiveActivityRow: Codable, Sendable, Hashable, Identifiable {
     /// The session this row is about.
     public let id: String
     /// The operator's instruction, already cut short.
+    ///
+    /// Still carried, and still cut, because it is what the row says when the
+    /// host has not named the session: an unnamed row with no instruction is a
+    /// clock about nothing.
     public let prompt: String
+    /// The host's title for the session, when it has one.
+    ///
+    /// Optional, and optional on the wire as well: an activity posted by an
+    /// older build carries no `title` key, and the system hands that stored
+    /// state to the new widget. A required field would make the old row fail to
+    /// decode and the card draw nothing.
+    public let title: String?
     /// How long the session had been running when the row was built.
     public let elapsed: TimeInterval
     /// The instant ``elapsed`` was measured from.
@@ -221,13 +256,38 @@ public struct LiveActivityRow: Codable, Sendable, Hashable, Identifiable {
     /// - Parameters:
     ///   - id: the session.
     ///   - prompt: the instruction, cut short for the row.
+    ///   - title: the host's title for the session, when it has one.
     ///   - elapsed: how long it has been running.
     ///   - countingSince: the instant that count started at.
-    public init(id: String, prompt: String, elapsed: TimeInterval, countingSince: Date) {
+    public init(
+        id: String,
+        prompt: String,
+        title: String? = nil,
+        elapsed: TimeInterval,
+        countingSince: Date,
+    ) {
         self.id = id
         self.prompt = prompt
+        self.title = title
         self.elapsed = elapsed
         self.countingSince = countingSince
+    }
+
+    /// What the left side of the row says.
+    ///
+    /// The host's title first, because it is the name the operator gave the
+    /// conversation and the one the session list already draws. A session the
+    /// host has not named -- or one whose "title" is only space, which is what a
+    /// projection mid-composition answers with -- falls back to the operator's
+    /// own instruction, already cut. The title is not cut by
+    /// ``LiveActivityDecision/promptSnippetLength``: that number is about a
+    /// prompt on a lock-screen row, and a session's name is a name.
+    public var displayTitle: String {
+        if let title {
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return prompt
     }
 }
 
@@ -333,6 +393,7 @@ public struct LiveActivityDecision: Codable, Sendable, Equatable {
                 LiveActivityRow(
                     id: session.id,
                     prompt: snippet(session.prompt),
+                    title: session.title,
                     elapsed: session.elapsed(asOf: now),
                     countingSince: session.countingSince,
                 )

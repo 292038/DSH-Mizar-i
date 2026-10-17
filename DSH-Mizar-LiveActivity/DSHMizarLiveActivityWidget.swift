@@ -143,16 +143,18 @@ private extension String {
 
 /// One row as VoiceOver reads it.
 private extension LiveActivityRow {
-    /// The operator's instruction, then what the number beside it is.
+    /// What the row says, then what the number beside it is.
     ///
     /// The row is one element and this is its whole label, so the two parts are
     /// joined here rather than by `.accessibilityElement(children: .combine)` --
-    /// see the note on `SessionRows`. A row whose instruction the app has not
-    /// read yet contributes nothing, and the label is then just the noun: a
+    /// see the note on `SessionRows`. The row's left side is the session's title
+    /// when the host has named it and the operator's instruction otherwise; that
+    /// is `displayTitle`, so a listener hears the same name a reader sees. A row
+    /// with neither contributes nothing, and the label is then just the noun: a
     /// duration announced with no noun is a number about nothing, which is what
     /// `Localizable.strings` says about this key.
     var spokenLabel: Text {
-        Text(verbatim: [prompt, String.translated("Running time")]
+        Text(verbatim: [displayTitle, String.translated("Running time")]
             .filter { !$0.isEmpty }
             .joined(separator: ", "))
     }
@@ -183,19 +185,34 @@ struct DSHMizarLiveActivityWidget: Widget {
                 DynamicIslandExpandedRegion(.bottom) {
                     SessionRows(state: context.state)
                 }
+            // The compact presentation is content, and only content. Measured
+            // at these sizes: the mark is 14 points square, and the clock's
+            // natural width at 11-point monospaced digits runs from 24.3 points
+            // ("0:00") to 41.6 points ("1:23:45"). The two slots therefore come
+            // to about 38-56 points before the system's own inter-slot
+            // spacing -- well under the minimum compact width iOS imposes, so
+            // nothing in this builder can make the island longer than the
+            // system's own floor. There is no centre content, no widget URL and
+            // no keyline tint.
             } compactLeading: {
-                // Left: who this is about.
-                Mark(diameter: 15)
+                // Left: the mark, at the smallest size that still reads as the
+                // app. No frame beyond the image's own and no words: the
+                // compact island is sized by its content, and anything else
+                // here is width the operator did not ask for.
+                Mark(diameter: 14)
+                    .fixedSize()
             } compactTrailing: {
-                // Right: how long the longest-running session has been going, or
-                // the check that says nothing is.
-                Headline(state: context.state)
+                // Right: the clock and nothing else. Monospaced digits, the
+                // system's own width, no wrapping frame -- the number is the
+                // whole of this side.
+                Headline(state: context.state, font: .caption2.monospacedDigit())
+                    .fixedSize()
             } minimal: {
-                // One slot, no left and right. The check while everything is
-                // finished, because that is the fact worth the space; the mark
-                // otherwise, which says which app is working without a number
-                // nobody can read at this size.
-                MinimalMark(state: context.state)
+                // One slot, no left and right: the mark only. The check the old
+                // build drew here made a finished activity wider than a mark for
+                // no information a one-glyph slot can carry.
+                Mark(diameter: 14)
+                    .fixedSize()
             }
         }
     }
@@ -273,12 +290,15 @@ private struct TitleRow: View {
 private struct Clock: View {
     /// The instant the count starts at.
     let since: Date
+    /// The size it is drawn at. The compact island asks for the smallest one;
+    /// the card asks for a body-sized figure.
+    var font: Font = .caption.monospacedDigit()
 
     var body: some View {
         Text(since, style: .timer)
             // Monospaced digits so the text does not jitter sideways as the
             // numbers change.
-            .font(.caption.monospacedDigit())
+            .font(font)
             .lineLimit(1)
             // The string SwiftUI resolves for this clock never enters the
             // accessibility tree. Whoever draws it says in words what it is.
@@ -288,16 +308,17 @@ private struct Clock: View {
 
 /// The island's right side: a counting clock, or the check that says nothing is.
 ///
-/// One row's worth of information, deliberately. The compact trailing region is
-/// about forty points wide, which is a duration and nothing else.
+/// One row's worth of information, deliberately. On the compact island it is a
+/// duration and nothing else; the card asks for the same view at a larger size.
 private struct Headline: View {
     let state: LiveActivityPhase
+    var font: Font = .caption.monospacedDigit()
 
     var body: some View {
         if let longest = state.rows.first {
             // The system ticks this. No update from the app, ever, for the
             // seconds to move.
-            Clock(since: longest.countingSince)
+            Clock(since: longest.countingSince, font: font)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(Text.translated("Running time"))
         } else {
@@ -315,48 +336,52 @@ private struct FinishedCheck: View {
     }
 }
 
-/// The smallest presentation: one slot beside the camera.
-private struct MinimalMark: View {
-    let state: LiveActivityPhase
-
-    var body: some View {
-        if state.rows.isEmpty {
-            FinishedCheck()
-        } else {
-            Mark(diameter: 17)
-        }
-    }
-}
-
 /// The rows the decision layer produced: one or two, longest-running first.
 ///
-/// Each row is the beginning of that session's most recent instruction and the
-/// time it has been going. The cutting is not done here -- `LiveActivityDecision`
-/// decides how much of an instruction survives, and this file would be a second
-/// opinion about it if it cut again.
+/// Each row's left side is the session's title, falling back to the beginning
+/// of that session's most recent instruction when the host has not named it;
+/// its right side is the time it has been going. The cutting of the fallback is
+/// not done here -- `LiveActivityDecision` decides how much of an instruction
+/// survives, and this file would be a second opinion about it if it cut again.
+///
+/// The card asks for the prominent size: a body-sized title, a body-sized clock,
+/// a 44-point row and a grid, so the two rows line up and the time column is
+/// right-aligned whether the session has been running for nine seconds or nine
+/// hours. The expanded island keeps the compact type: its height is its own cap
+/// and the operator asked for the card to grow, not the island.
 private struct SessionRows: View {
     let state: LiveActivityPhase
+    /// Whether to draw the larger card typography.
+    var prominent = false
+
+    private var titleFont: Font { prominent ? .body.weight(.medium) : .caption }
+    private var clockFont: Font {
+        prominent ? .body.monospacedDigit().weight(.semibold) : .caption.monospacedDigit()
+    }
+    private var rowHeight: CGFloat? { prominent ? 44 : nil }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
             ForEach(state.rows) { row in
-                HStack(spacing: 8) {
-                    // A row with no instruction is a session the app has not
-                    // read the prompt of yet. It says only how long, which is
+                GridRow(alignment: .center) {
+                    // A row with no title and no instruction is a session the
+                    // app has not read yet. It says only how long, which is
                     // true; the session id in the operator's place would be the
                     // app talking.
-                    if !row.prompt.isEmpty {
-                        // `verbatim` for the same reason the rest of this file
-                        // is: the instruction is the operator's words, not a key
-                        // to look up.
-                        Text(verbatim: row.prompt)
-                            .font(.caption)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 4)
-                    Clock(since: row.countingSince)
+                    Text(verbatim: row.displayTitle)
+                        .font(titleFont)
+                        .lineLimit(1)
+                        // The first column takes the width the card leaves and
+                        // the second keeps its natural width, so the numbers
+                        // form one right-aligned column rather than drifting
+                        // with the title beside them.
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .gridCellAnchor(.leading)
+                    Clock(since: row.countingSince, font: clockFont)
                         .foregroundStyle(.white.opacity(0.72))
+                        .gridCellAnchor(.trailing)
                 }
+                .frame(minHeight: rowHeight)
                 // One element for VoiceOver, but its words are put together here
                 // rather than by SwiftUI. `.combine` is the other way to get one
                 // element, and it is the one thing in this file that must not be
@@ -385,13 +410,38 @@ private struct SessionRows: View {
     }
 }
 
+/// The card's heading: the mark and the app's name, at reading size.
+///
+/// Larger than the island's title row on purpose. The card is the thing that
+/// has to read as a card on a lock screen full of notifications, and a caption
+/// above body-sized rows reads as a footnote to them.
+private struct CardTitle: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Mark(diameter: 22)
+            Text(verbatim: "DSH-Mizar")
+                .font(.title3.weight(.semibold))
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: "DSH-Mizar"))
+    }
+}
+
 /// The whole card: the title row, then the rows.
+///
+/// The height is content, not a frame: a 24-point title, two 44-point rows and
+/// 6 points of padding above and below come to about 136 points before
+/// WidgetKit's own margins. That is as tall as the Lock Screen's activity cap
+/// leaves room for -- the system's limit is around 160 points, so the two
+/// notification banners this is asked to match cannot both fit whole. The rows
+/// are the part that must not be squeezed, and they are the part that grows.
 private struct LiveActivityCard: View {
     let state: LiveActivityPhase
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            TitleRow()
+        VStack(alignment: .leading, spacing: 8) {
+            CardTitle()
             if state.rows.isEmpty {
                 // Nothing is running. The decision layer has no rows to give and
                 // the card says so in words rather than by being blank, because
@@ -400,13 +450,15 @@ private struct LiveActivityCard: View {
                 HStack(spacing: 6) {
                     FinishedCheck()
                     Text.translated("Every session has finished")
-                        .font(.caption)
+                        .font(.body)
                     Spacer(minLength: 0)
                 }
             } else {
-                SessionRows(state: state)
+                SessionRows(state: state, prominent: true)
             }
         }
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .foregroundStyle(.white)
         // The icon's own navy, so the card belongs to the app whose glyph is on
         // it. Set here rather than left to the system because the card's content

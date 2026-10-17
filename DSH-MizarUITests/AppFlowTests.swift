@@ -1047,6 +1047,15 @@ final class AppFlowTests: XCTestCase {
             app.staticTexts["sessions.error"].waitForExistence(timeout: Self.patience),
             "the app did not say the Mac was unreachable",
         )
+        // But it says so quietly. The yellow banner and its Retry button were
+        // reported as looking like a development build -- and the retry those
+        // two words offered is already done by the read itself, by pull to
+        // refresh, and by the toolbar's refresh. An error row is information;
+        // the recovery lives where the operator already looks for it.
+        XCTAssertFalse(
+            app.buttons["Retry"].exists,
+            "the list still offers a Retry control; the error must be a row, not a button",
+        )
 
         // A refresh while unreachable must not report an all-clear. It did: the
         // pass returned without asking anything and the window said "Up to date.
@@ -1062,6 +1071,32 @@ final class AppFlowTests: XCTestCase {
         XCTAssertFalse(
             app.staticTexts["Up to date"].waitForExistence(timeout: 4),
             "a refresh against an unreachable Mac claimed everything was already stored",
+        )
+        // The pass has finished when the window stops saying it is looking and
+        // starts saying why it could not. Waiting for that is what makes the
+        // second refresh below a second pass rather than a tap ignored by the
+        // one still running.
+        XCTAssertTrue(
+            app.staticTexts["sync.problem"].waitForExistence(timeout: Self.patience),
+            "the failed refresh never reported why it failed",
+        )
+        app.buttons["sync.done"].tap()
+        XCTAssertTrue(
+            app.buttons["sync.done"].waitForNonExistence(timeout: 5),
+            "the progress window did not close",
+        )
+
+        // And when the Mac comes back, the list recovers through the gesture it
+        // already has. Pull to refresh lands in `refreshSessions`, which opens a
+        // socket when there is none -- the recovery the old Retry button did by
+        // hand, now on the path the operator already uses.
+        Self.setMockOffline(false)
+        let pullStart = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.28))
+        let pullEnd = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.88))
+        pullStart.press(forDuration: 0.1, thenDragTo: pullEnd)
+        XCTAssertTrue(
+            app.staticTexts["sessions.error"].waitForNonExistence(timeout: Self.patience),
+            "a read that recovered left the error row on screen",
         )
     }
 
@@ -1665,9 +1700,18 @@ final class AppFlowTests: XCTestCase {
     // MARK: - Interactions
 
     func testAPendingApprovalOffersExactlyTwoOutcomes() {
-        let app = launch()
+        // Chinese, because the tool identifier is the thing on this card that
+        // the app has to name: `write_file` is protocol data, and an operator
+        // reading 请求执行 write_file is reading the host's vocabulary rather
+        // than the app's.
+        let app = launch(language: "zh-Hans")
         expect(app.buttons["approval.allowOnce"], "there is no way to allow")
         expect(app.buttons["approval.reject"], "there is no way to reject")
+        XCTAssertTrue(
+            app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "写入文件"))
+                .firstMatch.waitForExistence(timeout: Self.patience),
+            "the approval card still shows the raw tool identifier",
+        )
         // There is deliberately no "always allow": a grant that outlives the
         // request it was given for is a permission change, and those belong in
         // the permission picker where they are visible and reversible.
@@ -2426,6 +2470,15 @@ final class AppFlowTests: XCTestCase {
         // Message content is data from the session, not interface copy.
         let prompt = chinese.staticTexts["Refactor the parser and run the tests."]
         XCTAssertTrue(reveal(prompt, in: chinese), "message content was translated")
+        // The command sheet's names are the app's words; the slash forms beside
+        // them are what the host parses and stay exactly as they are.
+        chinese.buttons["composer.commands"].tap()
+        let chineseGoal = chinese.buttons["command.goal"]
+        expect(chineseGoal, "the command list did not open")
+        XCTAssertTrue(
+            chineseGoal.label.contains("目标"),
+            "the command name did not translate: \(chineseGoal.label)",
+        )
         chinese.terminate()
 
         let english = launch(language: "en", pending: false)
@@ -2435,6 +2488,13 @@ final class AppFlowTests: XCTestCase {
             english.textFields["composer.field"].value as? String,
             "Ask your agent…",
             "the interface did not follow English",
+        )
+        english.buttons["composer.commands"].tap()
+        let englishGoal = english.buttons["command.goal"]
+        expect(englishGoal, "the command list did not open in English")
+        XCTAssertTrue(
+            englishGoal.label.contains("Goal"),
+            "the command name is not English: \(englishGoal.label)",
         )
     }
 }

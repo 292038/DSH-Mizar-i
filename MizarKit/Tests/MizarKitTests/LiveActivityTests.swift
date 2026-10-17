@@ -26,10 +26,31 @@ private func at(_ seconds: TimeInterval) -> Date { t0.addingTimeInterval(seconds
 private func running(
     _ id: String,
     _ prompt: String = "run the tests",
+    title: String? = nil,
     seed: TimeInterval,
     at seededAt: Date,
 ) -> RunningSession {
-    RunningSession(id: id, prompt: prompt, elapsedWhenSeeded: seed, seededAt: seededAt)
+    RunningSession(
+        id: id,
+        prompt: prompt,
+        title: title,
+        elapsedWhenSeeded: seed,
+        seededAt: seededAt,
+    )
+}
+
+/// A session-list row, as the host's `session.list` sends it.
+private func sessionRow(_ id: String) -> SessionRow {
+    SessionRow(
+        sessionId: id,
+        updatedAt: t0.timeIntervalSince1970 * 1000,
+        running: true,
+        blank: false,
+        agentAvailable: true,
+        cwd: "/Users/you/projects/\(id)",
+        parentSessionId: nil,
+        origin: nil,
+    )
 }
 
 @Suite("A running session's clock")
@@ -287,6 +308,82 @@ struct LiveActivityTests {
         #expect(row?.prompt == String(repeating: "👨‍👩‍👧‍👦", count: 8) + "…")
     }
 
+    @Test("carries the session's title onto its row")
+    func rowCarriesTheSessionTitle() throws {
+        // The row used to be the prompt, and a prompt is not a name: two
+        // sessions working on the same instruction read identically on the
+        // Lock Screen. The title the session list already carries is.
+        let row = try #require(
+            decide(
+                [running("s-1", "fix the parser", title: "Refactor the parser", seed: 30, at: t0)],
+                at: t0,
+            ).phase.rows.first,
+        )
+
+        #expect(row.title == "Refactor the parser")
+        #expect(row.displayTitle == "Refactor the parser")
+    }
+
+    @Test("falls back to the prompt snippet when the host has not named the session")
+    func rowFallsBackToThePrompt() throws {
+        // A session gets a title only once the model has produced one, so an
+        // unnamed session is the ordinary case rather than an error. The
+        // operator's own words are the next best name -- and they are cut by
+        // the same rule the row always used.
+        let unnamed = try #require(
+            decide(
+                [running("s-1", "把登录页那个多余的转圈去掉", seed: 0, at: t0)],
+                at: t0,
+            ).phase.rows.first,
+        )
+        #expect(unnamed.title == nil)
+        #expect(unnamed.displayTitle == "把登录页那个多余…")
+
+        // A title that is only space is not a name, and must not turn the row
+        // blank when the prompt is right there.
+        let blank = try #require(
+            decide(
+                [running("s-2", "run the tests", title: "   ", seed: 0, at: t0)],
+                at: t0,
+            ).phase.rows.first,
+        )
+        #expect(blank.title == "   ")
+        #expect(blank.displayTitle == "run the …")
+    }
+
+    @Test("orders by the clocks, not by the titles")
+    func titlesDoNotAffectOrdering() {
+        // The user is changing what a row says, not which rows are shown or in
+        // what order. Titles are alphabetically the wrong way round here, so a
+        // sort that picked them up would show it.
+        let decision = decide(
+            [
+                running("s-short", "newer", title: "Zzz", seed: 60, at: t0),
+                running("s-long", "older", title: "Aaa", seed: 600, at: t0),
+            ],
+            at: t0,
+        )
+
+        #expect(decision.phase.rows.map(\.id) == ["s-long", "s-short"])
+        #expect(decision.phase.rows.map(\.title) == ["Aaa", "Zzz"])
+    }
+
+    @Test("reads each session's title from the app's title list, and leaves it absent")
+    func runningSessionTakesItsTitleFromTheList() async {
+        // The title does not come from `session.list`; it comes from the usage
+        // frame the app keeps beside it. The mapping is the only place the two
+        // meet, so it is the place a wrong row would start.
+        let rows = await RunningSession.running(
+            in: [sessionRow("s-1"), sessionRow("s-2")],
+            conversations: InMemoryConversationCache(),
+            titles: ["s-1": "Refactor the parser"],
+            now: t0,
+        )
+
+        #expect(rows.map(\.id) == ["s-1", "s-2"])
+        #expect(rows.map(\.title) == ["Refactor the parser", nil])
+    }
+
     @Test("tells the widget which instant each row's clock counts from")
     func rowCarriesItsInstant() throws {
         // The widget draws its own ticking text rather than being handed a new
@@ -307,7 +404,13 @@ struct LiveActivityTests {
     func contentStateRoundTrips() throws {
         let decision = decide(
             [
-                running("s-1", "把登录页那个多余的转圈去掉", seed: 134, at: t0),
+                running(
+                    "s-1",
+                    "把登录页那个多余的转圈去掉",
+                    title: "登录页的转圈",
+                    seed: 134,
+                    at: t0,
+                ),
                 running("s-2", seed: 60, at: t0),
             ],
             at: at(5),
@@ -321,12 +424,41 @@ struct LiveActivityTests {
         let text = String(decoding: data, as: UTF8.self)
         #expect(text.contains("\"running\""))
         #expect(text.contains("\"rows\""))
-        #expect(try JSONDecoder().decode(LiveActivityPhase.self, from: data) == decision.phase)
+        #expect(text.contains("\"title\""))
+        let read = try JSONDecoder().decode(LiveActivityPhase.self, from: data)
+        #expect(read == decision.phase)
+        #expect(read.rows.first?.title == "登录页的转圈")
+        #expect(read.rows.first?.displayTitle == "登录页的转圈")
+        // The unnamed session still says the operator's words, on the widget's
+        // side of the boundary as well.
+        #expect(read.rows.last?.title == nil)
+        #expect(read.rows.last?.displayTitle == "run the …")
 
         // The other case carries no rows at all, and the decision as a whole is
         // `Codable` like everything else here.
         let finished = try JSONEncoder().encode(LiveActivityPhase.finished)
         #expect(try JSONDecoder().decode(LiveActivityPhase.self, from: finished) == .finished)
         #expect(try JSONDecoder().decode(LiveActivityDecision.self, from: JSONEncoder().encode(decision)) == decision)
+    }
+
+    @Test("an activity written before rows carried titles still decodes")
+    func oldRowWithoutATitleDecodes() throws {
+        // A Live Activity outlives the build that posted it, and the system
+        // hands the new widget the old row it stored. A required title would
+        // make that row fail to decode and the card draw nothing, so the key
+        // has to be optional on the wire.
+        let row = LiveActivityRow(id: "s-1", prompt: "run", elapsed: 60, countingSince: t0)
+        let encoded = try JSONEncoder().encode(row)
+        var object = try #require(
+            try JSONSerialization.jsonObject(with: encoded) as? [String: Any],
+        )
+        object.removeValue(forKey: "title")
+
+        let old = try JSONSerialization.data(withJSONObject: object)
+        let read = try JSONDecoder().decode(LiveActivityRow.self, from: old)
+
+        #expect(read.id == "s-1")
+        #expect(read.title == nil)
+        #expect(read.displayTitle == "run")
     }
 }

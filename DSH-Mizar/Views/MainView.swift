@@ -77,36 +77,34 @@ struct MainView: View {
                     // the same reason: with a stored session list there is a
                     // whole app behind this banner, and taking it away would
                     // take away conversations the operator can still read.
+                    //
+                    // The row is information, not a control. It used to be a
+                    // yellow panel with a "Retry" button, and the operator read
+                    // that as a development build rather than as their app
+                    // reporting one failed read. The retry the button performed
+                    // still happens, on the paths that already offer it: the
+                    // read reconnects once by itself, pull to refresh asks
+                    // again, and the toolbar's refresh asks again. What is left
+                    // here is one quiet line in the app's normal error style,
+                    // with no button to mistake for a work in progress.
                     if let error = model.problem {
-                        HStack(spacing: 8) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.red)
                             Text(error)
                                 .font(.caption)
+                                .foregroundStyle(.secondary)
                                 .lineLimit(2)
                                 // On the text, not the row: an identifier on a
                                 // container does not reach the accessibility
                                 // tree, so a test looking for the banner would
                                 // report the app as silent while it is shouting.
                                 .accessibilityIdentifier("sessions.error")
-                            Spacer()
-                            Button("Retry") {
-                                Task {
-                                    // Reconnect as well as re-read: a banner over
-                                    // stored data is usually a connection that
-                                    // went away, and a refresh alone would only
-                                    // fail again. The order is the one the
-                                    // failure screen uses, and for the same
-                                    // reason -- a refresh that fails calls back
-                                    // into `reconnect`.
-                                    if await model.reconnect(patient: true) {
-                                        await model.refreshSessions()
-                                    }
-                                }
-                            }
-                            .font(.caption)
+                            Spacer(minLength: 0)
                         }
-                        .padding(10)
-                        .background(.yellow.opacity(0.15))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
                     }
                 }
                 .navigationTitle(model.host?.displayName ?? model.welcome?.hostName ?? "Sessions")

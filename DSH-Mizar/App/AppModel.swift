@@ -442,6 +442,7 @@ final class AppModel {
             sessions: sessions,
             conversations: conversations,
             sessionsAreKnown: sessionsAreKnown,
+            titles: titles,
         )
     }
 
@@ -1310,7 +1311,16 @@ final class AppModel {
     ///   over a fresh connection. The background refresh says no: a reconnect
     ///   can take the whole of the assertion, and a list read that fails
     ///   off screen is a list read for the next foreground.
+    ///
+    /// A refresh with no socket at all -- the Mac was unreachable long enough
+    /// for the connection to be torn down -- opens one before it reads. That is
+    /// the recovery the list's old yellow Retry button performed by hand, and
+    /// with that button gone it has to live in the refresh the operator already
+    /// has: pull to refresh, and the toolbar's refresh, both land here.
     func refreshSessions(reconnectingIfNeeded: Bool) async {
+        if connection == nil {
+            guard reconnectingIfNeeded, await reconnect() else { return }
+        }
         guard connection != nil, let tag = currentTag else { return }
         do {
             let result = try await call("session.list", as: SessionListResult.self)
@@ -1744,14 +1754,6 @@ final class AppModel {
             log.add(.sync, "history sync: already running, second request ignored")
             return
         }
-        guard connection != nil else {
-            log.add(.sync, "history sync: skipped, not connected to the Mac")
-            // Reported rather than silently skipped. The window is already up
-            // by the time this runs, and doing nothing looks exactly like having
-            // nothing to do.
-            syncProblem = "Not connected to the Mac."
-            return
-        }
         syncProblem = nil
         // One clock for the whole pass, carried across the two assignments
         // below: the estimate is measured from when the operator asked, not from
@@ -1761,7 +1763,18 @@ final class AppModel {
         syncProgress = SyncProgress(current: "", completed: 0, total: sessions.count, startedAt: startedAt)
         defer { syncProgress = nil }
 
+        // The refresh opens a socket when there is none -- that is where the
+        // old Retry button's reconnect now lives -- so the connection is
+        // checked after it rather than before it.
         await refreshSessions()
+        guard connection != nil else {
+            log.add(.sync, "history sync: skipped, not connected to the Mac")
+            // Reported rather than silently skipped. The window is already up
+            // by the time this runs, and doing nothing looks exactly like having
+            // nothing to do.
+            syncProblem = lastError ?? "Not connected to the Mac."
+            return
+        }
         guard !sessions.isEmpty else {
             log.add(.sync, "history sync: the Mac listed no sessions, or the list could not be read")
             // Either the Mac listed nothing or the read failed. Both are worth
@@ -2073,6 +2086,7 @@ final class AppModel {
                 sessions: sessions,
                 conversations: conversations,
                 sessionsAreKnown: sessionsAreKnown,
+                titles: titles,
             )
         }
         await sendPresence()

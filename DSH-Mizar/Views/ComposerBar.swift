@@ -47,11 +47,18 @@ struct ComposerBar: View {
 
     /// DSH's own commands. The slash forms are what the host parses; the titles
     /// are what the operator is choosing between.
+    ///
+    /// The titles are looked up here rather than drawn as raw words: this list
+    /// is a sheet inside the conversation, and an operator reading 命令 should
+    /// not then be choosing between "Goal", "Plan", "Compact" and "Model". The
+    /// lookup happens once, when the list is first used, because the app's
+    /// language does not change under a running process. The slash forms are
+    /// deliberately untouched: `/goal` is what the host parses, not a label.
     static let commands: [(slash: String, title: String, symbol: String)] = [
-        ("/goal", "Goal", "target"),
-        ("/plan", "Plan", "list.bullet.rectangle"),
-        ("/compact", "Compact", "arrow.down.right.and.arrow.up.left"),
-        ("/model", "Model", "cpu"),
+        ("/goal", String(localized: "Goal"), "target"),
+        ("/plan", String(localized: "Plan"), "list.bullet.rectangle"),
+        ("/compact", String(localized: "Compact"), "arrow.down.right.and.arrow.up.left"),
+        ("/model", String(localized: "Model"), "cpu"),
     ]
 
     var body: some View {
@@ -286,14 +293,18 @@ private struct ContextDetail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let context = stats?.context {
-                row("Window", context.window.map { $0.formatted(.number.grouping(.automatic)) } ?? "—")
-                row("Pressure", context.pressureTokens.map { $0.formatted(.number.grouping(.automatic)) } ?? "—")
-                row("Projected", context.projectedTokens.map { $0.formatted(.number.grouping(.automatic)) } ?? "—")
+                // Looked up before `Text` sees them. `Text(String)` is the
+                // verbatim initialiser, not the localisable one, so passing
+                // these words through a `String` parameter is how the Chinese
+                // interface showed "Window", "Pressure" and "Messages".
+                row(String(localized: "Window"), context.window.map { $0.formatted(.number.grouping(.automatic)) } ?? "—")
+                row(String(localized: "Pressure"), context.pressureTokens.map { $0.formatted(.number.grouping(.automatic)) } ?? "—")
+                row(String(localized: "Projected"), context.projectedTokens.map { $0.formatted(.number.grouping(.automatic)) } ?? "—")
                 if let breakdown = context.breakdown {
                     Divider()
-                    row("System", breakdown.systemTokens.formatted(.number.grouping(.automatic)))
-                    row("Tools", breakdown.toolsTokens.formatted(.number.grouping(.automatic)))
-                    row("Messages", breakdown.messageTokens.formatted(.number.grouping(.automatic)))
+                    row(String(localized: "System"), breakdown.systemTokens.formatted(.number.grouping(.automatic)))
+                    row(String(localized: "Tools"), breakdown.toolsTokens.formatted(.number.grouping(.automatic)))
+                    row(String(localized: "Messages"), breakdown.messageTokens.formatted(.number.grouping(.automatic)))
                 }
             } else {
                 Text("No context figure yet.")
@@ -305,6 +316,11 @@ private struct ContextDetail: View {
         .frame(minWidth: 220)
     }
 
+    /// One label and its figure.
+    ///
+    /// - Parameters:
+    ///   - title: already localised; `Text`'s `String` initialiser is verbatim.
+    ///   - value: the host's figure, formatted for reading rather than translated.
     private func row(_ title: String, _ value: String) -> some View {
         HStack {
             Text(title)

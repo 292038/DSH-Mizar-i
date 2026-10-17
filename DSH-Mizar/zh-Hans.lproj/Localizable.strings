@@ -83,6 +83,23 @@
 "This preset grants unrestricted access to your machine." = "该预设会授予对你机器的无限制访问权限。";
 "Applies to this session immediately. A running turn is not interrupted." = "立即对当前会话生效，不会中断正在进行的轮次。";
 
+/* 工具名。标识符本身是协议数据，不在这里；`ToolNames` 把认识的标识符映射到
+   下面某个键，不认识的原样显示主机发来的标识符。两种语言都必须定义每个键：
+   英文值是名字，不是兜底。 */
+"Read file" = "读取文件";
+"Read image" = "读取图片";
+"Write file" = "写入文件";
+"Edit file" = "编辑文件";
+"Shell command" = "命令";
+"Find files" = "查找文件";
+"Search contents" = "搜索内容";
+"Web search" = "网页搜索";
+"Fetch web page" = "获取网页";
+"Ask operator" = "询问用户";
+"Update tasks" = "更新任务";
+"Subagent task" = "子代理任务";
+"Apply patch" = "应用补丁";
+
 /* Failures */
 "The turn ended without a response" = "本轮没有产生回复";
 "Context %lld%" = "上下文 %lld%";

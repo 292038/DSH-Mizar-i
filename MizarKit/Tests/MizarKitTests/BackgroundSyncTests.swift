@@ -170,6 +170,7 @@ struct BackgroundSyncTests {
                 row("s-delegated", origin: "subagent"),
             ],
             conversations: cache,
+            titles: [:],
             now: t0,
         )
 
@@ -192,6 +193,7 @@ struct BackgroundSyncTests {
         let rows = await RunningSession.running(
             in: [row("s-unseen")],
             conversations: InMemoryConversationCache(),
+            titles: [:],
             now: t0,
         )
 
@@ -212,7 +214,12 @@ struct BackgroundSyncTests {
             finishedTurn("the last thing I asked", began: at(-600), ended: at(-500)),
         ]))
 
-        let rows = await RunningSession.running(in: [row("s-started")], conversations: cache, now: t0)
+        let rows = await RunningSession.running(
+            in: [row("s-started")],
+            conversations: cache,
+            titles: [:],
+            now: t0,
+        )
 
         #expect(rows.first?.prompt == "the last thing I asked")
         // No running turn means no clock to seed from, so the row counts from
@@ -232,7 +239,12 @@ struct BackgroundSyncTests {
             finishedTurn("tidy up", began: at(-300), ended: at(-120)),
         ]))
 
-        let rows = await RunningSession.running(in: [row("s-finished")], conversations: cache, now: t0)
+        let rows = await RunningSession.running(
+            in: [row("s-finished")],
+            conversations: cache,
+            titles: [:],
+            now: t0,
+        )
 
         #expect(rows.first?.elapsedWhenSeeded == 0)
         #expect(rows.first?.prompt == "tidy up")

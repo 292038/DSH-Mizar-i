@@ -15,8 +15,10 @@
 //      made for any of it -- the island is a display of what the phone has, and a
 //      display that only updates when the network answers is a display that stops
 //      exactly when the Mac is busy. The reading itself lives in
-//      `RunningSession.running(in:conversations:now:)`, shared with the
-//      background refresh so the two cannot disagree about which row is up.
+//      `RunningSession.running(in:conversations:titles:now:)`, shared with the
+//      background refresh so the two cannot disagree about which row is up. The
+//      title is not in `session.list`; it arrives with the usage frame, and this
+//      file is where the app's title list is joined to the running sessions.
 //
 //    - **Asks the decision layer**, with the one flag it owns.
 //
@@ -128,12 +130,14 @@ final class LiveActivityController {
         sessions: [SessionRow],
         conversations: any ConversationCache,
         sessionsAreKnown: Bool,
+        titles: [String: String],
     ) async {
         appOpened()
         await refresh(
             sessions: sessions,
             conversations: conversations,
             sessionsAreKnown: sessionsAreKnown,
+            titles: titles,
         )
     }
 
@@ -150,11 +154,13 @@ final class LiveActivityController {
     ///   - conversations: where the prompts and the running turns are kept.
     ///   - sessionsAreKnown: whether that list is something the host said, rather
     ///     than the empty array a model has before its first read.
+    ///   - titles: the app's title list, keyed by session id.
     ///   - now: the instant to measure the clocks to.
     func refresh(
         sessions: [SessionRow],
         conversations: any ConversationCache,
         sessionsAreKnown: Bool,
+        titles: [String: String],
         now: Date = Date(),
     ) async {
         guard sessionsAreKnown else {
@@ -168,7 +174,12 @@ final class LiveActivityController {
             // later.
             return
         }
-        let running = await RunningSession.running(in: sessions, conversations: conversations, now: now)
+        let running = await RunningSession.running(
+            in: sessions,
+            conversations: conversations,
+            titles: titles,
+            now: now,
+        )
         let decision = LiveActivityDecision.make(
             sessions: running,
             appOpenedSinceLastFinish: appOpenedSinceLastFinish,
@@ -372,6 +383,7 @@ private enum ActivityCalls {
             return zip(mine, theirs).allSatisfy { current, next in
                 current.id == next.id
                     && current.prompt == next.prompt
+                    && current.title == next.title
                     && abs(current.countingSince.timeIntervalSince(next.countingSince)) < 1
             }
         default:

@@ -82,6 +82,24 @@
 "This preset grants unrestricted access to your machine." = "This preset grants unrestricted access to your machine.";
 "Applies to this session immediately. A running turn is not interrupted." = "Applies to this session immediately. A running turn is not interrupted.";
 
+/* Tool names. The identifiers themselves are protocol data and are not here;
+   `ToolNames` maps a known identifier to one of these keys and leaves anything
+   it does not know exactly as the host sent it. Both languages must define
+   every key: an English value is a name, not a fallback. */
+"Read file" = "Read file";
+"Read image" = "Read image";
+"Write file" = "Write file";
+"Edit file" = "Edit file";
+"Shell command" = "Shell command";
+"Find files" = "Find files";
+"Search contents" = "Search contents";
+"Web search" = "Web search";
+"Fetch web page" = "Fetch web page";
+"Ask operator" = "Ask operator";
+"Update tasks" = "Update tasks";
+"Subagent task" = "Subagent task";
+"Apply patch" = "Apply patch";
+
 /* Failures */
 "The turn ended without a response" = "The turn ended without a response";
 "Context %lld%" = "Context %lld%";
