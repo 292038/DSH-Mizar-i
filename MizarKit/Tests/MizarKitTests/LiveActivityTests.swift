@@ -467,6 +467,18 @@ struct LiveActivityTests {
         #expect(try JSONDecoder().decode(LiveActivityDecision.self, from: JSONEncoder().encode(decision)) == decision)
     }
 
+    @Test("decodes the end push's content-state exactly as the relay sends it")
+    func endPushContentStateDecodes() throws {
+        // Cross-repo contract, pinned from this side: the relay's end push
+        // carries `{"finished":{}}` as its `content-state` (see
+        // `buildLiveActivityEndPayload` in dsh-relay). ActivityKit decodes it
+        // with a plain JSONDecoder, and a literal that no longer matches this
+        // enum is an end event iOS accepts and then drops — the activity keeps
+        // counting, which is the bug the payload exists to fix.
+        let literal = Data(#"{"finished":{}}"#.utf8)
+        #expect(try JSONDecoder().decode(LiveActivityPhase.self, from: literal) == .finished)
+    }
+
     @Test("an activity written before rows carried titles still decodes")
     func oldRowWithoutATitleDecodes() throws {
         // A Live Activity outlives the build that posted it, and the system
