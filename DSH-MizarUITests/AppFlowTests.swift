@@ -1639,6 +1639,63 @@ final class AppFlowTests: XCTestCase {
         )
     }
 
+    /// A turn that ends while the conversation is open is noticed by itself.
+    ///
+    /// The report, in the operator's words: the phone sends an instruction, the
+    /// session shows as running, the window is left open, the turn finishes and
+    /// the phone still says it is running until somebody pulls to refresh. The
+    /// only polls before this were the one after a send -- which gives up once
+    /// the sent prompt has arrived -- and the pending-interactions one, which
+    /// has nothing to say about a turn ending.
+    ///
+    /// The fixture's session is stopped at the control endpoint while the
+    /// conversation is open. Its session list then reports nothing running and
+    /// its conversation page carries the turn's end, so a phone that keeps
+    /// asking sees the finished row; a phone that stopped asking does not. The
+    /// assertion is made with no tap, no pull and no relaunch, because any of
+    /// those would start a read of its own and prove the opposite thing.
+    ///
+    /// The timeout is longer than one tick (10 s) with room for the round trip
+    /// and the view's own update, and short enough that a failure is about the
+    /// poll rather than about the suite's patience.
+    func testAFinishedTurnIsNoticedWithoutARefresh() {
+        let app = launch(pending: false)
+        // The conversation has landed before the clock starts: the row and the
+        // prompt are what the assertion watches.
+        expect(app.staticTexts["And run the whole suite."], "the running turn's prompt is missing")
+
+        let running = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "DeepSeeking for "))
+            .firstMatch
+        expect(running, "no turn is reported as running to begin with")
+        let row = turnRow(app, 4)
+        expect(row, "turn 4 is missing, so there is no running row to watch")
+
+        // The Mac finishes the turn. Nothing on the phone is touched from here.
+        Self.setMockSessionRunning(false)
+
+        let stopped = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: running,
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [stopped], timeout: 15),
+            .completed,
+            "the running row is still on screen 15 s after the host stopped the session: \(running.label)",
+        )
+        // Finished rather than erased: the turn's row, prompt and markers are
+        // still on screen, so the row changed state instead of leaving.
+        XCTAssertTrue(row.exists, "turn 4 went away instead of finishing")
+        XCTAssertTrue(
+            app.staticTexts["And run the whole suite."].exists,
+            "the finished turn's prompt went away",
+        )
+        XCTAssertTrue(
+            app.staticTexts["2 steps"].exists,
+            "the finished turn's step count went away",
+        )
+    }
+
     /// The context figure opens the breakdown it is computed from.
     ///
     /// This replaces a test for a Usage *tab*. The tab is gone: the figure lives

@@ -860,6 +860,17 @@ function answer(frame) {
               id: 'm4',
             }),
 
+            // The end of turn 4, but only while the session has stopped. The
+            // fixture has to be consistent about what "running" means: the
+            // session list says whether a turn is executing, and a page that
+            // still showed turn 4 open after the session reported it stopped
+            // would make "the running row goes away" untestable -- the host
+            // would be telling the app two different things. Flipped at runtime
+            // by `/session?running=0`, which is the endpoint the report's own
+            // reproduction uses: the turn finishes under the open conversation
+            // and the phone has to notice without a tap.
+            ...(sessionRunning ? [] : [record('turn/end', { turn: 4, reason: { kind: 'completed' } })]),
+
             // Anything the client has sent since, appended the way a host would:
             // a prompt with no turn after it, which is the state every message is
             // in for a moment.

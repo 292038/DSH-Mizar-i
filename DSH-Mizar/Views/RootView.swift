@@ -53,6 +53,11 @@ struct RootView: View {
         .task { await model.start() }
         .task { await model.requestFirstRunPermissions() }
         .task { await model.ensurePushRegistration() }
+        // Initial as well as changes: a launch starts active, and that is the
+        // state the running poll needs before the first session list arrives.
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            model.setAppActive(phase == .active)
+        }
         .onChange(of: scenePhase) { _, phase in
             // The Live Activity's off-screen half. Called synchronously and
             // before the presence report, because the assertion it takes has to

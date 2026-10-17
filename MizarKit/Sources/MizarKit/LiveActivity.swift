@@ -94,7 +94,18 @@ public struct RunningSession: Codable, Sendable, Equatable, Identifiable {
     /// instant -- a session the host said had been running two minutes when the
     /// app read it at 10:00 began at 09:58 -- and the instant is what the
     /// ticking and the ordering both use.
-    public var countingSince: Date { seededAt.addingTimeInterval(-elapsedWhenSeeded) }
+    ///
+    /// **Never after ``seededAt``.** The figure is measured against the host's
+    /// clock and ``seededAt`` is the phone's, so a Mac whose clock is ahead
+    /// answers with a start the phone has not reached. Subtracting that would
+    /// put the start in the future: the widget's `Text(_:style:.timer)` has no
+    /// time to count *up* to, and the row would sort ahead of sessions that
+    /// really began earlier. The phone cannot know how long work it never saw
+    /// begin has been running; the honest start is the moment it read the
+    /// figure.
+    public var countingSince: Date {
+        seededAt.addingTimeInterval(-max(0, elapsedWhenSeeded))
+    }
 
     /// How long the session has been running at `now`.
     ///
@@ -390,12 +401,19 @@ public struct LiveActivityDecision: Codable, Sendable, Equatable {
             .sorted(by: longestRunningFirst)
             .prefix(maximumRows)
             .map { session in
+                // A clock never starts after the instant it is measured at.
+                // ``RunningSession/countingSince`` already refuses a start after
+                // its seed, but a session can have been seeded for an instant
+                // this decision has since passed -- and the widget is another
+                // process with no clock to clamp against. This is the last place
+                // that knows `now`, so the invariant is enforced here as well:
+                // a count-up handed a future instant has nothing to count up to.
                 LiveActivityRow(
                     id: session.id,
                     prompt: snippet(session.prompt),
                     title: session.title,
                     elapsed: session.elapsed(asOf: now),
-                    countingSince: session.countingSince,
+                    countingSince: min(session.countingSince, now),
                 )
             }
         guard !rows.isEmpty else {

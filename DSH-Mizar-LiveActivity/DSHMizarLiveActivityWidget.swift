@@ -106,7 +106,8 @@ import WidgetKit
 ///     assembled out of those strings *here*, with no format specifier left in
 ///     it for SwiftUI to find.
 ///  2. **Nothing SwiftUI resolves while drawing is handed to accessibility.**
-///     No `.accessibilityElement(children: .combine)` anywhere: an element's
+///     No accessibility-element merge anywhere — not the `children:` `.combine`
+///     mode, not any other: an element's
 ///     words are put together in this process and attached with
 ///     `children: .ignore`. The clock is drawn with `accessibilityHidden(true)`
 ///     (see `Clock`) and described in words by whoever draws it. The mark's
@@ -146,7 +147,8 @@ private extension LiveActivityRow {
     /// What the row says, then what the number beside it is.
     ///
     /// The row is one element and this is its whole label, so the two parts are
-    /// joined here rather than by `.accessibilityElement(children: .combine)` --
+    /// joined here rather than by the `.combine` mode of
+    /// `accessibilityElement(children:)` --
     /// see the note on `SessionRows`. The row's left side is the session's title
     /// when the host has named it and the operator's instruction otherwise; that
     /// is `displayTitle`, so a listener hears the same name a reader sees. A row
@@ -185,34 +187,44 @@ struct DSHMizarLiveActivityWidget: Widget {
                 DynamicIslandExpandedRegion(.bottom) {
                     SessionRows(state: context.state)
                 }
-            // The compact presentation is content, and only content. Measured
-            // at these sizes: the mark is 14 points square, and the clock's
-            // natural width at 11-point monospaced digits runs from 24.3 points
-            // ("0:00") to 41.6 points ("1:23:45"). The two slots therefore come
-            // to about 38-56 points before the system's own inter-slot
-            // spacing -- well under the minimum compact width iOS imposes, so
-            // nothing in this builder can make the island longer than the
-            // system's own floor. There is no centre content, no widget URL and
-            // no keyline tint.
+            // The compact presentation is content, and only content -- but the
+            // content has to say how wide it is, and a date-styled `Text` will
+            // not: in WidgetKit a timer fills whatever width it is offered
+            // instead of taking the width of the number it draws. On iOS 27 the
+            // compact views are flexible in width in portrait (see the note
+            // below), so what the trailing view is offered can be the whole
+            // trailing edge of a wide capsule; with no finite width of its own
+            // the number had no frame to be drawn in and the right side stayed
+            // black. `Clock` bounds itself with a hidden placeholder of the
+            // widest count it can draw (0:00:00), so the slot has a width and the
+            // digits sit at the capsule's trailing edge. Nothing here adds
+            // padding, spacing, or a `fixedSize` that would ask for width the
+            // content does not need.
+            //
+            // The capsule itself is the system's: in iOS 27 the compact views are
+            // flexible in width in portrait and constrained in landscape
+            // (`isDynamicIslandLimitedInWidth`). There is no environment value or
+            // API with which an app narrows the portrait capsule; the most this
+            // builder can do is make both of its sides exactly as wide as what
+            // they draw, which is what the mark's 14-point frame and the clock's
+            // placeholder do.
             } compactLeading: {
                 // Left: the mark, at the smallest size that still reads as the
-                // app. No frame beyond the image's own and no words: the
-                // compact island is sized by its content, and anything else
-                // here is width the operator did not ask for.
+                // app. The image's own frame is the whole of its size; a
+                // `fixedSize` beside it would be a second opinion about a frame
+                // that is already exact.
                 Mark(diameter: 14)
-                    .fixedSize()
             } compactTrailing: {
-                // Right: the clock and nothing else. Monospaced digits, the
-                // system's own width, no wrapping frame -- the number is the
-                // whole of this side.
+                // Right: the clock and nothing else. The clock carries its own
+                // bound (see `Clock`), and `.lineLimit(1)` inside it keeps the
+                // number on one line; a `fixedSize` here cannot bound a timer
+                // text and only repeats what the view already says.
                 Headline(state: context.state, font: .caption2.monospacedDigit())
-                    .fixedSize()
             } minimal: {
                 // One slot, no left and right: the mark only. The check the old
                 // build drew here made a finished activity wider than a mark for
                 // no information a one-glyph slot can carry.
                 Mark(diameter: 14)
-                    .fixedSize()
             }
         }
     }
@@ -260,10 +272,10 @@ private struct Mark: View {
 /// Mac, not a phrase to be translated. An activity that reads 米扎尔 in one
 /// language and DSH-Mizar in another would be a different app's card.
 ///
-/// One element with one set of words, assembled here rather than by
-/// `.accessibilityElement(children: .combine)`: see the note at the top of the
-/// file. The mark inside is decorative and says nothing; the words beside it say
-/// everything this row has to say.
+/// One element with one set of words, assembled here rather than by the
+/// `.combine` merge of a single accessibility element: see the note at the top
+/// of the file. The mark inside is decorative and says nothing; the words beside
+/// it say everything this row has to say.
 private struct TitleRow: View {
     var body: some View {
         HStack(spacing: 6) {
@@ -287,6 +299,26 @@ private struct TitleRow: View {
 /// two lines inside `Headline`: it keeps the string the clock resolves to out of
 /// the accessibility tree, and whoever draws the clock says in words what it is
 /// (`Headline`, `SessionRows`), out of strings that are already plain.
+///
+/// ## Why the number is drawn over a hidden one
+///
+/// In WidgetKit a date-styled `Text` **fills the width it is offered** instead of
+/// taking the width of the string it draws. That is deliberate on the system's
+/// part — it lets the host swap the number without asking this process to lay
+/// out again — and it means a timer has no intrinsic width to lay out against.
+/// In the island's trailing slot there is nothing else to give that slot a size,
+/// so it is left with no width of its own and the number is not drawn: on a
+/// real device that is a wide black capsule with the mark on the left and
+/// nothing at all on the right. A `fixedSize` does not help, because the width
+/// the timer wants is the one it is offered rather than one it computes.
+///
+/// So the bound is made out of a text that cannot stretch: the hidden
+/// `Text(verbatim:)` below is the widest count a Live Activity can draw
+/// (`0:00:00`, seven monospaced digits — a Live Activity ends after eight hours),
+/// and the ticking clock is an overlay on it, so the slot has a real width and
+/// the host draws the number into it, right-aligned. The host draws "0:00" in
+/// that width with room to its left and "7:59:59" filling it; nothing is
+/// truncated, and the number is where the trailing side of the capsule is.
 private struct Clock: View {
     /// The instant the count starts at.
     let since: Date
@@ -294,12 +326,28 @@ private struct Clock: View {
     /// the card asks for a body-sized figure.
     var font: Font = .caption.monospacedDigit()
 
+    /// The widest string this clock can draw, in the same font and therefore at
+    /// the same width.
+    ///
+    /// Seven characters is the format the system uses past the first hour
+    /// ("1:23:45"); the eight-hour limit on a Live Activity means it can never
+    /// need more. "0:00:00" has the same character count as "7:59:59", so the
+    /// placeholder is the true maximum rather than an estimate.
+    private static let widest = "0:00:00"
+
     var body: some View {
-        Text(since, style: .timer)
-            // Monospaced digits so the text does not jitter sideways as the
-            // numbers change.
+        Text(verbatim: Self.widest)
             .font(font)
             .lineLimit(1)
+            // The placeholder exists for its width, not for its words.
+            .hidden()
+            .overlay(alignment: .trailing) {
+                Text(since, style: .timer)
+                    // Monospaced digits so the text does not jitter sideways as
+                    // the numbers change.
+                    .font(font)
+                    .lineLimit(1)
+            }
             // The string SwiftUI resolves for this clock never enters the
             // accessibility tree. Whoever draws it says in words what it is.
             .accessibilityHidden(true)
@@ -457,7 +505,14 @@ private struct LiveActivityCard: View {
                 SessionRows(state: state, prominent: true)
             }
         }
-        .padding(.vertical, 6)
+        // The system leaves only a few points between a Live Activity's content
+        // and its rounded edge, so a leading-aligned card ends up with its title
+        // against the glass -- a real device screenshot showed exactly that. This
+        // is the inset that makes it read as a card rather than as text that
+        // overflowed it; 10 vertical against 16 horizontal keeps the optical
+        // balance at these type sizes.
+        .padding(.vertical, 10)
+        .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .foregroundStyle(.white)
         // The icon's own navy, so the card belongs to the app whose glyph is on

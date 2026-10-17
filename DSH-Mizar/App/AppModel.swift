@@ -61,7 +61,16 @@ final class AppModel {
     /// wondering why everything feels slow deserves to see why.
     private(set) var activeEndpoint: PairedHost.Endpoint?
     /// The sessions the host lists, newest activity first.
-    private(set) var sessions: [SessionRow] = []
+    private(set) var sessions: [SessionRow] = [] {
+        didSet {
+            // Every read of the list goes through here -- the first download,
+            // a manual refresh, the poll itself, the empty list a disconnect
+            // leaves -- so this is the one place the running poll learns
+            // whether it is still wanted. Starting it from a view instead is
+            // how there ends up being one poll per screen.
+            updateRunningPoll()
+        }
+    }
 
     /// Whether `sessions` is a list somebody actually gave.
     ///
@@ -305,6 +314,34 @@ final class AppModel {
     var permissionCatalog: PermissionCatalog? { permissionCatalogState.value(for: currentTag) }
     /// The poll that watches for pending interactions.
     private var interactionPoll: Task<Void, Never>?
+    /// The poll that follows a session while something is running.
+    ///
+    /// One task for the whole app, not one per screen. The bug it answers was
+    /// reported with the conversation left open: a turn finished on the Mac and
+    /// the phone went on saying "DeepSeeking" until somebody pulled to refresh,
+    /// because the only poll was the one after a send, which ends when the send
+    /// settles. Views observe ``runningPollTicks``; none of them starts anything.
+    private var runningPoll: Task<Void, Never>?
+    /// The rules the task above is started and stopped by.
+    ///
+    /// A value rather than three separate `Bool`s because "is one already up"
+    /// is part of the decision: a list read that still says a session is running
+    /// must not reset the ten-second clock.
+    private var runningPollState = RunningPoll()
+    /// Whether the app is on screen, as far as the poll is concerned.
+    ///
+    /// False until the root view says otherwise, so a background launch -- a
+    /// `BGAppRefreshTask` arrives before any scene -- does not start a poll that
+    /// can only be suspended. Set from the `scenePhase` the app already watches.
+    private var appIsActive = false
+    /// Bumped after every running-poll tick.
+    ///
+    /// The view's half of the poll. The tick itself only knows about the model:
+    /// the conversation's rows live in `@State` on the screen, so that screen has
+    /// to be told a read has landed before it can re-read the cache. It observes
+    /// this number and refreshes under its own single-flight lock; an integer
+    /// rather than a callback so the model never holds a view.
+    private(set) var runningPollTicks = 0
     /// The task consuming host-pushed events.
     private var eventListener: Task<Void, Never>?
 
@@ -855,6 +892,142 @@ final class AppModel {
             if value < arguments.endIndex { values.append(arguments[value]) }
         }
         return values
+    }
+
+    /// Tell the running poll whether the app is on screen.
+    ///
+    /// Called from the root view's `scenePhase` change. Leaving the screen stops
+    /// the poll rather than letting it sleep: iOS suspends the process anyway,
+    /// and a task that is merely asleep when the process is frozen resumes with
+    /// a stale tick. Coming back starts it again, from what the last read said;
+    /// if that is out of date, the tick ten seconds later is the read that
+    /// corrects it.
+    ///
+    /// - Parameter active: whether the app is `.active`.
+    func setAppActive(_ active: Bool) {
+        guard active != appIsActive else { return }
+        appIsActive = active
+        updateRunningPoll()
+    }
+
+    /// Start or stop the running poll from what the last list said.
+    ///
+    /// The one place the decision is made, called from `sessions`'s observer --
+    /// so every assignment of the list, from every read, is enough -- and from
+    /// the app's active flag. The state machine answers `.none` when the task is
+    /// already in the right state, which is what keeps a manual refresh from
+    /// restarting the tick clock.
+    private func updateRunningPoll() {
+        switch runningPollState.observe(
+            anySessionRunning: RunningPoll.anySessionRunning(in: sessions),
+            appIsActive: appIsActive,
+        ) {
+        case .start:
+            startRunningPoll()
+        case .stop:
+            stopRunningPoll()
+        case .none:
+            break
+        }
+    }
+
+    /// Start the one background task that keeps asking while something runs.
+    ///
+    /// The shape is the pending-interactions poll's: one task property, a sleep
+    /// first, and a loop that ends when the task is cancelled. The sleep is first
+    /// on purpose -- the read that found the running session has just happened,
+    /// so asking again immediately would be traffic for an answer ten seconds
+    /// old at most.
+    private func startRunningPoll() {
+        // The state machine and this guard say the same thing; the guard is what
+        // makes it true even if a cancelled task has not been deallocated yet.
+        guard runningPoll == nil else { return }
+        log.add(.sync, "running poll: started, a session is running")
+        runningPoll = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: RunningPoll.interval)
+                } catch {
+                    // Cancellation is the stop path; there is nothing to report.
+                    return
+                }
+                guard !Task.isCancelled, let self else { return }
+                await self.runningPollTick()
+            }
+        }
+    }
+
+    /// Stop the running poll, if one is up.
+    private func stopRunningPoll() {
+        guard let runningPoll else { return }
+        runningPoll.cancel()
+        self.runningPoll = nil
+        log.add(
+            .sync,
+            appIsActive
+                ? "running poll: stopped, nothing is running"
+                : "running poll: stopped, the app is not on screen",
+        )
+    }
+
+    /// One read of the world the poll exists for: the session list.
+    ///
+    /// Deliberately not ``refreshSessions(reconnectingIfNeeded:)``. That is the
+    /// foreground refresh: it re-reads the workspace registry, writes the stored
+    /// index, and its call reconnects a socket that failed. On a ten-second
+    /// clock, each of those turns a Mac that is asleep into work nobody asked
+    /// for -- a handshake every tick, and a disk write every tick -- and the
+    /// whole reason this poll is allowed to exist is that it costs almost
+    /// nothing. So a tick is exactly one `session.list` on the connection the
+    /// app already has, with no reconnect and no retry of its own. A failure is
+    /// left in the request log, the screen keeps what it had, and the next tick
+    /// is the retry.
+    ///
+    /// What it must do is the half of the answer the screen and the island read:
+    /// the list, and the Live Activity decision made from it -- the same
+    /// controller call the foreground refresh makes, because a finished turn
+    /// should end the activity through one path, not two.
+    ///
+    /// The tick is counted after the read even when the read found nothing
+    /// running: that is the read the open conversation needs to see in order to
+    /// draw the finished row, and by then this task is already being cancelled
+    /// by the observer above -- the counter is the last thing it does.
+    private func runningPollTick() async {
+        guard appIsActive, runningPollState.isPolling else { return }
+        await refreshRunningSessionList()
+        runningPollTicks &+= 1
+    }
+
+    /// The poll's one request: what is running, as the host answers now.
+    ///
+    /// Silent on failure by design. A failed tick is not a new problem for the
+    /// operator -- the banner over the list already carries the last failure
+    /// they can act on -- and a poll that flashed an error every ten seconds
+    /// while the Mac slept would be the app complaining about its own timer.
+    private func refreshRunningSessionList() async {
+        guard let connection, let tag = currentTag else { return }
+        do {
+            let result = try await loggedCall("session.list", on: connection, as: SessionListResult.self)
+            guard tag == currentTag else {
+                log.add(.cache, "running poll: list for \(tag.hostId) dropped, the machine changed under it")
+                return
+            }
+            sessions = result.items
+            sessionsAreKnown = true
+            lastError = nil
+            // Read after the list, with the clock at the same instant: which
+            // sessions are running is half of what the activity shows, and this
+            // is the read that knows. It is the controller's existing entry
+            // point, not a second decision path.
+            await refreshLiveActivity()
+        } catch {
+            // Cancellation is this poll being stopped, not a failure: the app
+            // was backgrounded, or another read found nothing running. Leave the
+            // screen alone and let the loop end.
+            if Task.isCancelled { return }
+            // No banner, no retry. The failure is already in the request log by
+            // `loggedCall`, which is where "did the poll keep asking" is asked.
+        }
     }
 
     /// React to what the host pushes, and fall back to asking occasionally.

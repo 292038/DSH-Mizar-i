@@ -657,6 +657,14 @@ struct SessionDetailView: View {
             didReachBottom = false
             await reload()
         }
+        .onChange(of: model.runningPollTicks) { _, _ in
+            // The model's poll found a new session list. This screen is the
+            // other half of what it is for: the turn rows live in `@State` here,
+            // so the cache has to be re-read and put on screen for the running
+            // row to become the finished one without a tap. `false` for the
+            // initial value: appearing already reads the conversation.
+            Task { await refreshConversationForRunningPoll() }
+        }
         .onChange(of: scenePhase) { _, phase in
             // Ask again when the operator comes back.
             //
@@ -745,6 +753,58 @@ struct SessionDetailView: View {
             }
             try? await Task.sleep(for: .milliseconds(500))
         }
+    }
+
+    /// Refresh the conversation rows on a running-poll tick.
+    ///
+    /// The model's tick has already re-read the session list; this is the screen
+    /// taking the second half of it. Only the conversation page is fetched -- the
+    /// figures above the composer change with a model answering, not with a turn
+    /// ending -- so a tick costs at most one conversation page, never a stats
+    /// read as well.
+    ///
+    /// **Skipped, not queued.** A load already in flight owns the socket, and a
+    /// tick that joined a queue behind it would be a second load stacked on the
+    /// one the queue was for. The next tick asks again in ten seconds; a dropped
+    /// tick is a delay, and a stacked one is the interleaved pair ``reload()``
+    /// describes.
+    private func refreshConversationForRunningPoll() async {
+        guard scenePhase == .active,
+              !reloading,
+              !model.isSyncing,
+              model.selectedSessionId == sessionId,
+              claimConversationReadIfIdle()
+        else { return }
+        defer { conversationLoads -= 1 }
+        // Through the cache, like every other read of this conversation: the
+        // turns are what the screen draws, and they are written beside the page
+        // by `syncConversation`.
+        let synced = await model.syncConversation(for: sessionId)
+        // The same rule `reload()` and the poll after a send follow: only a page
+        // that came back may replace one already on screen.
+        if !synced.isEmpty {
+            items = synced
+            conversationSessionId = sessionId
+        }
+        if let cached = await model.cachedConversation(for: sessionId) {
+            turns = cached.turns ?? []
+            conversationSessionId = sessionId
+        }
+    }
+
+    /// Take the conversation read lock only if it is free.
+    ///
+    /// The poll's half of the gate. ``takeConversationReadLock()`` waits, which
+    /// is right for the poll after a send -- its whole job is to see the sent
+    /// message arrive -- and wrong for a tick that comes round again in ten
+    /// seconds: waiting here would make the tick a queued second load, and
+    /// skipping later is indistinguishable from never having tried.
+    ///
+    /// - Returns: whether the lock was taken. The caller must release it.
+    private func claimConversationReadIfIdle() -> Bool {
+        guard conversationLoads == 0 else { return false }
+        conversationLoads += 1
+        return true
     }
 
     /// Take the conversation read lock, waiting for whoever holds it.

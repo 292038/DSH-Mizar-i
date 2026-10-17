@@ -90,6 +90,21 @@ struct RunningSessionTests {
 
         #expect(session.elapsed(asOf: at(-5)) == 0)
     }
+
+    @Test("never starts counting after the instant the host's figure was read")
+    func neverStartsInTheFuture() {
+        // A Mac whose clock is ahead says the turn began two minutes from now.
+        // Subtracting that figure put `countingSince` in the future, where the
+        // island's count-up has nothing to count up from (and the ordering put
+        // the session ahead of work that actually began earlier). The phone
+        // cannot know how long a turn it has not seen begin has been running; the
+        // honest start is the moment it read the figure.
+        let session = running("s-1", seed: -120, at: t0)
+
+        #expect(session.countingSince == t0)
+        #expect(session.countingSince <= t0, "the clock starts after the instant it was seeded")
+        #expect(session.elapsed(asOf: t0) == 0)
+    }
 }
 
 @Suite("The Live Activity")
@@ -398,6 +413,21 @@ struct LiveActivityTests {
         // And the two are the same clock, which is what lets the widget's timer
         // and the app's figure agree without either asking the host.
         #expect(row.countingSince.addingTimeInterval(row.elapsed) == at(5))
+    }
+
+    @Test("never hands the widget a clock that starts after the decision's now")
+    func rowNeverStartsAfterNow() throws {
+        // The last place that knows `now` is the decision layer, and the widget
+        // is another process with no way to ask. A row seeded for an instant
+        // this decision has already passed -- a session rebuilt with a new seed,
+        // a clock that moved between the read and the decision -- must be
+        // clamped here; the widget's count-up has no time to count up to.
+        let row = try #require(
+            decide([running("s-1", seed: 0, at: at(10))], at: t0).phase.rows.first,
+        )
+
+        #expect(row.countingSince == t0)
+        #expect(row.elapsed == 0)
     }
 
     @Test("survives the trip to the widget as the activity's content state")
