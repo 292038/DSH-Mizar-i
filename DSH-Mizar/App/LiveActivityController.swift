@@ -14,7 +14,9 @@
 //      says what the operator asked it and when the turn began. No request is
 //      made for any of it -- the island is a display of what the phone has, and a
 //      display that only updates when the network answers is a display that stops
-//      exactly when the Mac is busy.
+//      exactly when the Mac is busy. The reading itself lives in
+//      `RunningSession.running(in:conversations:now:)`, shared with the
+//      background refresh so the two cannot disagree about which row is up.
 //
 //    - **Asks the decision layer**, with the one flag it owns.
 //
@@ -46,6 +48,17 @@
 //  foreground refreshes, finds no activity and asks again. That is why there is
 //  no retry queue here and no "start owed" flag: the foreground refresh *is* the
 //  retry.
+//
+//  **The phone in a pocket is the case that has to be said out loud.** A refresh
+//  that runs off screen (`BackgroundRefresh`) can keep an activity that is
+//  already up current, and this controller is what does it. It cannot make one
+//  *appear* where none was ever started: the documented way to do that is
+//  push-to-start -- `pushType: .token`, the app's push-to-start token registered
+//  with the host, and the host sending an APNs start event -- and this app has
+//  none of those (`pushType: nil` below). A session that begins while the app
+//  has not been opened reaches the island when it is next opened, and not
+//  before. Saying so here is the point: a background refresh that is mistaken
+//  for a start is a promise the app cannot keep.
 //
 //  ## The flag
 //
@@ -155,7 +168,7 @@ final class LiveActivityController {
             // later.
             return
         }
-        let running = await runningSessions(in: sessions, conversations: conversations, now: now)
+        let running = await RunningSession.running(in: sessions, conversations: conversations, now: now)
         let decision = LiveActivityDecision.make(
             sessions: running,
             appOpenedSinceLastFinish: appOpenedSinceLastFinish,
@@ -199,7 +212,9 @@ final class LiveActivityController {
             // says so. Updating what is already up is the other half of that rule
             // -- without it the check would never reach the island, because the
             // app has nothing else to send.
-            if let line = await ActivityCalls.update(to: decision.phase) { log.add(.live, line) }
+            if let line = await ActivityCalls.update(to: decision.phase, appState: appStateWord) {
+                log.add(.live, line)
+            }
 
         case .running:
             // See the note at the top of the file: a session is running again, so
@@ -213,76 +228,8 @@ final class LiveActivityController {
                 log.add(.live, await ActivityCalls.start(decision.phase, appState: state, runningRowCount: runningRowCount))
                 return
             }
-            if let line = await ActivityCalls.update(to: decision.phase) { log.add(.live, line) }
+            if let line = await ActivityCalls.update(to: decision.phase, appState: state) { log.add(.live, line) }
         }
-    }
-
-    // MARK: - What the app already knows
-
-    /// The running sessions, as the island needs them.
-    ///
-    /// One per session whose row says it is running, with the operator's most
-    /// recent instruction to it and the figure the running turn's own row is
-    /// drawn from -- `ConversationTurn.elapsed(asOf:)`, which is the clock behind
-    /// "深度求索中，用时 xx 分 xx 秒".
-    ///
-    /// Two deliberate omissions, both of them things the app cannot answer:
-    ///
-    ///   - **Subagents are left out.** Their rows say `running` too, but the app
-    ///     never syncs a subagent's conversation (`syncAllConversations` fetches
-    ///     top-level sessions only), so a subagent has no prompt and no start
-    ///     time here. It would arrive on the island as a row reading "0:03" for
-    ///     work that has been going for ten minutes, and -- because the decision
-    ///     layer keeps the two longest-running rows -- it could push the session
-    ///     the operator is actually watching off the card.
-    ///   - **A session with nothing cached is seeded at zero.** The row says it is
-    ///     running and the phone has not fetched its page yet, so there is no
-    ///     figure to seed from; `RunningSession` says what to do about that, and
-    ///     counting from the moment the app saw it is that answer.
-    ///
-    /// - Parameters:
-    ///   - sessions: the session list as the host last gave it.
-    ///   - conversations: the cache the prompts are read from.
-    ///   - now: the instant the figures are measured to, and the instant they are
-    ///     seeded from.
-    /// - Returns: the sessions to hand to the decision layer.
-    private func runningSessions(
-        in sessions: [SessionRow],
-        conversations: any ConversationCache,
-        now: Date,
-    ) async -> [RunningSession] {
-        var out: [RunningSession] = []
-        for row in sessions where row.running && row.parentSessionId == nil {
-            let cached = await conversations.load(sessionId: row.sessionId)
-            let turn = cached?.turns?.last { $0.isRunning }
-            out.append(
-                RunningSession(
-                    id: row.sessionId,
-                    prompt: prompt(of: turn, in: cached) ?? "",
-                    elapsedWhenSeeded: turn?.elapsed(asOf: now) ?? 0,
-                    seededAt: now,
-                ),
-            )
-        }
-        return out
-    }
-
-    /// The operator's most recent instruction to a session.
-    ///
-    /// The running turn's last prompt, and when the cache holds no running turn
-    /// -- a session that started since the last sync, whose `turn/start` is in a
-    /// page the phone has not fetched -- the last thing the operator said in the
-    /// conversation the phone does have. Both are their own words; nothing here
-    /// makes one up. `nil` when the cache holds neither, and the row then draws a
-    /// time and nothing else, which is true.
-    ///
-    /// - Parameters:
-    ///   - turn: the running turn, when the cache has one.
-    ///   - cached: the cached conversation.
-    /// - Returns: the instruction, or `nil`.
-    private func prompt(of turn: ConversationTurn?, in cached: CachedConversation?) -> String? {
-        if let asked = turn?.prompts.last?.words { return asked }
-        return cached?.items.last { $0.role == .user }?.words
     }
 
     /// Where the app was when it asked ActivityKit for something.
@@ -363,9 +310,15 @@ private enum ActivityCalls {
     /// clock rather than with the host, so an update per read would be an update
     /// per read of a number nobody draws. See ``saysTheSame(_:as:)``.
     ///
-    /// - Parameter phase: what to show.
+    /// - Parameters:
+    ///   - phase: what to show.
+    ///   - appState: where the app was when it sent it. Carried here for the same
+    ///     reason ``start(_:appState:runningRowCount:)`` carries it: whether an
+    ///     update from the background actually lands is the measurement this
+    ///     whole path exists to make, and the word has to be in the line to be
+    ///     the evidence.
     /// - Returns: what to write in the log, or `nil` when there was nothing to do.
-    static func update(to phase: LiveActivityPhase) async -> String? {
+    static func update(to phase: LiveActivityPhase, appState: String) async -> String? {
         let content = ActivityContent(state: phase, staleDate: nil)
         var changed = 0
         for activity in presentable where !saysTheSame(activity, as: phase) {
@@ -373,7 +326,7 @@ private enum ActivityCalls {
             changed += 1
         }
         guard changed > 0 else { return nil }
-        return "updated \(changed) activity: \(describe(phase))"
+        return "updated \(changed) activity while the app was \(appState): \(describe(phase))"
     }
 
     /// Take every activity of this type down.
@@ -456,19 +409,5 @@ private enum ActivityCalls {
     /// - Returns: the description.
     private static func describe(_ error: any Error) -> String {
         (error as? ActivityAuthorizationError).map(String.init(describing:)) ?? error.localizedDescription
-    }
-}
-
-private extension ConversationItem {
-    /// The words of a message, and nothing for anything that is not one.
-    var words: String? {
-        if case .message(_, _, let text, _) = self { return text }
-        return nil
-    }
-
-    /// Who said it, for the one question this file asks of the flat item list.
-    var role: ConversationItem.Role? {
-        if case .message(_, let role, _, _) = self { return role }
-        return nil
     }
 }

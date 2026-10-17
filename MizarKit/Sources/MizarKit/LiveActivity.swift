@@ -92,6 +92,111 @@ public struct RunningSession: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+extension RunningSession {
+    /// The running sessions the island draws, from the session list and the
+    /// phone's own cache.
+    ///
+    /// The one reading of "what is running", shared by the foreground refresh
+    /// and the background one. It was the app's private method until the
+    /// background sync needed the same answer: two readings of the same two
+    /// sources are two readings that can disagree about which row is on the
+    /// card, and the difference would only ever show up on a phone in a pocket.
+    ///
+    /// One per session whose row says it is running, with the operator's most
+    /// recent instruction to it and the figure the running turn's own row is
+    /// drawn from -- `ConversationTurn.elapsed(asOf:)`, which is the clock
+    /// behind "深度求索中，用时 xx 分 xx 秒".
+    ///
+    /// Two deliberate omissions, both of them things the app cannot answer:
+    ///
+    ///   - **Subagents are left out.** Their rows say `running` too, but the app
+    ///     never syncs a subagent's conversation (`syncAllConversations` fetches
+    ///     top-level sessions only), so a subagent has no prompt and no start
+    ///     time here. It would arrive on the island as a row reading "0:03" for
+    ///     work that has been going for ten minutes, and -- because the decision
+    ///     layer keeps the two longest-running rows -- it could push the session
+    ///     the operator is actually watching off the card. The test is
+    ///     ``SessionRow/isLiveActivityCandidate``, the same one the background
+    ///     refresh picks its reads with: the host marks a delegated child with
+    ///     either `parentSessionId` or `origin`, and a reading that honoured only
+    ///     one of them drew a row the other had decided never to refresh.
+    ///   - **A session with nothing cached is seeded at zero.** The row says it is
+    ///     running and the phone has not fetched its page yet, so there is no
+    ///     figure to seed from; `RunningSession` says what to do about that, and
+    ///     counting from the moment the app saw it is that answer.
+    ///
+    /// - Parameters:
+    ///   - sessions: the session list as the host last gave it.
+    ///   - conversations: the cache the prompts are read from.
+    ///   - now: the instant the figures are measured to, and the instant they are
+    ///     seeded from.
+    /// - Returns: the sessions to hand to the decision layer, in the list's order.
+    public static func running(
+        in sessions: [SessionRow],
+        conversations: any ConversationCache,
+        now: Date,
+    ) async -> [RunningSession] {
+        var out: [RunningSession] = []
+        for row in sessions where row.isLiveActivityCandidate {
+            let cached = await conversations.load(sessionId: row.sessionId)
+            let turn = cached?.turns?.last { $0.isRunning }
+            out.append(
+                RunningSession(
+                    id: row.sessionId,
+                    prompt: prompt(of: turn, in: cached) ?? "",
+                    elapsedWhenSeeded: turn?.elapsed(asOf: now) ?? 0,
+                    seededAt: now,
+                ),
+            )
+        }
+        return out
+    }
+
+    /// The operator's most recent instruction to a session.
+    ///
+    /// The running turn's last prompt, and when the cache holds no running turn
+    /// -- a session that started since the last sync, whose `turn/start` is in a
+    /// page the phone has not fetched -- the last thing the operator said in the
+    /// conversation the phone does have. Both are their own words; nothing here
+    /// makes one up. `nil` when the cache holds neither, and the row then draws a
+    /// time and nothing else, which is true.
+    ///
+    /// - Parameters:
+    ///   - turn: the running turn, when the cache has one.
+    ///   - cached: the cached conversation.
+    /// - Returns: the instruction, or `nil`.
+    private static func prompt(of turn: ConversationTurn?, in cached: CachedConversation?) -> String? {
+        if let asked = turn?.prompts.last?.words { return asked }
+        return cached?.items.last { $0.role == .user }?.words
+    }
+}
+
+extension SessionRow {
+    /// Whether the island has anything to draw for this row.
+    ///
+    /// Running, and not a delegated child. The two marks of a subagent mean the
+    /// same thing -- `session.list` sets `parentSessionId`, and `origin` says
+    /// `"subagent"` in the host's own vocabulary -- so both are honoured here,
+    /// and a row the host marked in only one of the two ways is still left out.
+    /// The app has never synced a subagent's page, which is what makes a row for
+    /// one a clock started at zero rather than the work it is doing.
+    var isLiveActivityCandidate: Bool { running && !isSubagent }
+}
+
+extension ConversationItem {
+    /// The words of a message, and nothing for anything that is not one.
+    var words: String? {
+        if case .message(_, _, let text, _) = self { return text }
+        return nil
+    }
+
+    /// Who said it, for the one question this file asks of the flat item list.
+    var role: Role? {
+        if case .message(_, let role, _, _) = self { return role }
+        return nil
+    }
+}
+
 /// One running session as a row of the expanded activity.
 ///
 /// Both the elapsed time and the instant it counts from are carried, rather

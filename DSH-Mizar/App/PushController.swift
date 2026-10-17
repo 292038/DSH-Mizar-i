@@ -37,6 +37,10 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         // Before anything can arrive. iOS does not queue a foreground
         // notification for a delegate that is set later.
         UNUserNotificationCenter.current().delegate = self
+        // And before this method returns, which is the other deadline UIKit
+        // sets: a background task handler registered later than launch is a
+        // handler the system does not know about when it prepares the wake.
+        BackgroundRefresh.shared.register()
         return true
     }
 

@@ -16,7 +16,12 @@ import MizarKit
 @main
 struct DSHMizarApp: App {
     /// One model for the whole app: a single connection, a single pairing.
-    @State private var model = AppModel()
+    ///
+    /// `AppModel.shared` rather than a fresh instance, because a background
+    /// launch can run a refresh before any view -- and therefore before anything
+    /// that would have constructed a model -- has appeared. See
+    /// ``BackgroundRefresh``.
+    @State private var model = AppModel.shared
 
     /// The pieces of push that SwiftUI has no hook for: the device token, what
     /// a notification looks like while the app is open, and what a tap does.

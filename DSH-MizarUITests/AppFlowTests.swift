@@ -278,6 +278,31 @@ final class AppFlowTests: XCTestCase {
         return (inFlight, peak)
     }
 
+    /// What the mock host has been asked, by method, since the last reset.
+    ///
+    /// The one piece of evidence a refresh made with no screen leaves where a
+    /// test can read it. The host's count is a fact about the wire, not about
+    /// either process's opinion of itself.
+    ///
+    /// - Returns: method name to count, empty when the mock is not answering.
+    private static func mockMethodCounts() -> [String: Int] {
+        guard let url = URL(string: "http://127.0.0.1:19395/loads") else { return [:] }
+        let done = DispatchSemaphore(value: 0)
+        let box = Box()
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            defer { done.signal() }
+            guard let data,
+                  let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let methods = parsed["methods"] as? [String: Any]
+            else { return }
+            box.methods = methods.compactMapValues { ($0 as? NSNumber)?.intValue }
+        }.resume()
+        _ = done.wait(timeout: .now() + 6)
+        return box.methods
+    }
+
     /// Wait until an element's label says something.
     ///
     /// The figures in the composer bar come from a read that lands after the
@@ -392,6 +417,8 @@ final class AppFlowTests: XCTestCase {
         var value: Int?
         /// Two counts at once, for the one endpoint that reports a pair.
         var counts: (Int?, Int?)?
+        /// What the mock host was asked, by method.
+        var methods: [String: Int] = [:]
     }
 
     /// How many sockets the mock host has accepted since the suite last reset it.
@@ -1854,6 +1881,71 @@ final class AppFlowTests: XCTestCase {
         XCTAssertTrue(
             app.buttons["workspace./Users/you/projects/demo"].waitForExistence(timeout: Self.patience),
             "the session list was lost",
+        )
+    }
+
+    /// The refresh that runs once the app is off screen.
+    ///
+    /// Half of the Live Activity happens with no screen to look at: the app is
+    /// backgrounded, and while it is off screen it has to re-read the session
+    /// list and the running session's page, or the island only ever knows what
+    /// was true when the app was last open. The assertion is the mock host's own
+    /// count of what it was asked -- a request made with no screen cannot be
+    /// seen on one, and the count is a fact about the wire rather than about
+    /// either process's opinion of itself.
+    ///
+    /// It is the app's behaviour being measured, not the simulator's: the
+    /// assertion the app takes on the way out is what keeps the process alive
+    /// long enough to make the request at all. Measured by hand on this machine
+    /// with `log stream` as well, where the app's own line names the state it was
+    /// in when it updated the activity, and read "background".
+    ///
+    /// What is deliberately not asserted is that the activity's *content*
+    /// changed. That needs the host to change its answer between the moment the
+    /// app leaves the screen and the moment the refresh reads it, and the only
+    /// hand on that dial is the test's own HTTP call -- made from the test
+    /// runner, at a moment the app does not coordinate with. The content half is
+    /// measured by hand in the report, not faked here.
+    func testBackgroundingRefreshesTheSessionListAndTheRunningSession() {
+        // The session list rather than a conversation: this is about what the
+        // app does once it is off screen, and the screen it was on is beside the
+        // point. The launch's first download is what puts the running turn in
+        // the cache the refresh re-reads.
+        let app = launch(session: nil, running: true)
+        expect(app.buttons["sessions.refresh"], "the app never came up")
+        // The launch's own reads are not what this measures. They finish in a
+        // fraction of a second against this host, and the wait is long enough
+        // that a straggler cannot be counted as the background refresh, while
+        // still being far shorter than the test's patience.
+        Thread.sleep(forTimeInterval: 3)
+        _ = Self.mockLoads()
+
+        XCUIDevice.shared.press(.home)
+
+        // Polled rather than waited on once: the app is suspended in milliseconds
+        // when it has nothing to do, and the assertion it takes on the way out
+        // is what gives it the time. A single read of the counts after a fixed
+        // sleep would be an assertion about the simulator's scheduler.
+        var counts: [String: Int] = [:]
+        let deadline = Date().addingTimeInterval(Self.patience)
+        while Date() < deadline {
+            counts = Self.mockMethodCounts()
+            if (counts["session.list"] ?? 0) >= 1, (counts["session.messages"] ?? 0) >= 1 { break }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        // Reactivated before the assertions so a failure leaves the app on
+        // screen for the next test rather than behind the home screen.
+        app.activate()
+
+        XCTAssertGreaterThanOrEqual(
+            counts["session.list"] ?? 0,
+            1,
+            "the app was backgrounded and never re-read the session list",
+        )
+        XCTAssertGreaterThanOrEqual(
+            counts["session.messages"] ?? 0,
+            1,
+            "the running session's page was not re-read off screen",
         )
     }
 

@@ -4,8 +4,8 @@
   Supplemental Info.plist keys.
 
   This file carries only what cannot be expressed as an INFOPLIST_KEY_ build
-  setting, which is anything with a dictionary value. Everything else is
-  generated (GENERATE_INFOPLIST_FILE = YES) and merged with these.
+  setting, which is anything with an array or dictionary value. Everything else
+  is generated (GENERATE_INFOPLIST_FILE = YES) and merged with these.
 -->
 <plist version="1.0">
 <dict>
@@ -87,5 +87,40 @@
 	-->
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<!--
+	  The periodic refresh, declared where the system looks for it.
+
+	  `BGTaskSchedulerPermittedIdentifiers` is the allow-list: `register` for an
+	  identifier that is not here returns false, and the app would then look
+	  perfectly correct while never being woken. The string is the same one
+	  `BackgroundRefresh.refreshIdentifier` holds -- the two are checked against
+	  each other by the log line at launch, which is the only way a mismatch is
+	  visible at all.
+
+	  What this buys, honestly: while the app is off screen, iOS may wake it to
+	  re-read the session list and update an activity that is already up. It is
+	  not a schedule and it is not a promise. The system decides when, from a
+	  hint (`earliestBeginDate`) and its own budget for this app, and it can
+	  decide never. No refresh can *start* an activity on a phone whose app has
+	  not been opened -- that needs push-to-start, which this build does not
+	  have. See `BackgroundRefresh` in the app target.
+	-->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>me.shirazu.dshmizar.refresh</string>
+	</array>
+	<!--
+	  "Background fetch" is the mode `BGAppRefreshTask` belongs to. Without it
+	  the request is submitted and never runs, which is the quietest failure mode
+	  in this whole file.
+
+	  Nothing else is declared: the app does not play audio, use location, or
+	  keep a VoIP socket, and a background mode is a claim to the App Store that
+	  the app needs one of those.
+	-->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
 </dict>
 </plist>

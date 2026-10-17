@@ -18,6 +18,16 @@ import MizarKit
 @MainActor
 @Observable
 final class AppModel {
+    /// The one model this process has.
+    ///
+    /// `DSHMizarApp` used to construct it, which is one model per App value and
+    /// therefore one model per launch -- the same thing, until a background
+    /// launch. A `BGAppRefreshTask` can arrive before any view has appeared (and
+    /// therefore before `RootView`'s `.task` has read the pairing), so the
+    /// refresh needs a model that exists without a screen. See
+    /// ``BackgroundRefresh``.
+    static let shared = AppModel()
+
     /// Where the app is in its life: unpaired, connecting, or usable.
     enum Phase: Equatable {
         case launching
@@ -432,6 +442,95 @@ final class AppModel {
             sessions: sessions,
             conversations: conversations,
             sessionsAreKnown: sessionsAreKnown,
+        )
+    }
+
+    // MARK: - Off screen
+
+    /// One short refresh, run while the app is not on screen.
+    ///
+    /// Called from the two things iOS lends an app for this: the assertion taken
+    /// when the app is backgrounded, and a `BGAppRefreshTask` (see
+    /// ``BackgroundRefresh``). It exists for the island and for nothing else.
+    ///
+    /// What a refresh buys is a **change**, not the clock. The running turn's
+    /// figure is seeded from the instant the host said the turn began, so a row
+    /// already on the card tells the right time without being asked again; what
+    /// goes stale is which sessions are running, what the operator last asked
+    /// them, and whether the turn still is. So the sync reads the session list,
+    /// then re-reads the page of each session that is running -- the same two
+    /// sources ``LiveActivityController`` derives its rows from -- and lets the
+    /// controller decide and send.
+    ///
+    /// Every request is preceded by ``BackgroundSync/mayStartRequest(now:expiresAt:)``,
+    /// and there is no retry of anything that fails: an assertion spent retrying
+    /// a Mac that is asleep is an assertion that did not refresh what was
+    /// running. Whatever arrived is applied; whatever did not is left for the
+    /// next foreground, which is the retry the controller already documents.
+    ///
+    /// **What this cannot do.** It cannot make an activity appear on a phone
+    /// whose app has not been opened since the session started. Apple's contract
+    /// is that an activity is started from the foreground; the controller still
+    /// attempts the start when it finds nothing on screen, because "does a
+    /// background start work" is a question only a measurement answers, and the
+    /// attempt is logged with the app state it was made in. The supported way is
+    /// push-to-start, which this app does not have -- see
+    /// ``BackgroundRefresh``'s header.
+    ///
+    /// - Parameters:
+    ///   - expiresAt: when the app's background time runs out. Read before each
+    ///     request, so the sync stops starting work with
+    ///     ``BackgroundSync/requestReserve`` to spare.
+    ///   - reason: what woke it, for the log: "entering the background" or "a
+    ///     background refresh".
+    /// - Returns: one line for the log: what was refreshed, and how long it took.
+    @discardableResult
+    func backgroundRefresh(expiresAt: Date, reason: String) async -> String {
+        let started = Date()
+        guard host != nil else {
+            return "background sync (\(reason)): nothing to do, this phone is not paired"
+        }
+        guard settings.values.liveActivitiesEnabled else {
+            return "background sync (\(reason)): skipped, the Live Activity is switched off"
+        }
+        var refreshed = 0
+        if connection != nil, BackgroundSync.mayStartRequest(now: started, expiresAt: expiresAt) {
+            await refreshSessions(reconnectingIfNeeded: false)
+        } else if connection == nil {
+            log.add(
+                .sync,
+                "background sync (\(reason)): not connected; the island will be drawn from what is stored",
+            )
+        } else {
+            log.add(
+                .sync,
+                "background sync (\(reason)): less than \(Int(BackgroundSync.requestReserve)) s left; the session list was not read",
+            )
+        }
+        let targets = BackgroundSync.conversationRefreshTargets(in: sessions)
+        for sessionId in targets {
+            guard BackgroundSync.mayStartRequest(now: Date(), expiresAt: expiresAt) else { break }
+            await syncConversation(for: sessionId)
+            // Counted only when the read came back: a request the expiration
+            // handler cancelled is reported as "failed" by the connection, and
+            // a log line that called that refresh would make the one number the
+            // report has into a claim the app cannot keep.
+            if !Task.isCancelled, conversationError == nil { refreshed += 1 }
+        }
+        guard !Task.isCancelled else {
+            // A cancelled refresh has no business sending anything: the app has
+            // either come back or run out of time, and both mean the state the
+            // controller would send is about to be replaced.
+            return "background sync (\(reason)): out of time after \(refreshed) of \(targets.count) session(s); the island was left as it was"
+        }
+        await refreshLiveActivity()
+        let took = Date().timeIntervalSince(started)
+        return String(
+            format: "background sync (%@): %d of %d session(s) refreshed in %.0f ms",
+            reason,
+            refreshed,
+            targets.count,
+            took * 1000,
         )
     }
 
@@ -1208,8 +1307,10 @@ final class AppModel {
     /// machine's, and so is the workspace set written with it.
     ///
     /// - Parameter reconnectingIfNeeded: whether a failure should be retried
-    ///   over a fresh connection.
-    private func refreshSessions(reconnectingIfNeeded: Bool) async {
+    ///   over a fresh connection. The background refresh says no: a reconnect
+    ///   can take the whole of the assertion, and a list read that fails
+    ///   off screen is a list read for the next foreground.
+    func refreshSessions(reconnectingIfNeeded: Bool) async {
         guard connection != nil, let tag = currentTag else { return }
         do {
             let result = try await call("session.list", as: SessionListResult.self)
@@ -1747,14 +1848,23 @@ final class AppModel {
             await refreshLiveActivity()
             return stored.items
         } catch {
+            // A cancelled read is not a failure to report. It is a phone being
+            // suspended -- or, now, a background sync that ran out of its
+            // assertion -- and the screen it would draw the error on is not on
+            // screen. Left in, the operator coming back would find "The Mac did
+            // not answer" waiting for a Mac that answered perfectly well the
+            // moment the app could ask again.
+            if Task.isCancelled {
+                log.add(.cache, "session \(sessionId): read cancelled; nothing changed")
+                return []
+            }
             let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
             if !message.isEmpty { lastError = message }
-            // A cancelled read leaves no message -- `describe` filters those out
-            // because they are not the operator's fault -- so the screen fell
-            // through to "this session has no messages", which is a claim about
-            // their session made from the absence of an answer. On a phone this
-            // is the ordinary case, not an edge one: switching apps suspends the
-            // process and cancels whatever was in flight.
+            // A read that fails with no message -- `describe` filters the ones
+            // that are not the operator's fault -- would fall through to "this
+            // session has no messages", which is a claim about their session
+            // made from the absence of an answer. Cancellation is handled above;
+            // this is every other silent failure.
             conversationError = message.isEmpty
                 ? "The Mac did not answer. Pull down to try again."
                 : message

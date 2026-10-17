@@ -54,6 +54,21 @@ struct RootView: View {
         .task { await model.requestFirstRunPermissions() }
         .task { await model.ensurePushRegistration() }
         .onChange(of: scenePhase) { _, phase in
+            // The Live Activity's off-screen half. Called synchronously and
+            // before the presence report, because the assertion it takes has to
+            // be held while the process still has time: an assertion taken after
+            // an `await` is an assertion taken from a process iOS may already
+            // have suspended.
+            switch phase {
+            case .background:
+                BackgroundRefresh.shared.didEnterBackground()
+            case .active:
+                BackgroundRefresh.shared.willEnterForeground()
+            case .inactive:
+                break
+            @unknown default:
+                break
+            }
             // Tell the host whether anybody is looking. It is what stops a
             // notification being pushed about a screen that is already open --
             // and the report has to be sent on the way out as well as the way
