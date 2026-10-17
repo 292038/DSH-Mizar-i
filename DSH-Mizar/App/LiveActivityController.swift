@@ -22,9 +22,16 @@
 //
 //    - **Asks the decision layer**, with the one flag it owns.
 //
-//    - **Makes the activity match**: `Activity.request` when there is none,
-//      `Activity.update` when there is, `Activity.end` when the decision says so
-//      -- and nothing at all when the operator has switched the feature off.
+//    - **Makes the activity match, and keeps the address it can be ended at**:
+//      `Activity.request` when there is none, `Activity.update` when there is,
+//      `Activity.end` when the decision says so -- and nothing at all when the
+//      operator has switched the feature off. The request carries
+//      `pushType: .token`, so ActivityKit also issues the token that addresses
+//      *this card*, and this file reads it (never observes it -- see
+//      ``ActivityCalls``), leaves it in the app's push registration, and forgets
+//      it the moment the card is gone. That address is how a card gets ended
+//      while the app is suspended, which is the half of this problem no local
+//      code can reach.
 //
 //  The ActivityKit calls themselves live in ``ActivityCalls`` at the bottom of
 //  the file, and the split is not tidiness. `Activity` is not `Sendable` and its
@@ -55,12 +62,22 @@
 //  that runs off screen (`BackgroundRefresh`) can keep an activity that is
 //  already up current, and this controller is what does it. It cannot make one
 //  *appear* where none was ever started: the documented way to do that is
-//  push-to-start -- `pushType: .token`, the app's push-to-start token registered
+//  push-to-start -- a separate APNs token for *starting* activities, registered
 //  with the host, and the host sending an APNs start event -- and this app has
-//  none of those (`pushType: nil` below). A session that begins while the app
-//  has not been opened reaches the island when it is next opened, and not
-//  before. Saying so here is the point: a background refresh that is mistaken
-//  for a start is a promise the app cannot keep.
+//  none of that. A session that begins while the app has not been opened reaches
+//  the island when it is next opened, and not before. Saying so here is the
+//  point: a background refresh that is mistaken for a start is a promise the app
+//  cannot keep.
+//
+//  **The activity's own push token is a different thing, and this build has
+//  one.** An activity started with `pushType: .token` is handed a token that
+//  addresses that card, and the app registers it with the host. The relay can
+//  then send the APNs end event when the session finishes while the app has been
+//  suspended -- the card comes down with no code of this app running at all.
+//  That is the case `apply`'s local end cannot cover, and the reason the request
+//  carries `.token` below. The *start* event still needs push-to-start, which is
+//  still absent; the two tokens are not the same thing and registering one does
+//  not conjure the other.
 //
 //  ## The flag
 //
@@ -71,9 +88,15 @@
 //  contract's prose implies rather than spells out: the flag means "the operator
 //  has opened the app **since the last running session ended**", and the moment a
 //  session is running again, that sentence is no longer true of the opening that
-//  set the flag. Left set, it would take that session down the instant it
-//  finished -- the check nobody ever saw, which is the failure the decision
-//  layer's own documentation warns about.
+//  set the flag. Left set, it would announce the next session's finish as one the
+//  operator had already seen -- and the decision layer would answer "dismiss"
+//  about an ending nobody witnessed.
+//
+//  The card comes down on a finish whether or not the operator has seen it (see
+//  `apply`), so the flag no longer decides whether a check stays up. It is still
+//  kept true, because it is the decision layer's answer to "was that finish
+//  witnessed", and an answer it computes from a flag this file left lying would
+//  be the wrong answer.
 //
 
 import ActivityKit
@@ -98,6 +121,26 @@ final class LiveActivityController {
     /// Whether the operator has opened the app since the last running session
     /// ended, and the activity has not been taken down for it yet.
     private var appOpenedSinceLastFinish = false
+
+    /// The token checks that follow a start, when there are any.
+    ///
+    /// One task, replaced on every start and cancelled when the card comes down.
+    /// The token is looked for on a small fixed schedule rather than observed --
+    /// see ``ActivityCalls/pushToken`` for why there is no `AsyncSequence` here
+    /// -- and a task that outlived its start would be a read of an activity that
+    /// may not be the one it was scheduled for.
+    private var pushTokenChecks: Task<Void, Never>?
+
+    /// How long after a start to look for the token again.
+    ///
+    /// ActivityKit does not hand the token over with `request`: it is sometimes
+    /// there when the call returns and sometimes a moment later, and there is no
+    /// callback that says which. Three reads, bounded, and no polling after
+    /// them: a later arrival is picked up by the next `refresh`, which runs on
+    /// the running poll, on every sync, and when the app comes back to the
+    /// foreground. Waiting longer on a task started for one card is how a phone
+    /// that starts and ends activities accumulates tasks.
+    private static let pushTokenCheckDelays: [Duration] = [.milliseconds(500), .seconds(2), .seconds(5)]
 
     /// - Parameters:
     ///   - settings: the live copy of the operator's switches.
@@ -149,6 +192,11 @@ final class LiveActivityController {
     /// reads the local cache, and it asks ActivityKit for the state of the world
     /// rather than keeping a copy of it.
     ///
+    /// Every call is also a chance to learn the activity's push token: it may
+    /// arrive after the start that asked for it (the bounded retry covers the
+    /// first few seconds) and it may disappear when the card does. See
+    /// ``refreshPushToken()``.
+    ///
     /// - Parameters:
     ///   - sessions: the session list as the host last gave it.
     ///   - conversations: where the prompts and the running turns are kept.
@@ -186,11 +234,19 @@ final class LiveActivityController {
             now: now,
         )
         await apply(decision, runningRowCount: running.count)
+        refreshPushToken()
     }
 
     // MARK: - Making the island match
 
     /// Carry out one decision.
+    ///
+    /// Two of the branches take the activity down, and both clear the stored push
+    /// token as part of doing it: a token is an address for a card that is up, and
+    /// one left behind is the host being told to push to a card that no longer
+    /// exists. The token also changes while a card is up -- ActivityKit issues it
+    /// after the request, and it may rotate -- so the `.running` branch reads it
+    /// again on every refresh.
     ///
     /// - Parameters:
     ///   - decision: what to show, and whether to take the activity down.
@@ -204,28 +260,48 @@ final class LiveActivityController {
         // that only takes effect at the next launch.
         guard settings.values.liveActivitiesEnabled else {
             appOpenedSinceLastFinish = false
-            guard ActivityCalls.hasPresentable else { return }
+            guard ActivityCalls.hasPresentable else {
+                forgetPushToken()
+                return
+            }
             log.add(.live, await ActivityCalls.endAll(with: decision.phase, why: "the operator switched it off"))
+            forgetPushToken()
             return
         }
 
         if decision.shouldDismiss {
+            // The operator has been back since the last finish, so anything still
+            // up is a card whose moment has passed. With a finish now ending the
+            // activity on the spot this is normally a dismissal of nothing, which
+            // is why the emptiness check comes first: the log line is for the
+            // times there *was* something left over.
             appOpenedSinceLastFinish = false
-            guard ActivityCalls.hasPresentable else { return }
+            guard ActivityCalls.hasPresentable else {
+                forgetPushToken()
+                return
+            }
             log.add(.live, await ActivityCalls.endAll(with: decision.phase, why: "the app was opened after everything finished"))
+            forgetPushToken()
             return
         }
 
         switch decision.phase {
         case .finished:
-            // Never *started* from here: a check for work that stopped before the
-            // activity existed is not worth a second look, and the decision layer
-            // says so. Updating what is already up is the other half of that rule
-            // -- without it the check would never reach the island, because the
-            // app has nothing else to send.
-            if let line = await ActivityCalls.update(to: decision.phase, appState: appStateWord) {
-                log.add(.live, line)
+            // Nothing is running, so nothing should be counting: the activity is
+            // ended, not updated to the check. The check is what the island shows
+            // *while* the activity comes down -- `.immediate` here means the card
+            // is gone, which is the answer to "did my work finish" that this app
+            // can actually give.
+            //
+            // Still never *started* from here: a check for work that stopped
+            // before the activity existed is not worth a second look, which is
+            // the decision layer's rule.
+            guard ActivityCalls.hasPresentable else {
+                forgetPushToken()
+                return
             }
+            log.add(.live, await ActivityCalls.endAll(with: decision.phase, why: "nothing is running any more"))
+            forgetPushToken()
 
         case .running:
             // See the note at the top of the file: a session is running again, so
@@ -237,9 +313,94 @@ final class LiveActivityController {
             let state = appStateWord
             guard ActivityCalls.hasPresentable else {
                 log.add(.live, await ActivityCalls.start(decision.phase, appState: state, runningRowCount: runningRowCount))
+                // The token is not part of the request's answer: it may be there
+                // already and it may arrive a second from now, which is what the
+                // bounded retry is for.
+                capturePushToken()
+                pollPushTokenAfterStart()
                 return
             }
             if let line = await ActivityCalls.update(to: decision.phase, appState: state) { log.add(.live, line) }
+            // Read on every refresh, not only after a start: the token may have
+            // arrived since the last look, and a card the system ended underneath
+            // this app leaves no other trace.
+            capturePushToken()
+        }
+    }
+
+    // MARK: - The card's push token
+
+    /// Look for the activity's push token once, and keep it if there is one.
+    ///
+    /// Synchronous on purpose. `Activity.pushToken` is a property, and the
+    /// `AsyncSequence` that also reports it (`pushTokenUpdates`) would put an
+    /// `Activity` -- which is not `Sendable` -- into a task, which is the one
+    /// thing this file's design refuses to do. A property read is a lookup of the
+    /// activity that is up and nothing held after: the activity object never
+    /// leaves ``ActivityCalls``.
+    ///
+    /// - Returns: whether a token was found; `false` means "not issued yet",
+    ///   which is an answer, not a failure.
+    @discardableResult
+    private func capturePushToken() -> Bool {
+        guard let token = ActivityCalls.pushToken else { return false }
+        if LiveActivityPushTokenStore.store(token) {
+            // Length only: a push token is an address for this card, and this log
+            // is exportable. The device token is recorded the same way.
+            log.add(.live, "live activity push token: \(token.count) characters")
+        }
+        return true
+    }
+
+    /// Look again, a few times, for a token that was not there at the start.
+    ///
+    /// One task, on the main actor, sleeping between reads -- the bounded version
+    /// of what the `AsyncSequence` would have done. It ends as soon as a token is
+    /// found, as soon as the card is gone (a token read after the end would be an
+    /// address for a card that is down), and after the last delay however things
+    /// went, so a start that never produces a token cannot leave a task behind.
+    private func pollPushTokenAfterStart() {
+        // The previous start's task is about that start's token. Nothing else is
+        // scheduled, ever: this is the only creator.
+        pushTokenChecks?.cancel()
+        pushTokenChecks = Task { [weak self] in
+            for delay in Self.pushTokenCheckDelays {
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled, let self else { return }
+                if self.capturePushToken() { return }
+                guard ActivityCalls.hasPresentable else {
+                    self.forgetPushToken()
+                    return
+                }
+            }
+        }
+    }
+
+    /// The stored token, as of the activity that is up right now.
+    ///
+    /// Called after every decision, and it covers the case no other branch does:
+    /// an activity that was ended from somewhere else -- the operator's swipe on
+    /// the Lock Screen, the system's own lifetime limit, the relay's end push --
+    /// leaves the app holding a token for a card that is gone. Clearing it posts
+    /// the notification that re-registers this phone without it, which is what
+    /// stops the host pushing to a dead address.
+    private func refreshPushToken() {
+        guard ActivityCalls.hasPresentable else {
+            forgetPushToken()
+            return
+        }
+        capturePushToken()
+    }
+
+    /// Forget the token, and stop looking for another one.
+    ///
+    /// Idempotent: an unchanged value posts nothing, so every end path may call
+    /// it without the app sending a registration per refresh.
+    private func forgetPushToken() {
+        pushTokenChecks?.cancel()
+        pushTokenChecks = nil
+        if LiveActivityPushTokenStore.store(nil) {
+            log.add(.live, "live activity push token: forgotten, no activity is up")
         }
     }
 
@@ -256,13 +417,18 @@ final class LiveActivityController {
 
 // MARK: - The ActivityKit side
 
-/// Every call this app makes into ActivityKit, off the main actor.
+/// Every call this app makes into ActivityKit.
 ///
 /// Static methods on a caseless type rather than methods on the controller, for
 /// one reason: nothing here touches the controller's state. Each function looks
 /// up the activities itself, works with a `Sendable` phase, and answers with the
 /// line to write in the log -- which is what keeps a non-`Sendable` `Activity`
 /// from ever being handed across an isolation boundary.
+///
+/// The reads are synchronous -- `hasPresentable`, `pushToken`, and the lookup
+/// under both -- because their answers are a `Bool` and a hex string, and the
+/// activity that produced either is dropped inside the property. The async
+/// functions are the ones whose ActivityKit methods are `async`.
 private enum ActivityCalls {
     /// One activity of this app's one type.
     typealias Island = Activity<DSHMizarActivityAttributes>
@@ -275,6 +441,29 @@ private enum ActivityCalls {
         !presentable.isEmpty
     }
 
+    /// The push token of the activity that is up, hex-encoded, or `nil`.
+    ///
+    /// **Read, never observed.** ActivityKit also offers the token as an
+    /// `AsyncSequence` (`Activity.pushTokenUpdates`), and that is the API this
+    /// file cannot use: its elements are not `Sendable`, and consuming it from a
+    /// main-actor controller puts a non-`Sendable` `Activity` in a task, where
+    /// Swift 6's region checker has to either refuse it or be lied to. A
+    /// synchronous property read has neither problem -- the activity is looked up
+    /// and dropped inside this property, and what comes out is the `String` the
+    /// wire carries. The price is that the token's arrival has to be noticed by
+    /// looking, which is what the controller's bounded retry after a start and
+    /// its read on every refresh are for.
+    ///
+    /// - Returns: lowercase hex, or `nil` when no activity is up or the one that
+    ///   is has not been issued a token yet.
+    static var pushToken: String? {
+        for activity in presentable {
+            guard let token = activity.pushToken else { continue }
+            return LiveActivityPushToken.hex(token)
+        }
+        return nil
+    }
+
     /// The activities that are up right now.
     ///
     /// Filtered by state rather than taken whole: `activities` also returns the
@@ -285,6 +474,13 @@ private enum ActivityCalls {
     }
 
     /// Ask for a new activity.
+    ///
+    /// Started with `pushType: .token` so ActivityKit issues the token that
+    /// addresses this card -- the one the relay needs to end it while the app is
+    /// suspended. That is the *activity's* token and not a push-to-start token;
+    /// it cannot make an activity appear, only update or end one that exists.
+    /// The token itself arrives later, sometimes a moment later, which is why
+    /// ``pushToken`` is read again after this returns.
     ///
     /// - Parameters:
     ///   - phase: what it should show.
@@ -302,7 +498,7 @@ private enum ActivityCalls {
             let activity = try Island.request(
                 attributes: DSHMizarActivityAttributes(),
                 content: ActivityContent(state: phase, staleDate: nil),
-                pushType: nil,
+                pushType: .token,
             )
             return "started \(activity.id.prefix(8)) with \(describe(phase))"
                 + " while the app was \(appState)"
@@ -345,7 +541,12 @@ private enum ActivityCalls {
     /// `Activity.activities`, not the presentable ones: an activity that has
     /// already ended is still on the Lock Screen until it is dismissed or the
     /// system clears it four hours later, and `.immediate` is what "the operator
-    /// turned this off" and "the app was opened" both mean.
+    /// turned this off", "the app was opened" and "nothing is running any more"
+    /// all mean.
+    ///
+    /// The stored push token is the caller's to forget: once the card is down the
+    /// address is dead, and a host still holding it would keep sending end
+    /// pushes to nothing.
     ///
     /// - Parameters:
     ///   - phase: the state to end with.

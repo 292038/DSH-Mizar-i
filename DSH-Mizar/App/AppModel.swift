@@ -411,6 +411,21 @@ final class AppModel {
     /// settings tab.
     let liveActivity: LiveActivityController
 
+    /// The observer that turns a new Live Activity push token into a registration.
+    ///
+    /// The activity's token is issued *after* the request that starts it, so the
+    /// `push.register` sent when the socket opened usually predates it. This is
+    /// what sends a second registration carrying it -- and the same call clears it
+    /// on the host when the card comes down, because that registration omits the
+    /// field.
+    ///
+    /// Registered here rather than from a view's `.onReceive`, unlike the device
+    /// token: a background launch (a `BGAppRefreshTask` before any scene has
+    /// appeared) can start an activity and obtain its token with no `RootView` in
+    /// existence, and a token that waits for the next time somebody opens the app
+    /// is a card that cannot be ended remotely until then.
+    @ObservationIgnored private var liveActivityTokenObserver: (any NSObjectProtocol)?
+
     /// The archive the last successful export produced.
     ///
     /// Kept so the screen can keep saying that it happened, with the file's name
@@ -479,6 +494,17 @@ final class AppModel {
         self.settings = settings
         self.log = log
         self.liveActivity = LiveActivityController(settings: settings, log: log)
+        // The Live Activity's token, as the controller obtains and forgets it.
+        // `queue: .main` is the delivery this observer needs -- the notification is
+        // posted from the main actor's own ActivityKit path -- and the `Task` is
+        // what lets the registration itself be the async call it is.
+        liveActivityTokenObserver = NotificationCenter.default.addObserver(
+            forName: LiveActivityPushTokenStore.changed,
+            object: nil,
+            queue: .main,
+        ) { [weak self] _ in
+            Task { await self?.syncPushRegistration() }
+        }
     }
 
     /// Read what this phone already knows and make the island match it.
@@ -2294,27 +2320,46 @@ final class AppModel {
 
     /// Tell the host where to reach this phone, and whether it is on screen.
     ///
-    /// Called on every connection and every time iOS issues a token. Both are
-    /// needed: the token arrives once and the connection is rebuilt constantly,
-    /// and a registration sent on a socket that has since been replaced is a
+    /// Called on every connection, every time iOS issues a device token, and every
+    /// time the Live Activity's push token changes. All three are needed: the
+    /// tokens arrive once and the connection is rebuilt constantly, and a
+    /// registration sent on a socket that has since been replaced is a
     /// registration the host never saw.
+    ///
+    /// The payload carries the Live Activity's token as optional
+    /// `"liveActivityToken"`, and its absence is the contract's way of saying "no
+    /// card is up": the host clears whatever it held, so the relay stops sending
+    /// end pushes to an address whose activity is gone. That is why the field is
+    /// omitted rather than sent as null -- the frozen wire contract says absent
+    /// means clear, and one rule is easier to keep than two.
     ///
     /// Best-effort throughout. A phone that cannot be notified is a worse app,
     /// not a broken one, and an error here would be a failure screen over a
     /// feature the operator may not even want.
     func syncPushRegistration() async {
         guard let connection, let token = PushRegistration.storedToken else { return }
-        let payload = JSONValue.object([
+        var fields: [String: JSONValue] = [
             "token": .string(token),
             "environment": .string(PushRegistration.environment),
             "locale": .string(PushRegistration.locale),
-        ])
+        ]
+        // Read at the moment of sending rather than remembered from when the app
+        // started: an activity's token can be issued or forgotten while this
+        // process is running, and a copy taken at launch would be either missing
+        // or already dead.
+        let liveActivityToken = LiveActivityPushTokenStore.stored()
+        if let liveActivityToken { fields["liveActivityToken"] = .string(liveActivityToken) }
+        let payload = JSONValue.object(fields)
         do {
             _ = try await loggedCall("push.register", payload: payload, on: connection, as: PushRegistrationResult.self)
-            // How long the token is, never the token: see ``ActivityLog``.
+            // How long the tokens are, never the tokens: see ``ActivityLog``. A
+            // Live Activity token is an address for one card on this phone, and
+            // the relay can end that card with it; this log is exportable.
             log.add(
                 .push,
-                "registered with the host: \(token.count) characters, \(PushRegistration.environment), \(PushRegistration.locale)",
+                "registered with the host: \(token.count) characters, \(PushRegistration.environment), \(PushRegistration.locale)"
+                    + "; live activity token "
+                    + (liveActivityToken.map { "held (\($0.count) characters)" } ?? "none"),
             )
         } catch {
             // Nothing to show: a phone that cannot be notified is a worse app,
@@ -2335,9 +2380,10 @@ final class AppModel {
     ///
     /// Coming back to the foreground is also one of the moments the Live Activity
     /// is decided at, and the most important one: the operator is looking, so a
-    /// check left over from a finished session has been seen and comes down -- and
-    /// a session that started while the phone was in a pocket gets its activity
-    /// now, because a start is only documented to work from here.
+    /// card left over from a finish nobody's local end reached -- a relay end push
+    /// that did not land, an activity from an older build -- comes down for good;
+    /// and a session that started while the phone was in a pocket gets its
+    /// activity now, because a start is only documented to work from here.
     ///
     /// - Parameter foreground: whether the app is in the foreground.
     func setPresence(foreground: Bool) async {

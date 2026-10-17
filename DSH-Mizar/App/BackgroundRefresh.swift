@@ -30,19 +30,22 @@
 //  It can **update an activity that is already up**, and it does: the sync
 //  re-reads the session list and the running sessions' pages, and the controller
 //  turns that into a fresh `ContentState` and sends it, while the app is off
-//  screen. It can also attempt to *start* one -- the controller asks whenever
-//  there is nothing on screen, and the attempt is logged with the app state it
-//  was made in -- but Apple's contract is that an activity is started from the
-//  foreground, and a background refresh is not that. **When no activity was ever
-//  started, the only way to make one appear on a phone that has not been opened
-//  is push-to-start**: a `.token` push type, the app's push-to-start token
-//  registered with the host, and the host sending an APNs start event. This app
-//  has none of those -- `pushType: nil` in `LiveActivityController`, and the
-//  host side has no such event -- so that case remains impossible, and nothing
-//  here pretends otherwise. A background refresh that finds nothing running, or
-//  that finds a running session and no activity, does not queue a start for
-//  later: the next foreground refresh is the retry, exactly as the controller
-//  says.
+//  screen. It can also **end** one from here, which is the other half of a
+//  finish: a sync that reads a session stopping ends the card on the spot,
+//  without waiting for the app to be opened. It can also attempt to *start* one
+//  -- the controller asks whenever there is nothing on screen, and the attempt is
+//  logged with the app state it was made in -- but Apple's contract is that an
+//  activity is started from the foreground, and a background refresh is not
+//  that. **When no activity was ever started, the only way to make one appear on
+//  a phone that has not been opened is push-to-start**: a token for *starting*
+//  activities (a different APNs token from the one an activity issues for its own
+//  updates), registered with the host, and the host sending an APNs start event.
+//  This app has none of that -- the host side has no such event, and the activity
+//  push token the controller registers identifies a card that already exists --
+//  so that case remains impossible, and nothing here pretends otherwise. A
+//  background refresh that finds nothing running, or that finds a running session
+//  and no activity, does not queue a start for later: the next foreground refresh
+//  is the retry, exactly as the controller says.
 //
 //  ## Why `BGAppRefreshTask` and not a timer or a `UIBackgroundModes` trick
 //

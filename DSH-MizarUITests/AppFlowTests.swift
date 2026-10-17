@@ -2066,7 +2066,8 @@ final class AppFlowTests: XCTestCase {
     /// the archived string throws inside `NSAttributedString`. The file that
     /// documents this fixed it everywhere except these two strings, and the
     /// running card never draws them: the finished state is only ever reached by
-    /// *updating* an activity that was started for a session that was running.
+    /// taking down an activity that was started for a session that was running,
+    /// and that final state is archived on the way out.
     ///
     /// XCTest fails the test itself when the extension aborts — "Critical process
     /// DSH-Mizar-LiveActivity crashed" — which is the assertion here.

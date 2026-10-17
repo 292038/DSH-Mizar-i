@@ -334,11 +334,14 @@ public enum LiveActivityPhase: Codable, Sendable, Hashable {
 ///
 /// - ``phase`` `.running` means start an activity if there is none, and update
 ///   the one there is otherwise.
-/// - ``phase`` `.finished` means the island shows a check, and no activity may
-///   be *started* from it: the finished state is over the moment it is taken
-///   down, and a check for a session that ended an hour ago is not worth a
-///   second look.
-/// - ``shouldDismiss`` means end the activity now.
+/// - ``phase`` `.finished` means nothing is running, so the activity comes down:
+///   the app ends it with this state instead of leaving a check standing. No
+///   activity may be *started* from it either -- a check for work that stopped
+///   before the activity existed is not worth a second look.
+/// - ``shouldDismiss`` means an activity that is still up must end now, because
+///   the operator has been back in the app since the last finish. It is the
+///   app-opened half of the same rule: `.finished` ends a card the app sees
+///   finish, and this covers a card that outlived what the app knows.
 public struct LiveActivityDecision: Codable, Sendable, Equatable {
     /// What to draw.
     public let phase: LiveActivityPhase
@@ -388,8 +391,8 @@ public struct LiveActivityDecision: Codable, Sendable, Equatable {
     ///     taken down for it yet**. The app owns this flag -- set when it comes
     ///     to the foreground, cleared when it acts on a dismissal -- and the
     ///     clearing is what makes the dismissal happen once. Left set, it would
-    ///     take the next session to finish down the instant it did, with nobody
-    ///     there to have seen the check.
+    ///     report the next session's finish as one the operator had already seen,
+    ///     with nobody there to have seen it.
     ///   - now: the instant to measure the clocks to.
     /// - Returns: what to show, and whether to end the activity.
     public static func make(
@@ -417,9 +420,14 @@ public struct LiveActivityDecision: Codable, Sendable, Equatable {
                 )
             }
         guard !rows.isEmpty else {
-            // Nothing is running: the island stops counting and shows the check,
-            // and the check stays until the app is opened -- which is what the
-            // flag says, and the only thing that takes a finished activity down.
+            // Nothing is running: the island stops counting, and the card comes
+            // down. A finished card is not left standing for the app to be opened
+            // on: the app ends the activity with this state as soon as it learns a
+            // session stopped -- which, while the app is suspended, may be the
+            // relay's APNs end push and no code of this app at all. The flag is
+            // the second, confirming half of the same rule: the operator has been
+            // back since the last finish, so a card still up is one whose moment
+            // has passed.
             return LiveActivityDecision(phase: .finished, shouldDismiss: appOpenedSinceLastFinish)
         }
         return LiveActivityDecision(phase: .running(rows: rows), shouldDismiss: false)

@@ -211,36 +211,38 @@ struct LiveActivityTests {
         #expect(!decision.shouldDismiss)
     }
 
-    @Test("holds the finished state until the app is opened")
-    func finishedHoldsWhileTheAppIsClosed() {
-        // The check is the answer to "did my work finish", and it is worth
-        // having on the lock screen until the operator has actually looked.
+    @Test("does not report a finish as witnessed while the app is closed")
+    func finishIsNotWitnessedUntilTheAppIsOpened() {
+        // `shouldDismiss` is the decision layer's only "the operator has seen
+        // this" signal, and it stays false while the app is closed. The card no
+        // longer waits on this flag -- the app ends a finished activity on the
+        // spot -- but the answer to "was that ending witnessed" must not drift
+        // with time.
         for minutes in [0.0, 1.0, 60.0, 1_440.0] {
             let decision = decide([], at: at(minutes * 60))
             #expect(decision.phase == .finished)
-            #expect(!decision.shouldDismiss, "the check went after \(minutes) minutes")
+            #expect(!decision.shouldDismiss, "the finish was called witnessed after \(minutes) minutes")
         }
     }
 
-    @Test("takes the finished activity down once, when the app is opened")
+    @Test("asks for the finished activity to come down once, when the app is opened")
     func openingTheAppDismissesOnce() {
-        // The app's own bookkeeping, kept the way the app will keep it: the flag
-        // means "opened since the last session ended, and not yet acted on", an
-        // activity is on screen only if one was started and not taken down, and
-        // the count of dismissals is what "once" is about.
+        // The app's own bookkeeping, kept the way the app keeps it: the flag
+        // means "opened since the last session ended, and not yet acted on", and
+        // the count of dismissals is what "once" is about. The card now comes
+        // down on `.finished` whether or not this flag is set; what the flag
+        // still decides is whether a finish is reported as one the operator saw,
+        // and it must be consumed exactly once.
         var appOpenedSinceLastFinish = false
-        var onScreen = false
         var dismissals = 0
 
         func step(_ sessions: [RunningSession], opened: Bool? = nil, at now: Date) -> LiveActivityDecision {
             if let opened { appOpenedSinceLastFinish = opened }
             let decision = decide(sessions, opened: appOpenedSinceLastFinish, at: now)
-            if case .running = decision.phase { onScreen = true }
             if decision.shouldDismiss {
                 dismissals += 1
-                onScreen = false
-                // Consumed: left set, it would take the next session to finish
-                // down the instant it did.
+                // Consumed: left set, it would report the next session's finish
+                // as one the operator had already seen.
                 appOpenedSinceLastFinish = false
             }
             return decision
@@ -249,47 +251,41 @@ struct LiveActivityTests {
         let first = running("s-1", seed: 0, at: t0)
         let second = running("s-2", seed: 0, at: t0)
 
-        // A session runs while the app is open, and an activity goes up: the
-        // fact that the app has been opened takes down a *finished* activity,
-        // never a live one.
-        #expect(step([first], opened: true, at: t0).phase.rows.map(\.id) == ["s-1"])
-        #expect(onScreen)
+        // A session running is never a dismissal, even after the app was opened:
+        // the opening takes down a *finished* activity, never a live one.
+        let runningAgain = step([first], opened: true, at: t0)
+        #expect(runningAgain.phase.rows.map(\.id) == ["s-1"])
+        #expect(!runningAgain.shouldDismiss)
 
-        // It ends while the app is open. The operator is looking at the app
-        // already, so there is nothing for a check to tell them: the activity
-        // goes with the session.
+        // It ends while the app is open, so the finish is one the operator saw --
+        // and the dismissal is consumed with it.
         let endedWithTheAppOpen = step([], at: at(60))
         #expect(endedWithTheAppOpen.phase == .finished)
         #expect(endedWithTheAppOpen.shouldDismiss)
         #expect(dismissals == 1)
-        #expect(!onScreen)
 
-        // A new session starts, and this one ends with the app in the
-        // background: the check goes up and stays there.
+        // A new session starts, and its finish arrives with the app in the
+        // background: the decision layer says nothing about a witness, because
+        // there was none.
         #expect(step([second], at: at(120)).phase.rows.map(\.id) == ["s-2"])
-        #expect(onScreen)
-        let check = step([], at: at(180))
-        #expect(check.phase == .finished)
-        #expect(!check.shouldDismiss)
-        #expect(onScreen, "the check was taken down without the app being opened")
+        let unwitnessed = step([], at: at(180))
+        #expect(unwitnessed.phase == .finished)
+        #expect(!unwitnessed.shouldDismiss)
         #expect(dismissals == 1)
 
-        // An hour later it is still up, because the operator still has not
-        // looked -- and then they open the app, and it goes.
+        // An hour later it is still unwitnessed, because the operator still has
+        // not looked -- and then they open the app, and the answer flips once.
         #expect(!step([], at: at(3_600)).shouldDismiss)
-        #expect(onScreen)
         #expect(step([], opened: true, at: at(3_700)).shouldDismiss)
         #expect(dismissals == 2)
-        #expect(!onScreen)
 
         // Nothing brings it back. There is no session to draw a clock for, so
-        // nothing may start an activity again -- the finished state is over the
-        // moment it is taken down.
+        // nothing may start an activity again, and a finish already witnessed is
+        // not reported as witnessed twice.
         let after = step([], at: at(4_000))
         #expect(after.phase == .finished)
         #expect(!after.shouldDismiss)
         #expect(dismissals == 2)
-        #expect(!onScreen)
     }
 
     @Test("shows the operator's instruction, cut to the first few characters")
