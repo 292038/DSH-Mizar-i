@@ -207,6 +207,27 @@ struct ConnectionTests {
         }
     }
 
+    @Test("a request made after the socket closed is retryable, so the caller reconnects")
+    func requestAfterCloseIsRetryable() async throws {
+        let transport = StubTransport(responder: responder())
+        let connection = makeConnection(transport: transport)
+        _ = try await connection.connect()
+        await transport.pushClose()
+        // The read loop tears the transport down; a request arriving after that
+        // used to throw a plain SOCKET_CLOSED, which the app classifies as "not
+        // about the connection" and therefore never reconnects for -- the screen
+        // then said "the socket is not open" on every refresh.
+        _ = await eventually { await connection.currentState.welcome == nil }
+
+        do {
+            _ = try await connection.request("host.info")
+            Issue.record("expected the request to fail")
+        } catch let error as MizarError {
+            #expect(error.code == "SOCKET_CLOSED")
+            #expect(error.retryable, "the app only reconnects for errors it can retry")
+        }
+    }
+
     @Test("finishes event streams when the socket closes")
     func closeFinishesStreams() async throws {
         let transport = StubTransport(responder: responder())

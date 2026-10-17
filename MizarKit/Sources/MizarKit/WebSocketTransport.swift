@@ -57,7 +57,7 @@ public actor URLSessionWebSocketTransport: WebSocketTransport {
 
     public func send(text: String) async throws {
         guard let task else {
-            throw MizarError(code: "SOCKET_CLOSED", message: "the socket is not open")
+            throw MizarError(code: "SOCKET_CLOSED", message: "the socket is not open", retryable: true)
         }
         try await task.send(.string(text))
     }

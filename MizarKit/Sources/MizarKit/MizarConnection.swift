@@ -421,7 +421,7 @@ public actor MizarConnection {
                 guard let self else { return }
                 do {
                     guard let socket = await self.transport else {
-                        throw MizarError(code: "SOCKET_CLOSED", message: "the socket is not open")
+                        throw MizarError(code: "SOCKET_CLOSED", message: "the socket is not open", retryable: true)
                     }
                     try await socket.send(text: text)
                 } catch {

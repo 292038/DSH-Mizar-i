@@ -1130,16 +1130,46 @@ final class AppModel {
 
         eventListener?.cancel()
         eventListener = Task { [weak self] in
-            guard let stream = await self?.connection?.events() else { return }
+            guard let self else { return }
+            // The connection the stream belongs to, captured before the first
+            // suspension: a reconnect during this task replaces the model's
+            // connection, and the end of the old stream must not clear the new
+            // socket.
+            guard let opened = self.connection else { return }
+            let stream = await opened.events()
             for await frame in stream {
                 guard case .event(let name, _) = frame else { continue }
-                self?.noteHostEvent(name)
+                self.noteHostEvent(name)
                 // Any other event name is for a future build; ignoring it is not
                 // the same as failing on it.
                 guard Self.interactionEvents.contains(name) else { continue }
-                await self?.refreshInteractions()
+                await self.refreshInteractions()
             }
+            // A stream ends when the socket does. Clearing the reference here is
+            // what lets the next read take the reconnect path instead of asking
+            // a dead transport for an answer.
+            guard !Task.isCancelled else { return }
+            self.noteSocketClosed(opened)
         }
+    }
+
+    /// Note that the socket behind the current connection has gone.
+    ///
+    /// The event stream is the one signal a dead socket gives without a request
+    /// being made: its loop finishes when the read loop tears the transport down.
+    /// Before this, the model kept the dead object, and every later read was
+    /// answered by it with `SOCKET_CLOSED` -- an error that asked for no
+    /// reconnect, so the phone sat saying "the socket is not open" until the app
+    /// was relaunched. Clearing the reference makes the next read open a new
+    /// socket, which is the recovery every refresh path already has.
+    ///
+    /// - Parameter closed: the connection whose event stream ended.
+    private func noteSocketClosed(_ closed: MizarConnection) {
+        // A reconnect may already have replaced it; only the socket that is
+        // still the model's is this method's to forget.
+        guard connection === closed else { return }
+        connection = nil
+        log.add(.connection, "the socket closed; the next read reconnects")
     }
 
     /// Write down that the host pushed something.
