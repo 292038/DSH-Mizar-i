@@ -46,6 +46,14 @@ final class AppFlowTests: XCTestCase {
 
     override func setUp() {
         continueAfterFailure = false
+        // Every test starts against a host that answers, whatever the last one
+        // left behind. `/offline?on=1` is switched back by a `defer` inside the
+        // one test that uses it -- and an assertion with
+        // `continueAfterFailure = false` aborts by raising, which skips Swift
+        // `defer`s. One aborted test was therefore enough to leave the fixture
+        // refusing every connection for the rest of the suite, and the next test
+        // then failed reporting a bug in the app that was a bug in the fixture.
+        Self.setMockOffline(false)
     }
 
     /// Put the mock host's conversation back to its fixture.
@@ -105,7 +113,11 @@ final class AppFlowTests: XCTestCase {
     ///   running. `false` by default, which keeps the Live Activity out of a test
     ///   about two session lists.
     private static func resetSecondMockHost(running: Bool = false) {
-        let query = running ? "" : "?running=0"
+        // The cards are off, like the test that uses this helper wants: they
+        // fill the conversation and one of them sits over the composer, which
+        // is where this test taps.
+        var query = "?pending=0"
+        if !running { query += "&running=0" }
         guard let url = URL(string: "http://127.0.0.1:19396/reset\(query)") else { return }
         let done = DispatchSemaphore(value: 0)
         var request = URLRequest(url: url)
@@ -2175,7 +2187,6 @@ final class AppFlowTests: XCTestCase {
             session: nil,
             pending: false,
             running: false,
-            naming: false,
             pairingURIs: [Self.mockPairingURI, Self.secondMockPairingURI],
         )
         // The second Mac is the one open: the last pairing is the current one.
@@ -2184,30 +2195,52 @@ final class AppFlowTests: XCTestCase {
                 .map { $0.identifier.isEmpty ? "<no id>" : $0.identifier }
             XCTFail("the second Mac was not the one opened; screen says: \(dump)")
         }
-        expect(app.staticTexts["demo"], "the second Mac's session list never arrived")
 
-        // Read the first Mac's catalogue into the app, by opening the picker that
-        // asks for it. This is what makes the catalogue a *cached* value rather
-        // than one fetched on demand.
+        // The picker is inside a conversation, so one is opened first. Read the
+        // second Mac's catalogue into the app by opening the picker that asks for
+        // it -- which is what makes the catalogue a *cached* value rather than
+        // one fetched on demand, and the value the switch below must not carry.
+        let demo = app.buttons["workspace./Users/you/projects/demo"]
+        expect(demo, "the second Mac's first workspace is missing")
+        let secondRow = sessionRow(in: app, titled: "Mock session", in: "demo")
+        XCTAssertTrue(expand(demo, revealing: secondRow), "the second Mac's session never appeared")
+        secondRow.tap()
         let opener = app.buttons["composer.model"]
-        expect(opener, "there is no way to change the model")
+        expect(opener, "the second Mac's conversation never opened")
         opener.tap()
         XCTAssertTrue(
             app.buttons["model.row.kimi-k2"].waitForExistence(timeout: Self.patience),
             "the second Mac's own catalogue is missing",
         )
         app.navigationBars.buttons["Done"].tap()
-        expect(opener, "the picker never closed")
+        expect(app.buttons["composer.model"], "the picker never closed")
 
-        // Back to the first Mac, whose catalogue is the one that must now be in
-        // force -- and whose session list is a different one.
+        // Back to the list, and to the first Mac.
+        let back = app.navigationBars.buttons.element(boundBy: 0)
+        expect(back, "there is no way back to the session list")
+        back.tap()
+        expect(app.buttons["sessions.hosts"], "the session list never came back")
         app.buttons["sessions.hosts"].tap()
         let first = app.buttons["host.row.mock-host-0000-4000-8000-000000000000"]
         expect(first, "the first Mac is not in the list")
         first.tap()
-        expect(app.staticTexts["Mock Mac (fixture)"], "the first Mac was not opened")
+        // Choosing a machine opens it but leaves the list of machines on top:
+        // the row's job is to switch, and the back button is how the operator
+        // gets to the sessions they just switched to.
+        let backToSessions = app.navigationBars.buttons.element(boundBy: 0)
+        expect(backToSessions, "there is no way back from the host list")
+        backToSessions.tap()
+        expect(app.buttons["sessions.hosts"], "the first Mac's session list never arrived")
 
-        opener.tap()
+        // A conversation on the first Mac, so its picker -- and therefore its
+        // catalogue -- is reachable. Opening the picker is what asks for it.
+        let firstDemo = app.buttons["workspace./Users/you/projects/demo"]
+        expect(firstDemo, "the first Mac's first workspace is missing")
+        let firstRow = sessionRow(in: app, titled: "Mock session", in: "demo")
+        XCTAssertTrue(expand(firstDemo, revealing: firstRow), "the first Mac's session never appeared")
+        firstRow.tap()
+        expect(app.buttons["composer.model"], "the first Mac's conversation never opened")
+        app.buttons["composer.model"].tap()
         XCTAssertTrue(
             app.buttons["model.row.deepseek-flash"].waitForExistence(timeout: Self.patience),
             "the first Mac's catalogue is missing",

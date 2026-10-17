@@ -170,6 +170,36 @@ private struct UnreachableView: View {
 /// only on one side of it.
 struct MainTabs: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    /// Which of the two places is on screen.
+    ///
+    /// Owned rather than left inside `TabView`, because the bar's journey depends
+    /// on it and so does the cached still the journey is made of. Two cases that
+    /// were wrong without it: a notification opening a session while Settings is
+    /// on screen hid a bar nothing was pushing, and the still taken on the
+    /// Settings tab -- with its tab selected -- was what the Conversation tab's
+    /// first exit travelled with. Reading the selection makes both an update the
+    /// transition sees.
+    @State private var tab: TabSelection = .conversation
+
+    /// Which tab, by a name both the tab view and the bar's decision can use.
+    private enum TabSelection: Hashable {
+        case conversation
+        case settings
+    }
+
+    /// Whether the selection bar belongs on screen.
+    ///
+    /// The same rule `SessionDetailView` applies to the real bar, kept in one
+    /// place: put away only in a compact width, and only while a conversation is
+    /// open in this tab. On an iPad the listing is still on screen beside the
+    /// conversation, and a session selected by a notification while Settings is
+    /// showing is not a page being pushed from this tab.
+    private var barIsVisible: Bool {
+        guard tab == .conversation else { return true }
+        guard sizeClass == .compact else { return true }
+        return model.selectedSessionId == nil
+    }
 
     var body: some View {
         if #available(iOS 26.0, *) {
@@ -186,20 +216,20 @@ struct MainTabs: View {
     }
 
     private var tabs: some View {
-        TabView {
-            Tab("Conversation", systemImage: "bubble.left.and.bubble.right") {
+        TabView(selection: $tab) {
+            Tab("Conversation", systemImage: "bubble.left.and.bubble.right", value: TabSelection.conversation) {
                 MainView()
             }
-            Tab("Settings", systemImage: "gearshape") {
+            Tab("Settings", systemImage: "gearshape", value: TabSelection.settings) {
                 SettingsView()
             }
         }
         // Nothing drawn and nothing to touch: it exists to catch the moment the
-        // selection changes, while the bar is still on screen, and move the bar
-        // through it. Drawn over the tab view so the picture of the bar can be
-        // laid in the bar's own place.
+        // bar's place in the layout changes, while the bar is still on screen,
+        // and move the bar through it. Drawn over the tab view so the picture of
+        // the bar can be laid in the bar's own place.
         .overlay {
-            TabBarTransition(sessionId: model.selectedSessionId)
+            TabBarTransition(barIsVisible: barIsVisible)
                 .frame(width: 0, height: 0)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)

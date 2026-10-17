@@ -712,7 +712,7 @@ struct SessionDetailView: View {
             // Claimed rather than merely waited for. Waiting and then reading
             // leaves a window in which the reload this waited for can start, and
             // that window is the whole bug.
-            _ = await takeConversationReadLock()
+            guard await takeConversationReadLock() else { return }
             // Synced rather than merely read. `conversation(for:)` returns the
             // flat list, and the screen draws *turns* whenever the host gave
             // turn numbers -- so a message that arrived only in the flat list
@@ -763,11 +763,12 @@ struct SessionDetailView: View {
     /// its own reads then fail on their own terms, which is a worse answer than
     /// waiting but a better one than a poll that never runs again.
     ///
-    /// - Returns: whether the conversation can be read. Always true on return
-    ///   from the success path; the value is for a caller that wants to know
-    ///   whether it waited.
+    /// - Returns: whether the lock was taken. `false` only when the task was
+    ///   cancelled while waiting -- the screen is going away and there is nothing
+    ///   left to refresh. A caller that gets `false` must not release the lock:
+    ///   it never took it, and decrementing here is how a counter-style lock ends
+    ///   up negative and stops excluding anybody.
     private func takeConversationReadLock() async -> Bool {
-        var waited = false
         while conversationLoads > 0 {
             // The yields come first and only once: SwiftUI starts a reload in a
             // Task, and a claim made before that Task has run would see an idle
@@ -775,7 +776,6 @@ struct SessionDetailView: View {
             await Task.yield()
             await Task.yield()
             guard conversationLoads > 0 else { break }
-            waited = true
             let waitedLongEnough = ContinuousClock.now.advanced(by: .seconds(20))
             // One sleep at a time, with the deadline re-measured: the lock is
             // held for the length of a network round trip, and giving up on a
@@ -788,7 +788,7 @@ struct SessionDetailView: View {
             }
         }
         conversationLoads += 1
-        return waited
+        return true
     }
 
     /// The permission preset, as a word rather than a raw value.
@@ -878,8 +878,9 @@ struct SessionDetailView: View {
     private func load() async -> Bool {
         // Claimed, not re-checked: the one place either caller may start from,
         // and it is a single step so that two callers cannot both see an idle
-        // screen before either of them starts.
-        _ = await takeConversationReadLock()
+        // screen before either of them starts. `false` is the screen being torn
+        // down, and a `defer` below is only installed once the lock is held.
+        guard await takeConversationReadLock() else { return false }
         defer { conversationLoads -= 1 }
         loading = true
         loadingConversation = true

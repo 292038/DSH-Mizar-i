@@ -366,6 +366,15 @@ final class AppModel {
     /// See ``recentHostEventState``.
     var recentHostEvents: [HostSummary.Event] { recentHostEventState.value(for: currentTag) ?? [] }
 
+    /// The same events for the log export.
+    ///
+    /// Read through ``HostScoped/held`` rather than through the current tag,
+    /// because the archive is built after the socket may already be gone: it
+    /// describes what this phone holds, and reading it for a subject that no
+    /// longer exists would report an empty history for a phone that has one.
+    /// This is the accessor ``HostScoped`` has a `held` for.
+    private var recentHostEventsForArchive: [HostSummary.Event] { recentHostEventState.held ?? [] }
+
     private var connection: MizarConnection?
 
     /// How many sockets this run has opened.
@@ -451,12 +460,20 @@ final class AppModel {
     ///
     /// Reading it is a disk trip, and the machine can change during one: a
     /// slower read of the first Mac's list landing after the operator switched
-    /// draws that Mac's sessions under this one. The tag is taken before the read
-    /// and checked after it, which is the same rule the network reads follow.
+    /// draws that Mac's sessions under this one. The machine is recorded before
+    /// the read and checked after it, which is the same rule the network reads
+    /// follow. The socket is deliberately not part of it: this runs before the
+    /// handshake, and a stored list belongs to the machine rather than to the
+    /// connection that happens to be opening.
     ///
     /// - Parameter hostId: the machine to read for.
     private func loadIndex(for hostId: String) async {
-        guard let tag = currentTag, tag.hostId == hostId else {
+        // The *machine* being opened, not the current connection: this read runs
+        // before the handshake, and `currentTag` is deliberately nil until there
+        // is a socket. Asking for the tag here abandoned every stored index on
+        // launch -- the list was empty until the network answered, and stayed
+        // empty when it did not, which is the one case the cache exists for.
+        guard host?.hostId == hostId else {
             log.add(.cache, "index: read for \(hostId) abandoned, that machine is no longer open")
             return
         }
@@ -467,8 +484,8 @@ final class AppModel {
         }
         // After the await: what the phone holds is the first Mac's list, and the
         // second Mac is the one on screen.
-        guard tag == currentTag else {
-            log.add(.cache, "index: read for \(hostId) abandoned, the connection changed under it")
+        guard host?.hostId == hostId else {
+            log.add(.cache, "index: read for \(hostId) abandoned, another machine was opened under it")
             return
         }
         hasStoredIndex = !stored.sessions.isEmpty
@@ -649,8 +666,14 @@ final class AppModel {
         if connection != nil { log.add(.connection, "closing the connection") }
         interactionPoll?.cancel()
         eventListener?.cancel()
-        Task { await connection?.disconnect() }
+        // Captured, not read inside the task. `Task { await connection?.disconnect() }`
+        // reads `connection` when the task *runs*, which can be after the next
+        // machine's socket has been assigned -- so the task closed the new
+        // connection instead of the old one, and a second pairing failed to
+        // connect with "Socket is not connected" before it had said hello.
+        let closing = connection
         connection = nil
+        if let closing { Task { await closing.disconnect() } }
         welcome = nil
         sessions = []
         sessionsAreKnown = false
@@ -1139,7 +1162,7 @@ final class AppModel {
                     firstPrompt: question.questions.first.map { String($0.question.prefix(120)) },
                 )
             },
-            recentEvents: recentHostEvents,
+            recentEvents: recentHostEventsForArchive,
         )
     }
 
@@ -1486,6 +1509,16 @@ final class AppModel {
             do {
                 _ = try await next.connect()
                 connection = next
+                // A reconnect is a new conversation with the same machine, and
+                // the epoch says so. Everything scoped to the old socket -- the
+                // catalogues, the pending set, an answer still on its way --
+                // was answered by a host this app is no longer talking to, and
+                // a host id alone cannot tell that apart from the same machine
+                // still answering. Without this, a read started before the drop
+                // and delivered after the new socket opened passed every tag
+                // check and was published as current.
+                nextConnectionEpoch += 1
+                connectionEpoch = nextConnectionEpoch
                 lastError = nil
                 log.add(.connection, "reconnected after \(attempt + 1) attempt(s)")
                 startInteractionPoll()
@@ -2040,6 +2073,15 @@ final class AppModel {
     ///   - deviceName: what to call this device in the host's roster.
     func pair(with target: PairingTarget, deviceName: String) async {
         phase = .connecting
+        // A naming prompt for a *previous* machine must not survive into this
+        // pairing. It is presented over the main screen, and when the machine
+        // underneath it is replaced its content looks up the host and finds
+        // either the wrong one or none -- an empty sheet that does not draw a
+        // skip button and quietly keeps the next sheet from being presented.
+        // The operator cannot see it and cannot dismiss it, and the model picker
+        // then does nothing when tapped. Clearing the request dismisses it; the
+        // new machine asks for its own name after it has connected.
+        pendingNameHostId = nil
         log.add(.connection, "pairing with \(target.authority ?? target.baseURL ?? "unknown address") as \(deviceName)")
         do {
             let client = PairingClient()
@@ -2056,6 +2098,14 @@ final class AppModel {
             try await credentials.save(paired)
             log.add(.connection, "paired with \(paired.hostName) (\(paired.hostId))")
             hosts = try await credentials.loadAll().sorted { $0.pairedAt < $1.pairedAt }
+            // Pairing a second machine is a change of machine like any other, and
+            // it used to leave the first one's socket open: the new connection
+            // replaced the reference without closing what it replaced, and every
+            // value scoped to the old host stayed in memory. Dropping the
+            // connection first makes "what belongs to one Mac" the same rule on
+            // the launch-pairing path as it is on the host list.
+            disconnectCurrent()
+            modelChoice = [:]
             host = paired
             // Offered once, now, while the operator still knows which machine
             // they just scanned. The connection is opened first so the name is
