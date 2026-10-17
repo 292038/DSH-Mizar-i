@@ -87,6 +87,14 @@ export_ipa() {
     -exportOptionsPlist "$options" \
     -allowProvisioningUpdates \
     | grep -E "error:|Upload succeeded|Exported|EXPORT (SUCCEEDED|FAILED)" || true
+  # An upload destination never produces a local .ipa: the package goes straight
+  # to App Store Connect from xcodebuild. Failing here used to report a successful
+  # upload as "export produced no .ipa", which is the wrong conclusion to draw
+  # from a log whose last line is Upload succeeded.
+  if [ "$destination" = "upload" ]; then
+    echo "release: uploaded to App Store Connect — the build appears in TestFlight after processing"
+    return 0
+  fi
   test -f "$EXPORT_DIR/DSH-Mizar.ipa" || die 'export produced no .ipa'
   # Named by version, because a folder of identical `DSH-Mizar.ipa` files is a
   # folder nobody can tell apart.
