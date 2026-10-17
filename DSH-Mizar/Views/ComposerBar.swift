@@ -80,7 +80,7 @@ struct ComposerBar: View {
         // presents from anywhere, it is the system's own control, and the point
         // the operator raised was that the three should look the same.
         .sheet(isPresented: $showingModel) {
-            ModelPickerView(sessionId: sessionId)
+            ModelPickerView(sessionId: sessionId, stats: stats)
         }
         .sheet(isPresented: $showingContext) {
             ContextDetail(stats: stats)

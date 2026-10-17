@@ -96,6 +96,8 @@
 "Add a Mac" = "Add a Mac";
 "Cannot reach the Mac" = "Cannot reach the Mac";
 "Could not load the conversation" = "Could not load the conversation";
+"Could not switch model" = "Could not switch model";
+"Thinking: %@" = "Thinking: %@";
 "Every conversation on this Mac is stored on this phone." = "Every conversation on this Mac is stored on this phone.";
 "Full access" = "Full access";
 "Load earlier messages" = "Load earlier messages";

@@ -29,6 +29,18 @@ final class AppFlowTests: XCTestCase {
     private static let mockPairingURI =
         "mizar://pair?h=127.0.0.1%3A19395&c=MOCK-CODE&n=Mock%20Mac&v=1"
 
+    /// A second Mac, on a second port, with its own identity.
+    ///
+    /// Every piece of state the app keeps is scoped to a machine, and a single
+    /// mock cannot show that: it answers every read with the same host id, the
+    /// same sessions and the same providers, so a screen drawn from one Mac's
+    /// answer under another Mac's name looks exactly like a screen drawn
+    /// correctly. `node scripts/mock-host.mjs 19396` is a *different* machine --
+    /// its own host id, its own name, its own session ids, its own model
+    /// catalogue -- which is what makes "this belongs to that Mac" assertable.
+    private static let secondMockPairingURI =
+        "mizar://pair?h=127.0.0.1%3A19396&c=MOCK-CODE&n=Mock%20Mac%20(second)&v=1"
+
     /// How long to wait for the host to answer.
     private static let patience: TimeInterval = 20
 
@@ -81,6 +93,27 @@ final class AppFlowTests: XCTestCase {
         _ = done.wait(timeout: .now() + 6)
     }
 
+    /// Put the *second* Mac's fixture back, on the other port.
+    ///
+    /// The same reset as ``resetMockHost(pending:slow:skew:pageLimit:running:)``,
+    /// for the other machine. A test that switches between two Macs has two
+    /// fixtures to keep apart, and one of them left carrying the previous test's
+    /// sends while the other was reset is a test whose second half measures the
+    /// first.
+    ///
+    /// - Parameter running: whether that machine's session reports itself as
+    ///   running. `false` by default, which keeps the Live Activity out of a test
+    ///   about two session lists.
+    private static func resetSecondMockHost(running: Bool = false) {
+        let query = running ? "" : "?running=0"
+        guard let url = URL(string: "http://127.0.0.1:19396/reset\(query)") else { return }
+        let done = DispatchSemaphore(value: 0)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { _, _, _ in done.signal() }.resume()
+        _ = done.wait(timeout: .now() + 6)
+    }
+
     /// Make the mock host refuse connections, or stop refusing them.
     ///
     /// - Parameter off: whether it should be unreachable.
@@ -100,13 +133,26 @@ final class AppFlowTests: XCTestCase {
     /// like the rest of the mock's state.
     ///
     /// - Parameter method: the wire method to refuse.
-    private static func failMockHost(_ method: String) {
-        guard let url = URL(string: "http://127.0.0.1:19395/fail?method=\(method)") else { return }
+    /// - Returns: whether the mock confirmed it is refusing that method. Checked
+    ///   rather than assumed, because a knob that did not take turns every
+    ///   assertion after it into an assertion about something else -- which cost
+    ///   an afternoon of reading a failure screen as a bug in the app.
+    @discardableResult
+    private static func failMockHost(_ method: String) -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:19395/fail?method=\(method)") else { return false }
         let done = DispatchSemaphore(value: 0)
+        let box = Box()
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
-        URLSession.shared.dataTask(with: request) { _, _, _ in done.signal() }.resume()
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            defer { done.signal() }
+            guard let data,
+                  let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return }
+            box.value = (parsed["failMethod"] as? String) == method ? 1 : 0
+        }.resume()
         _ = done.wait(timeout: .now() + 6)
+        return box.value == 1
     }
 
     /// Make the mock host answer `session.stats` like a cold session.
@@ -135,12 +181,89 @@ final class AppFlowTests: XCTestCase {
     ///
     /// - Parameter milliseconds: how long each answer should take.
     private static func stallMockHost(_ milliseconds: Int) {
-        guard let url = URL(string: "http://127.0.0.1:19395/slow?ms=\(milliseconds)") else { return }
+        slowMockHost(milliseconds, method: nil)
+    }
+
+    /// Stall one method's answers, leaving the rest immediate.
+    ///
+    /// The other half of ``stallMockHost(_:)``, for a test that needs one slow
+    /// read rather than a slow app: a reload held open on `session.messages`
+    /// while the send that is being measured answers straight away.
+    ///
+    /// - Parameters:
+    ///   - milliseconds: how long each answer to that method should take.
+    ///   - method: the wire method to stall.
+    private static func stallMockHost(_ milliseconds: Int, method: String) {
+        slowMockHost(milliseconds, method: method)
+    }
+
+    /// - Parameters:
+    ///   - milliseconds: how long each stalled answer should take.
+    ///   - method: the one method to stall, or `nil` for every method.
+    private static func slowMockHost(_ milliseconds: Int, method: String?) {
+        let named = method.map { "&method=\($0)" } ?? ""
+        guard let url = URL(string: "http://127.0.0.1:19395/slow?ms=\(milliseconds)\(named)") else { return }
         let done = DispatchSemaphore(value: 0)
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
         URLSession.shared.dataTask(with: request) { _, _, _ in done.signal() }.resume()
         _ = done.wait(timeout: .now() + 6)
+    }
+
+    /// Hold the mock's conversation reads, or let them go.
+    ///
+    /// A stall is a race, and this is not: a delay long enough to be measured on
+    /// a loaded machine is a delay long enough for whatever was meant to overlap
+    /// it to have finished first. Held, the reload under test is still in flight
+    /// when the next thing happens -- by construction rather than by timing, so
+    /// the assertion about a second load landing on top of it is deterministic.
+    ///
+    /// - Parameter holding: whether to hold them.
+    /// - Returns: how many held answers the release let go, so that a test can
+    ///   say it released something rather than assume it did.
+    @discardableResult
+    private static func holdMockConversationReads(_ holding: Bool) -> Int? {
+        guard let url = URL(string: "http://127.0.0.1:19395/hold?messages=\(holding ? 1 : 0)") else { return nil }
+        let done = DispatchSemaphore(value: 0)
+        let box = Box()
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            defer { done.signal() }
+            guard let data,
+                  let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return }
+            box.value = parsed["released"] as? Int
+        }.resume()
+        _ = done.wait(timeout: .now() + 6)
+        return box.value
+    }
+
+    /// What the mock host has seen of overlapping conversation reads.
+    ///
+    /// `inFlight` is how many `session.messages` requests it is answering right
+    /// now and `peak` the most it ever answered at once, both since the last
+    /// reset. Neither is visible from the app: two overlapping loads are both
+    /// answered correctly and settle on the same conversation, so "one load was
+    /// in flight, not two" is a fact only the host holds.
+    ///
+    /// - Returns: the counts, or `nil` when the mock is not answering.
+    private static func mockLoads() -> (inFlight: Int, peak: Int)? {
+        guard let url = URL(string: "http://127.0.0.1:19395/loads?reset=1") else { return nil }
+        let done = DispatchSemaphore(value: 0)
+        let box = Box()
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            defer { done.signal() }
+            guard let data,
+                  let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return }
+            box.counts = (parsed["inFlight"] as? Int, parsed["peak"] as? Int)
+        }.resume()
+        _ = done.wait(timeout: .now() + 6)
+        guard let counts = box.counts, let inFlight = counts.0, let peak = counts.1 else { return nil }
+        return (inFlight, peak)
     }
 
     /// Wait until an element's label says something.
@@ -255,6 +378,8 @@ final class AppFlowTests: XCTestCase {
     /// write happens before `signal()` and the read after `wait()`.
     private final class Box: @unchecked Sendable {
         var value: Int?
+        /// Two counts at once, for the one endpoint that reports a pair.
+        var counts: (Int?, Int?)?
     }
 
     /// How many sockets the mock host has accepted since the suite last reset it.
@@ -300,6 +425,9 @@ final class AppFlowTests: XCTestCase {
     ///   - naming: whether to wait for the naming prompt before returning.
     ///     It is offered *after* a first download, so a test about that download
     ///     would spend the whole of it here instead of looking at it.
+    ///   - pairingURIs: the Macs to pair with on the way in, in order. One is the
+    ///     ordinary case; two is a phone that manages more than one machine, which
+    ///     is the only setup in which cross-machine state can be observed at all.
     /// - Returns: the running application.
     private func launch(
         pairing: Bool = true,
@@ -312,6 +440,7 @@ final class AppFlowTests: XCTestCase {
         running: Bool = true,
         naming: Bool = true,
         freshStart: Bool = true,
+        pairingURIs: [String] = [mockPairingURI],
     ) -> XCUIApplication {
         Self.resetMockHost(pending: pending, slow: slow, skew: skew, pageLimit: pageLimit, running: running)
         let app = XCUIApplication()
@@ -320,6 +449,7 @@ final class AppFlowTests: XCTestCase {
             session: session,
             language: language,
             freshStart: freshStart,
+            pairingURIs: pairingURIs,
         )
         app.launch()
         if naming { dismissNamingIfPresented(app) }
@@ -339,15 +469,20 @@ final class AppFlowTests: XCTestCase {
     ///   - session: a session to open, or `nil` to stay on the list.
     ///   - language: a language to force, or `nil` to follow the system.
     ///   - freshStart: whether to throw the stored data away first.
+    ///   - pairingURIs: the Macs to pair with, in order.
     /// - Returns: the arguments.
     private static func arguments(
         pairing: Bool,
         session: String?,
         language: String?,
         freshStart: Bool,
+        pairingURIs: [String] = [mockPairingURI],
     ) -> [String] {
         var arguments: [String] = []
-        if pairing { arguments += ["-mizarPairURI", mockPairingURI] }
+        // Repeated, and in order: the app pairs with each in turn, which is how a
+        // phone that manages two Macs gets that way without a test having to walk
+        // the pairing screen twice.
+        if pairing { for uri in pairingURIs { arguments += ["-mizarPairURI", uri] } }
         if let session { arguments += ["-mizarSelectSession", session] }
         if let language { arguments += ["-AppleLanguages", "(\(language))"] }
         // The stored conversations outlive a relaunch, which is the point of
@@ -1915,6 +2050,236 @@ final class AppFlowTests: XCTestCase {
         // to the machine should not be one tap away.
         app.buttons["permission.row.danger-full-access"].tap()
         expect(app.staticTexts["Allow full access?"], "full access was granted without confirmation")
+    }
+
+    /// A model switch the host refused does not stay on screen as applied.
+    ///
+    /// The choice was written down *before* the call and the call's failure was
+    /// swallowed, and the host has no "what is this session using" read on this
+    /// side of the protocol -- so the tick drawn for a refused switch was the
+    /// only answer there was, and it was wrong for the life of the process. Every
+    /// `session.model.set` on the fixture fails to decode, which is why nothing
+    /// noticed.
+    ///
+    /// Both halves are asserted, because either one alone is a smaller bug than
+    /// the one reported: the picker goes back to the model that is actually in
+    /// force, and it says why the switch did not happen.
+    func testARefusedModelSwitchGoesBackAndSaysSo() {
+        // Opened by tapping rather than by `-mizarSelectSession`. That argument
+        // selects the host's *first* session, which is a different session the
+        // moment the fixture's list changes, and this test is about one named
+        // session's model. Tapping the row is also the path an operator takes.
+        let app = launch(session: nil, pending: false)
+        let demo = app.buttons["workspace./Users/you/projects/demo"]
+        expect(demo, "the host's first workspace is missing")
+        var opened = false
+        for _ in 0..<3 where !opened {
+            let row = sessionRow(in: app, titled: "Mock session", in: "demo")
+            _ = expand(demo, revealing: row)
+            guard row.exists, row.isHittable else { continue }
+            row.tap()
+            opened = app.buttons["composer.model"].waitForExistence(timeout: 10)
+        }
+        XCTAssertTrue(opened, "the conversation never opened")
+
+        // Re-queried rather than held in a `let`: a sheet coming and going
+        // rebuilds the hierarchy under it, and an element captured before that is
+        // a stale reference the second tap goes nowhere with.
+        app.buttons["composer.model"].tap()
+        XCTAssertTrue(
+            app.buttons["model.row.deepseek-flash"].waitForExistence(timeout: Self.patience),
+            "the picker did not open",
+        )
+
+        // A switch the host takes, so that the refusal below is a change from
+        // something and the value it goes back to is one the app has agreed with
+        // rather than one a test assumed. `deepseek-flash` has reasoning levels,
+        // so this commits `Off`, and a taken switch closes the picker.
+        app.buttons["model.row.deepseek-flash"].tap()
+        expect(app.buttons["Off"], "the reasoning levels were not revealed")
+        app.buttons["Off"].tap()
+        XCTAssertTrue(
+            waitForDisappearance(app.buttons["model.row.deepseek-flash"], timeout: Self.patience),
+            "the picker stayed open over a switch the host accepted",
+        )
+
+        // Reopened: this is what is in force, said by the screen. It is also the
+        // value the refusal below has to put back.
+        app.buttons["composer.model"].tap()
+        XCTAssertTrue(
+            app.staticTexts["model.current.deepseek-flash"].waitForExistence(timeout: Self.patience),
+            "the picker does not say which model is in force",
+        )
+
+        // From here the host refuses the switch, and answers everything else.
+        XCTAssertTrue(Self.failMockHost("session.model.set"), "the mock did not take the refusal knob")
+
+        // The refusal is driven through the reasoning-level control rather than
+        // by tapping the model's own row, and that is about the test rather than
+        // the app: a `List` row's button is not reliably hittable once the picker
+        // has been closed and reopened under XCUITest, while the segmented
+        // control is. What it exercises is the same `commit`, the same
+        // `setModel`, and the same failure.
+        // `Off`, not `High`: the second model already defaults to `High`, and a
+        // segmented control whose selection does not change does not call its
+        // binding -- so a tap on the level already in force commits nothing.
+        app.buttons["model.row.deepseek-v4-pro"].tap()
+        expect(app.buttons["Off"], "the second model's levels were not revealed")
+        app.buttons["Off"].tap()
+
+        XCTAssertTrue(
+            labelled("model.error", in: app, contains: "failed on purpose")
+                .waitForExistence(timeout: Self.patience),
+            "a refused model switch was not reported at all",
+        )
+        // Back to the model that is actually in force. The picker did not close
+        // over the refusal, so the operator is looking at the answer.
+        XCTAssertTrue(
+            app.staticTexts["model.current.deepseek-flash"].waitForExistence(timeout: 5),
+            "the picker kept showing a model the host had refused, as though it were in force",
+        )
+        XCTAssertFalse(
+            app.staticTexts["model.current.deepseek-v4-pro"].exists,
+            "the refused model is still the one the picker says is in force",
+        )
+    }
+
+    /// Wait until an element is gone.
+    ///
+    /// - Parameters:
+    ///   - element: what to watch.
+    ///   - timeout: how long to wait.
+    /// - Returns: whether it went away.
+    private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    /// What belongs to one Mac does not follow the operator to the next.
+    ///
+    /// The app keeps the model and permission catalogues, the pending
+    /// interactions and the recent host events for the machine it is talking to,
+    /// and none of them were dropped when the machine changed. The catalogues are
+    /// the visible half: they are read once per *connection* and never re-read,
+    /// so a phone that switches Macs draws the first Mac's models in the second
+    /// Mac's picker -- and the two mocks disagree about what they offer, which is
+    /// the only way that is observable.
+    ///
+    /// Two hosts, deliberately: one mock answers every read with the same
+    /// providers, the same sessions and the same host id, so a screen drawn from
+    /// the wrong Mac's answer looks exactly like a screen drawn from the right
+    /// one. `scripts/mock-host.mjs 19396` is a different machine.
+    func testSwitchingMacsDoesNotCarryTheFirstMacsCatalog() {
+        Self.resetSecondMockHost()
+        let app = launch(
+            session: nil,
+            pending: false,
+            running: false,
+            naming: false,
+            pairingURIs: [Self.mockPairingURI, Self.secondMockPairingURI],
+        )
+        // The second Mac is the one open: the last pairing is the current one.
+        if !app.staticTexts["Mock Mac (second)"].waitForExistence(timeout: Self.patience) {
+            let dump = app.staticTexts.allElementsBoundByIndex.prefix(25)
+                .map { $0.identifier.isEmpty ? "<no id>" : $0.identifier }
+            XCTFail("the second Mac was not the one opened; screen says: \(dump)")
+        }
+        expect(app.staticTexts["demo"], "the second Mac's session list never arrived")
+
+        // Read the first Mac's catalogue into the app, by opening the picker that
+        // asks for it. This is what makes the catalogue a *cached* value rather
+        // than one fetched on demand.
+        let opener = app.buttons["composer.model"]
+        expect(opener, "there is no way to change the model")
+        opener.tap()
+        XCTAssertTrue(
+            app.buttons["model.row.kimi-k2"].waitForExistence(timeout: Self.patience),
+            "the second Mac's own catalogue is missing",
+        )
+        app.navigationBars.buttons["Done"].tap()
+        expect(opener, "the picker never closed")
+
+        // Back to the first Mac, whose catalogue is the one that must now be in
+        // force -- and whose session list is a different one.
+        app.buttons["sessions.hosts"].tap()
+        let first = app.buttons["host.row.mock-host-0000-4000-8000-000000000000"]
+        expect(first, "the first Mac is not in the list")
+        first.tap()
+        expect(app.staticTexts["Mock Mac (fixture)"], "the first Mac was not opened")
+
+        opener.tap()
+        XCTAssertTrue(
+            app.buttons["model.row.deepseek-flash"].waitForExistence(timeout: Self.patience),
+            "the first Mac's catalogue is missing",
+        )
+        XCTAssertFalse(
+            app.buttons["model.row.kimi-k2"].exists,
+            "the second Mac's models are still offered under the first Mac",
+        )
+    }
+
+    /// A send during a reload is one load on the socket, not two.
+    ///
+    /// `reload()` is the screen's load-bearing gate: it documents that two
+    /// overlapping loads interleave on one socket, each one's failed request
+    /// reconnecting out from under the other. The poll after a send went around
+    /// it, so a message sent while the screen was reloading made exactly that
+    /// pair -- and produced a fresh WebSocket every few seconds on the machine
+    /// this was reported from.
+    ///
+    /// Counted at the host rather than asserted on screen: both loads are
+    /// answered correctly and the conversation that settles is the same one, so
+    /// the overlap itself is the whole of the defect and only the host can see it.
+    func testASendDuringAReloadDoesNotStartASecondLoad() {
+        let app = launch(pending: false, running: false)
+        let field = app.textFields["composer.field"]
+        expect(field, "the conversation never opened")
+        expect(app.staticTexts["The parser is now two files."], "the conversation never arrived")
+
+        // Held rather than stalled, for both halves of the arrangement. The
+        // reload's conversation read waits at the host until this test lets it
+        // go, and the send's prompt is held long enough that the poll following
+        // it starts *while* that read is still waiting -- which is the overlap
+        // under test, arranged rather than raced for. A delay long enough to be
+        // measured on a loaded machine is a delay long enough for the other half
+        // to have finished first, and this suite has already been bitten by a
+        // test that measured the clock instead of the app.
+        Self.holdMockConversationReads(true)
+        Self.stallMockHost(3_000, method: "session.prompt")
+        // From here, whatever the host has already answered is not counted.
+        XCTAssertEqual(Self.mockLoads()?.inFlight, 0, "a conversation read was already in flight")
+
+        // The reload, stopped at the host on its conversation read.
+        let refresh = app.buttons["session.refresh"]
+        expect(refresh, "there is no way to refresh the conversation")
+        refresh.tap()
+
+        // Then the send, which is accepted immediately and whose own refresh
+        // starts three seconds later -- with the reload still in flight, because
+        // this read has not been released.
+        field.tap()
+        field.typeText("Count the loads")
+        app.buttons["composer.send"].tap()
+
+        // Long enough for the delayed answer to arrive and for the poll after it
+        // to have made its first read, if it is going to make one. Nothing about
+        // this wait is what the assertion measures: the reload's read is held
+        // either way, and the send's has either happened by now or never will.
+        Thread.sleep(forTimeInterval: 5)
+        XCTAssertFalse(refresh.isEnabled, "the reload finished, so nothing overlapped after all")
+
+        // Let the reload finish, and the screen settle on the conversation.
+        XCTAssertNotNil(Self.holdMockConversationReads(false), "the host was not holding a read")
+        XCTAssertTrue(
+            reveal(app.staticTexts["Count the loads"], in: app),
+            "the sent message never came back from the host",
+        )
+
+        XCTAssertEqual(
+            Self.mockLoads()?.peak,
+            1,
+            "the host was answering two conversation reads at once: the send's poll went around the screen's reload gate",
+        )
     }
 
     // MARK: - Localisation

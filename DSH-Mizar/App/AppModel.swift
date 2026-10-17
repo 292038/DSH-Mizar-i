@@ -247,7 +247,9 @@ final class AppModel {
     var selectedSessionId: String? {
         didSet {
             guard selectedSessionId != oldValue else { return }
-            pending = nil
+            // Dropped rather than kept: the cards on screen belong to the session
+            // being left, and the read below is what puts this one's up.
+            pendingState.clear()
             Task { await refreshInteractions() }
         }
     }
@@ -256,7 +258,15 @@ final class AppModel {
     /// The host pushes `interactions.changed` the moment its pending set moves,
     /// so this is normally current within a round trip. The timer below is the
     /// safety net for a notification lost to a dropped socket, not the mechanism.
-    private(set) var pending: PendingInteractions?
+    ///
+    /// Scoped to the machine it came from, and that is not bookkeeping: a
+    /// question read on one Mac and drawn under another is an approval card over
+    /// a session that is not on this machine at all. It is the same defect the
+    /// session screen had, one level up.
+    private var pendingState = HostScoped<PendingInteractions>()
+
+    /// See ``pendingState``.
+    var pending: PendingInteractions? { pendingState.value(for: currentTag) }
     /// What each session was last told to use, so the picker can show it.
     ///
     /// Not persisted: it is a display of what this app asked for, and after a
@@ -271,10 +281,18 @@ final class AppModel {
         let effort: String?
     }
 
-    /// The models this host offers.
-    private(set) var modelCatalog: ModelCatalog?
-    /// The permission presets this host offers.
-    private(set) var permissionCatalog: PermissionCatalog?
+    /// The models this host offers, and which host said so.
+    ///
+    /// Read once per connection and kept, so the machine it was read from is
+    /// part of the value: switching Macs used to draw the first Mac's models in
+    /// the second Mac's picker, and the picker never asks again.
+    private var modelCatalogState = HostScoped<ModelCatalog>()
+    /// See ``modelCatalogState``.
+    var modelCatalog: ModelCatalog? { modelCatalogState.value(for: currentTag) }
+    /// The permission presets this host offers, and which host said so.
+    private var permissionCatalogState = HostScoped<PermissionCatalog>()
+    /// See ``permissionCatalogState``.
+    var permissionCatalog: PermissionCatalog? { permissionCatalogState.value(for: currentTag) }
     /// The poll that watches for pending interactions.
     private var interactionPoll: Task<Void, Never>?
     /// The task consuming host-pushed events.
@@ -344,9 +362,38 @@ final class AppModel {
     /// Bounded, and it holds names rather than payloads: this exists for the log
     /// export, and what it has to answer is "did the host tell us anything, and
     /// when" -- not what it said.
-    private(set) var recentHostEvents: [HostSummary.Event] = []
+    private var recentHostEventState = HostScoped<[HostSummary.Event]>()
+    /// See ``recentHostEventState``.
+    var recentHostEvents: [HostSummary.Event] { recentHostEventState.value(for: currentTag) ?? [] }
 
     private var connection: MizarConnection?
+
+    /// How many sockets this run has opened.
+    ///
+    /// Half of ``HostTag``. The host id says *which Mac* a value is about; this
+    /// says *which conversation with it*. Both halves matter: a read started over
+    /// a socket that has since been replaced was answered by a host the app is no
+    /// longer talking to, and a host id alone cannot tell that from the same
+    /// machine still answering.
+    private var nextConnectionEpoch = 0
+
+    /// Which socket is open now, as an epoch, or `0` when none is.
+    ///
+    /// Kept here rather than derived from the connection object: a tag is
+    /// compared and never dereferenced, so nothing may depend on the socket
+    /// still being alive to answer a question about itself.
+    private var connectionEpoch = 0
+
+    /// The subject every host-scoped value is read and written for.
+    ///
+    /// `nil` when nothing is connected, which is deliberate: with no connection
+    /// there is no subject, so nothing scoped can be read and nothing scoped can
+    /// be written. Every one of these values is an answer from a host, and a host
+    /// that is not connected has not answered.
+    private var currentTag: HostTag? {
+        guard connection != nil, let hostId = host?.hostId else { return nil }
+        return HostTag(hostId: hostId, epoch: connectionEpoch)
+    }
 
     init(
         credentials: any CredentialStore = KeychainCredentialStore(),
@@ -402,11 +449,26 @@ final class AppModel {
     /// slow link showed an empty list and unnamed sessions until the round trip
     /// came back -- and showed them forever if it never did.
     ///
+    /// Reading it is a disk trip, and the machine can change during one: a
+    /// slower read of the first Mac's list landing after the operator switched
+    /// draws that Mac's sessions under this one. The tag is taken before the read
+    /// and checked after it, which is the same rule the network reads follow.
+    ///
     /// - Parameter hostId: the machine to read for.
     private func loadIndex(for hostId: String) async {
+        guard let tag = currentTag, tag.hostId == hostId else {
+            log.add(.cache, "index: read for \(hostId) abandoned, that machine is no longer open")
+            return
+        }
         guard let stored = await indexStore.load(hostId: hostId) else {
             hasStoredIndex = false
             log.add(.cache, "index: nothing stored for this machine yet")
+            return
+        }
+        // After the await: what the phone holds is the first Mac's list, and the
+        // second Mac is the one on screen.
+        guard tag == currentTag else {
+            log.add(.cache, "index: read for \(hostId) abandoned, the connection changed under it")
             return
         }
         hasStoredIndex = !stored.sessions.isEmpty
@@ -492,8 +554,17 @@ final class AppModel {
             await indexStore.clear()
             log.add(.cache, "starting from nothing: stored conversations and index cleared")
         }
-        if let raw = Self.launchPairingURI, let target = PairingURI.parse(raw) {
-            await pair(with: target, deviceName: "iPhone")
+        if !Self.launchPairingURIs.isEmpty {
+            // Every URI, in order, not just the first. A phone that manages two
+            // Macs is a supported arrangement and this is the only way to reach
+            // it without walking the pairing screen once per machine -- and it
+            // is the arrangement in which anything scoped to one machine can be
+            // seen at all. The last one paired is the one left open, which is
+            // what makes the order meaningful.
+            for raw in Self.launchPairingURIs {
+                guard let target = PairingURI.parse(raw) else { continue }
+                await pair(with: target, deviceName: "iPhone")
+            }
             return
         }
         do {
@@ -510,10 +581,22 @@ final class AppModel {
     }
 
     /// Open a different machine from the list.
+    ///
+    /// The whole host-scoped half of the app goes with the machine that is being
+    /// left: a catalogue, a pending set, a session list and the model each
+    /// session was last told to use are all facts about *that* Mac, and the
+    /// screen draws them for whichever machine is open.
+    ///
     /// - Parameter hostId: the machine to open.
     func open(hostId: String) async {
         guard let next = hosts.first(where: { $0.hostId == hostId }) else { return }
+        let leaving = host?.hostId != next.hostId
         disconnectCurrent()
+        // Session ids are the host's, and two machines are two hosts: a choice
+        // made on one is not a choice made on the other even when the ids agree,
+        // which on a fixture they do. Kept across a reconnect to the *same*
+        // machine, where it is still this session's last instruction.
+        if leaving { modelChoice = [:] }
         host = next
         do {
             try await connect(using: next)
@@ -549,9 +632,13 @@ final class AppModel {
         guard host?.hostId == hostId else { return }
         disconnectCurrent()
         if let next = hosts.last {
+            // The same rule as opening one from the list: what this phone was
+            // told to use was told to the machine that has just been forgotten.
+            modelChoice = [:]
             host = next
             try? await connect(using: next)
         } else {
+            modelChoice = [:]
             host = nil
             phase = .unpaired
         }
@@ -577,12 +664,27 @@ final class AppModel {
         titles = [:]
         workspaces = nil
         hasStoredIndex = false
+        // The catalogues, the pending set and the host events are that Mac's too,
+        // and they are kept rather than re-read: leaving them is how the second
+        // machine's picker offered the first machine's models. They are also
+        // tagged, so they could not be *read* after a switch -- dropping them
+        // here is what keeps "what this phone holds" honest as well.
+        modelCatalogState.clear()
+        permissionCatalogState.clear()
+        pendingState.clear()
+        recentHostEventState.clear()
         phase = .launching
     }
 
-    /// A `mizar://pair` URI from the launch arguments, when one was passed.
-    private static var launchPairingURI: String? {
-        launchArgument("-mizarPairURI")
+    /// Every `mizar://pair` URI from the launch arguments, in the order passed.
+    ///
+    /// Repeated rather than single, because a phone paired with two Macs is the
+    /// arrangement the host list exists for and the one an automated run has to
+    /// be able to reach: walking the pairing screen twice is a test of the
+    /// pairing screen, not of what happens after it. The last one passed is the
+    /// one the app is left on.
+    private static var launchPairingURIs: [String] {
+        launchArguments("-mizarPairURI")
     }
 
     /// A session to open on launch, from the launch arguments.
@@ -615,11 +717,21 @@ final class AppModel {
     /// - Parameter flag: the flag to look for.
     /// - Returns: the value, or `nil` when the flag is absent.
     private static func launchArgument(_ flag: String) -> String? {
+        launchArguments(flag).first
+    }
+
+    /// Read every `-flag value` pair for one flag, in the order passed.
+    ///
+    /// - Parameter flag: the flag to look for.
+    /// - Returns: the values, empty when the flag is absent.
+    private static func launchArguments(_ flag: String) -> [String] {
         let arguments = ProcessInfo.processInfo.arguments
-        guard let index = arguments.firstIndex(of: flag),
-              arguments.index(after: index) < arguments.endIndex
-        else { return nil }
-        return arguments[arguments.index(after: index)]
+        var values: [String] = []
+        for (index, argument) in arguments.enumerated() where argument == flag {
+            let value = arguments.index(after: index)
+            if value < arguments.endIndex { values.append(arguments[value]) }
+        }
+        return values
     }
 
     /// React to what the host pushes, and fall back to asking occasionally.
@@ -654,10 +766,16 @@ final class AppModel {
     ///
     /// - Parameter name: the event name.
     private func noteHostEvent(_ name: String) {
-        recentHostEvents.insert(HostSummary.Event(at: Date(), name: name), at: 0)
-        if recentHostEvents.count > Self.recentHostEventLimit {
-            recentHostEvents.removeLast(recentHostEvents.count - Self.recentHostEventLimit)
+        // Scoped to the machine that pushed it. The export's "did the host tell
+        // us anything" question is about *this* host, and a list that survived a
+        // switch answers it with the previous Mac's events.
+        guard let tag = currentTag else { return }
+        var events = recentHostEventState.value(for: tag) ?? []
+        events.insert(HostSummary.Event(at: Date(), name: name), at: 0)
+        if events.count > Self.recentHostEventLimit {
+            events.removeLast(events.count - Self.recentHostEventLimit)
         }
+        recentHostEventState.publish(events, for: tag)
         log.add(.host, "event \(name)")
     }
 
@@ -679,15 +797,21 @@ final class AppModel {
     /// more try rather than a 45-second wait: a card the agent is blocked on is
     /// the most urgent thing the app draws.
     func refreshInteractions() async {
-        guard let connection else { return }
+        guard let connection, let tag = currentTag else { return }
         if let read = try? await loggedCall("interactions.pending", on: connection, as: PendingInteractions.self) {
-            pending = read
+            // Only if this is still the machine the read was started for. The
+            // poll outlives a switch -- it is cancelled on one, but a read
+            // already in flight is not -- and a card from the previous Mac drawn
+            // over this one is an approval for a session that is not here.
+            guard tag == currentTag else { return }
+            pendingState.publish(read, for: tag)
             return
         }
         guard pending == nil else { return }
         try? await Task.sleep(for: .milliseconds(600))
         if let retried = try? await loggedCall("interactions.pending", on: connection, as: PendingInteractions.self) {
-            pending = retried
+            guard tag == currentTag else { return }
+            pendingState.publish(retried, for: tag)
         }
     }
 
@@ -729,13 +853,23 @@ final class AppModel {
     }
 
     /// Load the model and permission catalogs, once.
+    ///
+    /// Once per *machine*: both are read for the host that is connected now and
+    /// recorded as that machine's answer, so a switch reads the new machine's
+    /// catalogue rather than drawing the old one's models.
     func loadCatalogs() async {
-        guard let connection else { return }
+        guard let connection, let tag = currentTag else { return }
         if modelCatalog == nil {
-            modelCatalog = try? await loggedCall("model.catalog", on: connection, as: ModelCatalog.self)
+            if let read = try? await loggedCall("model.catalog", on: connection, as: ModelCatalog.self) {
+                guard tag == currentTag else { return }
+                modelCatalogState.publish(read, for: tag)
+            }
         }
         if permissionCatalog == nil {
-            permissionCatalog = try? await loggedCall("permissions.catalog", on: connection, as: PermissionCatalog.self)
+            if let read = try? await loggedCall("permissions.catalog", on: connection, as: PermissionCatalog.self) {
+                guard tag == currentTag else { return }
+                permissionCatalogState.publish(read, for: tag)
+            }
         }
     }
 
@@ -794,31 +928,75 @@ final class AppModel {
     }
 
     /// Switch the session's model, and optionally its reasoning effort.
+    ///
+    /// The choice is shown before the host agrees, and taken back when it does
+    /// not. Both halves are deliberate. Shown first, because the round trip is
+    /// real and a picker that sat blank until it landed read as not working --
+    /// and because the host has no "what is this session using" read on this side
+    /// of the protocol, so what this app asked for is the only thing there is to
+    /// show. Taken back after, because the failure used to be swallowed: a switch
+    /// the host refused was drawn as applied for the rest of the process, and
+    /// there was nothing on screen that could contradict it. That is a lie about
+    /// the operator's own session, and it is the kind that gets acted on.
+    ///
     /// - Parameters:
     ///   - provider: the provider id.
     ///   - model: the model id.
     ///   - effort: the reasoning level, or `nil` for the provider default.
     ///   - sessionId: the session to change.
-    func setModel(provider: String, model: String, effort: String?, sessionId: String) async {
+    /// - Returns: whether the host agreed. The picker keeps itself open when it
+    ///   did not, so the operator sees the choice go back rather than watching a
+    ///   sheet close over a switch that never happened.
+    @discardableResult
+    func setModel(provider: String, model: String, effort: String?, sessionId: String) async -> Bool {
         // Remembered before the call, not after. The host has no "what is this
         // session using" read on the phone's side of the protocol, so this is
         // what lets the picker show a checkmark when it is reopened -- without
         // it the picker started blank every time, and there was no way to tell
         // what was selected.
+        let previous = modelChoice[sessionId]
         modelChoice[sessionId] = ModelChoice(provider: provider, model: model, effort: effort)
-        guard let connection else { return }
+        guard let connection else {
+            // Nothing was asked, so nothing may be shown as applied. The picker
+            // is open on a screen with no socket under it, which is a state the
+            // operator can be in: this is not a switch that failed, it is one
+            // that was never sent.
+            modelChoice[sessionId] = previous
+            lastError = String(localized: "Could not switch model")
+            return false
+        }
         var fields: [String: JSONValue] = [
             "sessionId": .string(sessionId),
             "provider": .string(provider),
             "model": .string(model),
         ]
         if let effort { fields["reasoningEffort"] = .string(effort) }
-        _ = try? await loggedCall(
-            "session.model.set",
-            payload: .object(fields),
-            on: connection,
-            as: SelectModelResult.self,
-        )
+        do {
+            _ = try await loggedCall(
+                "session.model.set",
+                payload: .object(fields),
+                on: connection,
+                as: SelectModelResult.self,
+            )
+            return true
+        } catch {
+            // Only if it is still the choice being taken back. A read cannot
+            // overtake this -- the actor runs one call at a time -- but the
+            // operator can choose again while this one is in flight, and
+            // restoring an older value over a newer one would be a second lie in
+            // the opposite direction.
+            if modelChoice[sessionId] == ModelChoice(provider: provider, model: model, effort: effort) {
+                modelChoice[sessionId] = previous
+            }
+            let reason = Self.describe(error)
+            if !reason.isEmpty { lastError = reason }
+            log.add(
+                .request,
+                "model switch refused: \(provider)/\(model)"
+                    + (reason.isEmpty ? "" : " -- \(reason)"),
+            )
+            return false
+        }
     }
 
     /// Switch the session's permission preset.
@@ -860,6 +1038,14 @@ final class AppModel {
         titles = [:]
         workspaces = nil
         hasStoredIndex = false
+        // Every host-scoped value, for every machine at once. `connection` is
+        // already nil, so none of these is readable any more -- dropping them is
+        // what keeps them out of the next pairing's export.
+        modelChoice = [:]
+        modelCatalogState.clear()
+        permissionCatalogState.clear()
+        pendingState.clear()
+        recentHostEventState.clear()
         phase = .unpaired
         log.add(.connection, "unpaired: every stored credential and index removed")
     }
@@ -992,12 +1178,22 @@ final class AppModel {
 
     /// Refresh the session list, reconnecting first when the socket is gone.
     ///
+    /// Every assignment below is behind the subject the read was started for.
+    /// `call` can reconnect -- which replaces the socket and can land on a
+    /// different pairing entirely -- and a list read for one Mac assigned after
+    /// that draws that Mac's sessions under another one's name. The list is the
+    /// machine's, and so is the workspace set written with it.
+    ///
     /// - Parameter reconnectingIfNeeded: whether a failure should be retried
     ///   over a fresh connection.
     private func refreshSessions(reconnectingIfNeeded: Bool) async {
-        guard connection != nil else { return }
+        guard connection != nil, let tag = currentTag else { return }
         do {
             let result = try await call("session.list", as: SessionListResult.self)
+            guard tag == currentTag else {
+                log.add(.cache, "session list for \(tag.hostId) dropped, the machine changed under it")
+                return
+            }
             sessions = result.items
             sessionsAreKnown = true
             await refreshWorkspaces()
@@ -1016,6 +1212,9 @@ final class AppModel {
             // Reported, not fatal. The pairing is still good and most of the
             // screen is still usable; throwing the operator out to a failure
             // screen over one dropped request is a worse answer than saying so.
+            // Only if this is still the machine it was asked about: a failed read
+            // for a Mac the operator has left is not this screen's problem.
+            guard tag == currentTag else { return }
             lastError = Self.describe(error).isEmpty ? nil : Self.describe(error)
         }
     }
@@ -1039,10 +1238,13 @@ final class AppModel {
         // unimplemented method tore down the connection every time the session
         // list refreshed -- which the context figure above the composer noticed
         // before anything else did.
-        guard let connection else { return }
+        guard let connection, let tag = currentTag else { return }
         do {
             let result = try await loggedCall("workspace.list", on: connection, as: WorkspaceListResult.self)
             guard result.complete else { return }
+            // The stored list is *this* Mac's registry: "the host has no such
+            // workspace" is only an answer about the host that said it.
+            guard tag == currentTag else { return }
             workspaces = result.items
         } catch {
             // Left alone on purpose. See above.
@@ -2019,6 +2221,13 @@ final class AppModel {
     private func open(host: PairedHost, endpoint: PairedHost.Endpoint) async throws {
         let connection = makeConnection(host: host, endpoint: endpoint)
         self.connection = connection
+        // A new subject, before the handshake rather than after it: everything
+        // below reads and writes host-scoped state, and the epoch is what says
+        // which socket that state belongs to. Incremented here so that a read
+        // started over the *previous* socket -- still in flight, and about to be
+        // answered -- is not applied to this one.
+        nextConnectionEpoch += 1
+        connectionEpoch = nextConnectionEpoch
 
         log.add(.connection, "dialling \(Self.routeName(endpoint))")
         let welcome = try await connection.connect()

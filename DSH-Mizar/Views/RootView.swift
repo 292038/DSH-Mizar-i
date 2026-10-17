@@ -161,7 +161,16 @@ private struct UnreachableView: View {
 /// standard bar. Neither is imitated -- a hand-built approximation of a system
 /// control is a control that will look wrong on the next release, which is the
 /// one thing about this app that would date fastest.
+///
+/// What *is* this app's is when that bar comes and goes. It is put away inside a
+/// conversation in compact widths (see `SessionDetailView`), and the system
+/// applies that in one frame. `TabBarTransition` watches the same state and gives
+/// the bar a transition to arrive and leave by; it sits here, above the tab view,
+/// because it has to be in the hierarchy before and after the change rather than
+/// only on one side of it.
 struct MainTabs: View {
+    @Environment(AppModel.self) private var model
+
     var body: some View {
         if #available(iOS 26.0, *) {
             // Reading forward through a long list is what this screen is for, so
@@ -184,6 +193,16 @@ struct MainTabs: View {
             Tab("Settings", systemImage: "gearshape") {
                 SettingsView()
             }
+        }
+        // Nothing drawn and nothing to touch: it exists to catch the moment the
+        // selection changes, while the bar is still on screen, and move the bar
+        // through it. Drawn over the tab view so the picture of the bar can be
+        // laid in the bar's own place.
+        .overlay {
+            TabBarTransition(sessionId: model.selectedSessionId)
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
     }
 }

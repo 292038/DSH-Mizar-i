@@ -20,6 +20,31 @@ const { WebSocketServer } = ws
 
 const port = Number(process.argv[2] ?? 19395)
 const CODE = 'MOCK-CODE'
+
+/**
+ * Which machine this instance is pretending to be.
+ *
+ * A phone that is paired with two Macs draws one Mac's state under another's
+ * name unless every read is tagged with the machine it came from, and one mock
+ * on one port cannot tell that apart from a working app: both hosts would answer
+ * with the same host id, the same sessions and the same providers. Running a
+ * second instance on another port is what makes "this belongs to that Mac"
+ * observable, so the identity is derived from the port rather than fixed.
+ *
+ * 19395 stays exactly what it was -- every existing test measures *that* Mac.
+ */
+const SECOND_IDENTITY = port === 19396
+
+/** This machine's id, as it reports at pairing and in `welcome`. */
+const HOST_ID = SECOND_IDENTITY
+  ? 'mock-host-1111-4000-8000-000000000000'
+  : 'mock-host-0000-4000-8000-000000000000'
+/** This machine's own name, which is the only label on screen that differs. */
+const HOST_NAME = SECOND_IDENTITY ? 'Mock Mac (second)' : 'Mock Mac (fixture)'
+/** The device id this machine issues at pairing. */
+const DEVICE_ID = SECOND_IDENTITY
+  ? 'mock-device-1111-4000-8000-000000000000'
+  : 'mock-device-0000-4000-8000-000000000000'
 // A real host rarely has pending requests and a conversation at the same time;
 // the flag lets each be seen on its own.
 /**
@@ -116,10 +141,74 @@ let sessionRunning = true
  */
 let connections = 0
 
+/**
+ * How many frames the mock has answered, by method, since the last reset.
+ *
+ * A second load on one socket is invisible from the app's side -- every request
+ * is answered, and the screen settles on the same content -- so "one load was in
+ * flight, not two" can only be asserted by counting what the host was actually
+ * asked. `session.messages` is the read that two overlapping loads both make.
+ */
+const methodCounts = {}
+
+/**
+ * One method whose answers are stalled, while the rest answer immediately.
+ *
+ * `/slow` stalls *every* method, which also stalls the launch, the send and the
+ * reads that carry the screen the assertion is about -- so a test that wants two
+ * loads to overlap ends up measuring a stalled app instead. Naming the method
+ * makes the overlap reachable: the reload being observed is slow, and everything
+ * the test needs in order to start a second load is not.
+ */
+let slowMethod = null
+
+/**
+ * How many `session.messages` reads are being answered at once, and the most
+ * that ever were.
+ *
+ * Two loads overlapping on one socket is the failure this counts, and neither
+ * the screens nor the answers can show it: both requests are answered correctly
+ * and the conversation that settles on screen is the same one. In flight at the
+ * same time is the whole of the defect, so the count is read at the host, where
+ * it is a fact.
+ */
+let messagesInFlight = 0
+let messagesPeak = 0
+
+/**
+ * Whether `session.messages` answers are being held, and what is waiting.
+ *
+ * A stall is a race: a delay long enough to be measured on a loaded machine is a
+ * delay long enough for the thing being overlapped to have finished first. Held,
+ * the answer waits for the test to release it, so "the reload is still in
+ * flight" is a fact rather than a hope -- which is what makes the assertion
+ * about a *second* load landing on top of it deterministic.
+ */
+let holdingMessages = false
+let heldMessages = []
+
+/** Every `session.model.set` the mock was asked to make, in order. */
+const modelSets = []
+/** How many times each method was refused, by method. */
+const refusedCounts = {}
+
+// Declared before the two interaction fixtures, which carry its session id.
+const SESSION = {
+  sessionId: SECOND_IDENTITY ? 'session-mock-second' : 'session-mock-0001',
+  cwd: '/Users/you/projects/demo',
+  // Epoch milliseconds, which is what the host reports.
+  updatedAt: Date.now() - 120_000,
+  running: true,
+  blank: false,
+  agentAvailable: true,
+  parentSessionId: null,
+  origin: null,
+}
+
 /** A pending approval, shaped like the one the bridge builds. */
 const APPROVAL = {
   requestId: 'a1b2c3d4-0000-4000-8000-000000000001',
-  sessionId: 'session-mock-0001',
+  sessionId: SESSION.sessionId,
   toolName: 'write_file',
   callId: 'call-1',
   reason: 'Writing to a path outside the workspace',
@@ -133,7 +222,7 @@ const APPROVAL = {
 /** A question batch, including a plan review, which is the interesting shape. */
 const QUESTION = {
   callId: 'call-2',
-  sessionId: 'session-mock-0001',
+  sessionId: SESSION.sessionId,
   requestedAt: Date.now() / 1000,
   questions: [
     {
@@ -166,7 +255,7 @@ const QUESTION = {
  * that had been deleted.
  */
 const ORPHANED_SESSION = {
-  sessionId: 'session-mock-orphan',
+  sessionId: SECOND_IDENTITY ? 'session-mock-second-orphan' : 'session-mock-orphan',
   cwd: '/Users/you/projects/deleted-workspace',
   updatedAt: Date.now() - 900_000,
   running: false,
@@ -257,17 +346,20 @@ function orphanMessages(beforeSeq) {
   }
 }
 
-const SESSION = {
-  sessionId: 'session-mock-0001',
-  cwd: '/Users/you/projects/demo',
-  // Epoch milliseconds, which is what the host reports.
-  updatedAt: Date.now() - 120_000,
-  running: true,
-  blank: false,
-  agentAvailable: true,
-  parentSessionId: null,
-  origin: null,
-}
+/**
+ * The main conversation's prompt and answer on this machine.
+ *
+ * Deliberately different on the second instance. A test that switches Macs has
+ * to be able to say *whose* conversation is on screen, and two hosts serving the
+ * same text cannot answer that -- the screen looks the same whichever machine's
+ * page was drawn under it.
+ */
+const MAIN_PROMPT = SECOND_IDENTITY
+  ? 'The second Mac’s own prompt, and nothing else.'
+  : 'Refactor the parser and run the tests.'
+const MAIN_ANSWER = SECOND_IDENTITY
+  ? 'The second Mac answered this one.'
+  : 'The parser is now two files.'
 
 /**
  * Prompts the client has sent, in order.
@@ -284,6 +376,11 @@ const sentPrompts = []
 function answer(frame) {
   const { id, type } = frame
   if (type === failMethod) {
+    // Counted before the refusal, not after it. A refused method is the one a
+    // test is most likely to be counting -- "did the app ask at all" -- and a
+    // count that skipped it answered zero for a request that did arrive.
+    refusedCounts[type] = (refusedCounts[type] ?? 0) + 1
+    console.log('mock: refused ->', type)
     return { v: 1, type: 'error', code: 'INTERNAL', message: 'failed on purpose', id }
   }
   switch (type) {
@@ -292,11 +389,11 @@ function answer(frame) {
         v: 1,
         type: 'welcome',
         id,
-        hostId: 'mock-host-0000-4000-8000-000000000000',
-        hostName: 'Mock Mac (fixture)',
+        hostId: HOST_ID,
+        hostName: HOST_NAME,
         protocolVersion: 1,
         home: '/Users/you',
-        deviceId: 'mock-device-0000-4000-8000-000000000000',
+        deviceId: DEVICE_ID,
       }
     case 'workspace.list':
       // The host's own workspace registry, which is not the session list: a
@@ -447,43 +544,71 @@ function answer(frame) {
       // Copied from the real catalog. The first version invented `low/medium/high`
       // efforts; the host offers `off/low/high/max`, so the picker was being
       // tested against options that do not exist.
+      //
+      // The second instance offers a provider the first one has never heard of,
+      // and no DeepSeek at all. A catalogue is read once per connection and kept
+      // in the app, so a phone that switches Macs without forgetting the first
+      // one's catalogue draws models this machine does not have -- which is only
+      // visible if the two machines disagree about what they offer.
       return {
         v: 1,
         type: 'ok',
         id,
-        result: {
-          default: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'high' },
-          providers: [
-            {
-              id: 'deepseek-official',
-              name: 'DeepSeek',
-              models: [
+        result: SECOND_IDENTITY
+          ? {
+              default: { provider: 'moonshot', model: 'kimi-k2', reasoningEffort: 'high' },
+              providers: [
                 {
-                  id: 'deepseek-flash',
-                  name: 'DeepSeek-V41-Flash',
-                  defaultEffort: 'high',
-                  efforts: [
-                    { id: 'off', name: 'Off', description: 'Use for simple tasks that do not need reasoning.' },
-                    { id: 'low', name: 'Low', description: 'Prefer for routine or latency-sensitive tasks.' },
-                    { id: 'high', name: 'High', description: 'The default balance for most tasks.' },
-                    { id: 'max', name: 'Max', description: 'Reserve for the hardest quality-first tasks.' },
-                  ],
-                },
-                {
-                  id: 'deepseek-v4-pro',
-                  name: 'DeepSeek-V4-Pro',
-                  description: 'Stronger agentic coding at higher cost.',
-                  defaultEffort: 'high',
-                  efforts: [
-                    { id: 'off', name: 'Off', description: 'Use for simple tasks.' },
-                    { id: 'high', name: 'High', description: 'The default balance.' },
+                  id: 'moonshot',
+                  name: 'Moonshot',
+                  models: [
+                    {
+                      id: 'kimi-k2',
+                      name: 'Kimi-K2',
+                      defaultEffort: 'high',
+                      efforts: [
+                        { id: 'off', name: 'Off', description: 'Use for simple tasks.' },
+                        { id: 'high', name: 'High', description: 'The default balance.' },
+                      ],
+                    },
                   ],
                 },
               ],
+              failures: [],
+            }
+          : {
+              default: { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'high' },
+              providers: [
+                {
+                  id: 'deepseek-official',
+                  name: 'DeepSeek',
+                  models: [
+                    {
+                      id: 'deepseek-flash',
+                      name: 'DeepSeek-V41-Flash',
+                      defaultEffort: 'high',
+                      efforts: [
+                        { id: 'off', name: 'Off', description: 'Use for simple tasks that do not need reasoning.' },
+                        { id: 'low', name: 'Low', description: 'Prefer for routine or latency-sensitive tasks.' },
+                        { id: 'high', name: 'High', description: 'The default balance for most tasks.' },
+                        { id: 'max', name: 'Max', description: 'Reserve for the hardest quality-first tasks.' },
+                      ],
+                    },
+                    {
+                      id: 'deepseek-v4-pro',
+                      name: 'DeepSeek-V4-Pro',
+                      description: 'Stronger agentic coding at higher cost.',
+                      defaultEffort: 'high',
+                      efforts: [
+                        { id: 'off', name: 'Off', description: 'Use for simple tasks.' },
+                        { id: 'high', name: 'High', description: 'The default balance.' },
+                      ],
+                    },
+                  ],
+                },
+              ],
+              failures: [{ id: 'openrouter', name: 'OpenRouter', message: 'not signed in' }],
             },
-          ],
-          failures: [{ id: 'openrouter', name: 'OpenRouter', message: 'not signed in' }],
-        },
       }
     case 'permissions.catalog':
       return {
@@ -500,6 +625,26 @@ function answer(frame) {
           ],
         },
       }
+    case 'session.model.set': {
+      // The host's real answer, which the mock did not send at all until a test
+      // needed to tell a switch that worked from one that did not. `?fail=` is
+      // how a refusal is produced; this is what agreement looks like, and its
+      // absence is why every model switch on this fixture used to fail to decode
+      // with nobody noticing.
+      const selected = {
+        provider: frame.payload?.provider ?? 'deepseek-official',
+        model: frame.payload?.model ?? 'deepseek-flash',
+        reasoningEffort: frame.payload?.reasoningEffort ?? null,
+      }
+      modelSets.push(selected)
+      console.log('mock: model set ->', JSON.stringify(selected))
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: { sessionId: frame.payload?.sessionId ?? SESSION.sessionId, selected },
+      }
+    }
     case 'session.prompt': {
       const text = typeof frame.payload?.text === 'string' ? frame.payload.text : ''
       if (text !== '') sentPrompts.push(text)
@@ -629,7 +774,7 @@ function answer(frame) {
             record('step/end', { turn: 1, step: 2 }),
             record('step/start', { turn: 1, step: 3 }),
             record('user/message', {
-              content: [{ type: 'text', text: 'Refactor the parser and run the tests.' }],
+              content: [{ type: 'text', text: MAIN_PROMPT }],
               source: { kind: 'user', rpcId: 'r1' },
               role: 'user',
               id: 'm1',
@@ -641,7 +786,7 @@ function answer(frame) {
               step: 3,
               message: {
                 role: 'assistant',
-                content: [{ type: 'text', text: 'The parser is now two files.' }],
+                content: [{ type: 'text', text: MAIN_ANSWER }],
               },
             }),
             record('turn/end', { turn: 1, reason: { kind: 'completed' } }),
@@ -748,6 +893,39 @@ const server = createServer((request, response) => {
     response.end(JSON.stringify({ connections }))
     return
   }
+  if (request.url?.startsWith('/hold')) {
+    // `?messages=1` holds every `session.messages` answer; `?messages=0`
+    // releases what is waiting. The count is reported so a test can say it
+    // released something rather than assuming it did.
+    const previous = heldMessages.length
+    holdingMessages = (request.url ?? '').includes('messages=1')
+    if (!holdingMessages) {
+      for (const waiting of heldMessages) waiting()
+      heldMessages = []
+    }
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ ok: true, holding: holdingMessages, released: previous }))
+    return
+  }
+  if (request.url?.startsWith('/loads')) {
+    // How many `session.messages` reads the app asked for at the same time, and
+    // the most that ever were. See `messagesInFlight`.
+    const answer = {
+      inFlight: messagesInFlight,
+      peak: messagesPeak,
+      methods: { ...methodCounts },
+      refusedMethods: { ...refusedCounts },
+      modelSets: modelSets.slice(),
+    }
+    if ((request.url ?? '').includes('reset=1')) {
+      messagesInFlight = 0
+      messagesPeak = 0
+      for (const key of Object.keys(methodCounts)) delete methodCounts[key]
+    }
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify(answer))
+    return
+  }
   if (request.url?.startsWith('/session')) {
     // Whether the session in the fixture is running, from now on. See
     // `sessionRunning`.
@@ -777,10 +955,15 @@ const server = createServer((request, response) => {
   if (request.url?.startsWith('/slow')) {
     // Set the stall *after* the app is up, so a test can make one screen slow
     // without also making the launch that leads to it slow.
+    //
+    // `?method=session.messages` narrows it to one method, which is what lets a
+    // test hold a reload open without also holding back the send that has to
+    // land while it is open. Absent, every answer is stalled, as before.
     const match = /ms=(\d+)/.exec(request.url ?? '')
     answerDelayMs = match === null ? 0 : Math.min(5000, Number(match[1]))
+    slowMethod = /method=([A-Za-z.]+)/.exec(request.url ?? '')?.[1] ?? null
     response.writeHead(200, { 'content-type': 'application/json' })
-    response.end(JSON.stringify({ ok: true, delayMs: answerDelayMs }))
+    response.end(JSON.stringify({ ok: true, delayMs: answerDelayMs, slowMethod }))
     return
   }
   if (request.url?.startsWith('/reset')) {
@@ -814,6 +997,14 @@ const server = createServer((request, response) => {
     withPending = !(request.url ?? '').includes('pending=0')
     const slow = /slow=(\d+)/.exec(request.url ?? '')
     answerDelayMs = slow === null ? 0 : Math.min(5000, Number(slow[1]))
+    slowMethod = null
+    messagesInFlight = 0
+    messagesPeak = 0
+    holdingMessages = false
+    heldMessages = []
+    for (const key of Object.keys(methodCounts)) delete methodCounts[key]
+    for (const key of Object.keys(refusedCounts)) delete refusedCounts[key]
+    modelSets.length = 0
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify({ ok: true }))
     return
@@ -822,8 +1013,8 @@ const server = createServer((request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify({
       protocolVersion: 1,
-      hostId: 'mock-host-0000-4000-8000-000000000000',
-      hostName: 'Mock Mac (fixture)',
+      hostId: HOST_ID,
+      hostName: HOST_NAME,
       paired: false,
       pairingOpen: true,
     }))
@@ -843,9 +1034,9 @@ const server = createServer((request, response) => {
       response.writeHead(200, { 'content-type': 'application/json' })
       response.end(JSON.stringify({
         deviceToken: 'mz_mock_token',
-        deviceId: 'mock-device-0000-4000-8000-000000000000',
-        hostId: 'mock-host-0000-4000-8000-000000000000',
-        hostName: 'Mock Mac (fixture)',
+        deviceId: DEVICE_ID,
+        hostId: HOST_ID,
+        hostName: HOST_NAME,
         authority: `127.0.0.1:${port}`,
         protocolVersion: 1,
       }))
@@ -868,9 +1059,29 @@ wss.on('connection', (socket) => {
   socket.on('message', (raw) => {
     let frame
     try { frame = JSON.parse(String(raw)) } catch { return }
-    const reply = () => socket.send(JSON.stringify(answer(frame)))
-    if (answerDelayMs === 0) reply()
-    else setTimeout(reply, answerDelayMs)
+    methodCounts[frame.type] = (methodCounts[frame.type] ?? 0) + 1
+    // Counted around the whole answer, not around the delay: a read that is
+    // still being answered when the next one arrives is the overlap being
+    // measured, and whether it was slow is beside the point.
+    const isLogRead = frame.type === 'session.messages'
+    if (isLogRead) {
+      messagesInFlight += 1
+      messagesPeak = Math.max(messagesPeak, messagesInFlight)
+    }
+    const finish = () => {
+      if (isLogRead) messagesInFlight -= 1
+      socket.send(JSON.stringify(answer(frame)))
+    }
+    const delay = slowMethod === null || slowMethod === frame.type ? answerDelayMs : 0
+    if (isLogRead && holdingMessages) {
+      // Counted as in flight for as long as it is held: from the host's side
+      // this request has not been answered, which is exactly what a second one
+      // arriving alongside it means.
+      heldMessages.push(finish)
+      return
+    }
+    if (delay === 0) finish()
+    else setTimeout(finish, delay)
   })
 })
 

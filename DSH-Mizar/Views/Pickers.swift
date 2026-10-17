@@ -15,16 +15,66 @@ import MizarKit
 /// Model and reasoning effort.
 struct ModelPickerView: View {
     let sessionId: String
+    /// The host's last report for this session, when the screen has one.
+    ///
+    /// Passed in because it belongs to the session and is already read and
+    /// tagged by the screen that owns it -- reaching for it here would be a
+    /// second read of the same thing under a second set of tags.
+    let stats: SessionStatsFrame?
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var chosenProvider: String?
     @State private var chosenModel: String?
     @State private var chosenEffort: String?
+    /// Why the last switch did not happen, when it did not.
+    ///
+    /// Shown here as well as in the session list's banner, and not only there:
+    /// on a phone the banner is on the *other* screen. The list and the
+    /// conversation are one column, so a refusal reported only there would be a
+    /// message the operator cannot read until they have given up on this sheet
+    /// and gone back.
+    @State private var switchError: String?
 
     var body: some View {
         NavigationStack {
             List {
+                // What is in force, said in words as well as ticked below.
+                //
+                // The tick alone was the whole of it, and a tick is a poor answer
+                // to "what is it on now" when the row carrying it is a page down.
+                // It is also the one thing here that can say a refused switch was
+                // refused: it is drawn from what the app and the host have agreed
+                // on, never from what was last tapped.
+                if let current = currentChoice {
+                    Section("In force") {
+                        // One `Text` rather than a title with a caption under it,
+                        // and that is what makes it readable by anything but a
+                        // pair of eyes: SwiftUI exposes a stack of two texts as
+                        // two elements, so a test looking for one identifier
+                        // finds neither. The name and the level are one sentence
+                        // about one model.
+                        Text(current.detail.map { "\(current.name) · \($0)" } ?? current.name)
+                            .accessibilityIdentifier("model.current.\(current.modelId)")
+                    }
+                }
+                if let switchError {
+                    Section("Could not switch model") {
+                        // An `HStack` of two views rather than a `Label`, and a
+                        // `Text` rather than the pair of them under one
+                        // identifier: a `Label` is exposed as a single element
+                        // with its image, so the reason is not findable as text
+                        // -- by VoiceOver's own search or by anything asserting
+                        // on this screen.
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text(switchError)
+                                .font(.caption)
+                                .accessibilityIdentifier("model.error")
+                        }
+                    }
+                }
                 if let catalog = model.modelCatalog {
                     ForEach(catalog.providers) { provider in
                         Section(provider.name) {
@@ -63,6 +113,17 @@ struct ModelPickerView: View {
                 chosenModel = choice.model
                 chosenEffort = choice.effort
             }
+            // The choice on screen can move without this sheet having moved it. A
+            // switch the host refused puts the previous value back on the model,
+            // and the tap that caused it is already a frame behind -- so without
+            // this the tick and the segmented control would go on showing the
+            // refused model, which is the same lie one screen in.
+            .onChange(of: model.modelChoice[sessionId]) { _, choice in
+                guard let choice else { return }
+                chosenProvider = choice.provider
+                chosenModel = choice.model
+                chosenEffort = choice.effort
+            }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -70,6 +131,38 @@ struct ModelPickerView: View {
             }
         }
         .task { await model.loadCatalogs() }
+    }
+
+    /// The route this session is on, as the app and the host agree on it.
+    ///
+    /// The app's own record first. The host has no "what is this session using"
+    /// read on this side of the protocol, so for a session this phone has
+    /// switched, what it asked for is the only account there is. Failing that,
+    /// what the host last reported, which is the same thing on a phone that has
+    /// switched nothing.
+    private var agreedSelection: (provider: String, model: String, effort: String?)? {
+        if let choice = model.modelChoice[sessionId] {
+            return (choice.provider, choice.model, choice.effort)
+        }
+        guard let selection = stats?.model?.next ?? stats?.model?.lastUsed else { return nil }
+        return (selection.provider, selection.model, selection.reasoningEffort)
+    }
+
+    /// That route, with the names the catalogue spells it with.
+    ///
+    /// - Returns: the model's id, its name, and its reasoning level in words, or
+    ///   `nil` when nothing has said what this session is using.
+    private var currentChoice: (modelId: String, name: String, detail: String?)? {
+        guard let agreed = agreedSelection else { return nil }
+        let option = model.modelCatalog?.providers
+            .first { $0.id == agreed.provider }?
+            .models.first { $0.id == agreed.model }
+        let effort = option?.efforts.first { $0.id == agreed.effort }?.name ?? agreed.effort
+        return (
+            modelId: agreed.model,
+            name: option?.name ?? agreed.model,
+            detail: effort.map { String(localized: "Thinking: \($0)") },
+        )
     }
 
     @ViewBuilder
@@ -130,13 +223,30 @@ struct ModelPickerView: View {
         .padding(.leading, 4)
     }
 
+    /// Send a choice, and close only once the host has taken it.
+    ///
+    /// Closing on a refusal was the visible half of the bug: the sheet went away,
+    /// the bar behind it went on naming the model that had been refused, and
+    /// nothing anywhere said the switch had not happened. Staying open on a
+    /// refusal is what gives the reason somewhere to be read and the tick
+    /// somewhere to go back to.
+    ///
+    /// - Parameters:
+    ///   - provider: the provider id.
+    ///   - model: the model id.
+    ///   - effort: the reasoning level, or `nil` for the provider default.
     private func commit(provider: String, model: String, effort: String?) async {
-        await self.model.setModel(
+        let accepted = await self.model.setModel(
             provider: provider,
             model: model,
             effort: effort,
             sessionId: sessionId,
         )
+        guard accepted else {
+            switchError = self.model.problem ?? String(localized: "Could not switch model")
+            return
+        }
+        switchError = nil
         dismiss()
     }
 }

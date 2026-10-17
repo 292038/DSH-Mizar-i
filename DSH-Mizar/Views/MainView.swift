@@ -440,6 +440,14 @@ struct SessionDetailView: View {
     @State private var loadGeneration = 0
     /// Bumped when something was just sent, to move the view to it.
     @State private var newMessageArrived = 0
+    /// How many pieces of this screen are reading the conversation right now.
+    ///
+    /// The single-flight lock, and it has to be one lock rather than a flag per
+    /// caller: `reload()` and the poll after a send are two loops that both want
+    /// the same read, and "is it busy" tested by each of them in turn is a
+    /// question two of them can answer "no" to before either starts. Whoever
+    /// increments first owns the socket; everyone else waits for zero.
+    @State private var conversationLoads = 0
 
     /// The figures for the session on screen, or nothing.
     ///
@@ -691,9 +699,20 @@ struct SessionDetailView: View {
     /// a smoke assertion that counts the message in the log rather than trusting
     /// the `accepted` flag.
     ///
+    /// Through the same gate as ``reload()``, and that is not tidiness. This was
+    /// a second load of the same session on the same socket, started from outside
+    /// the gate: send a message while the screen is reloading -- one tap on a
+    /// screen that reloads on appearance, on a return to the foreground and on a
+    /// pull -- and the pair interleaves exactly as ``reload()`` documents, each
+    /// one's failed request reconnecting out from under the other.
+    ///
     /// - Parameter sent: the text that was accepted.
     private func refreshAfterSend(_ sent: String) async {
         for _ in 0..<8 {
+            // Claimed rather than merely waited for. Waiting and then reading
+            // leaves a window in which the reload this waited for can start, and
+            // that window is the whole bug.
+            _ = await takeConversationReadLock()
             // Synced rather than merely read. `conversation(for:)` returns the
             // flat list, and the screen draws *turns* whenever the host gave
             // turn numbers -- so a message that arrived only in the flat list
@@ -706,6 +725,7 @@ struct SessionDetailView: View {
             // conversation the operator is reading is the same erasure this
             // screen just stopped doing to its figures.
             let synced = await model.syncConversation(for: sessionId)
+            conversationLoads -= 1
             if !synced.isEmpty {
                 items = synced
                 conversationSessionId = sessionId
@@ -727,6 +747,48 @@ struct SessionDetailView: View {
             }
             try? await Task.sleep(for: .milliseconds(500))
         }
+    }
+
+    /// Take the conversation read lock, waiting for whoever holds it.
+    ///
+    /// Two callers, one lock. `reload()` runs on appearance, on a return to the
+    /// foreground and on a pull; this poll runs after every send. Both are loops,
+    /// and a loop that checks "is anyone reading" and then starts reading is not
+    /// exclusion -- two of them can check before either has started. The claim is
+    /// this one method: a single `MainActor` step that decides and increments
+    /// together, which is the only place either caller may start from.
+    ///
+    /// Bounded, because a read that never comes back must not leave a send's
+    /// refresh waiting for ever. After the deadline it takes the lock anyway:
+    /// its own reads then fail on their own terms, which is a worse answer than
+    /// waiting but a better one than a poll that never runs again.
+    ///
+    /// - Returns: whether the conversation can be read. Always true on return
+    ///   from the success path; the value is for a caller that wants to know
+    ///   whether it waited.
+    private func takeConversationReadLock() async -> Bool {
+        var waited = false
+        while conversationLoads > 0 {
+            // The yields come first and only once: SwiftUI starts a reload in a
+            // Task, and a claim made before that Task has run would see an idle
+            // screen and start the second read this exists to prevent.
+            await Task.yield()
+            await Task.yield()
+            guard conversationLoads > 0 else { break }
+            waited = true
+            let waitedLongEnough = ContinuousClock.now.advanced(by: .seconds(20))
+            // One sleep at a time, with the deadline re-measured: the lock is
+            // held for the length of a network round trip, and giving up on a
+            // slow Mac while it is about to release would be a second reader
+            // rather than a patient one.
+            while conversationLoads > 0, ContinuousClock.now < waitedLongEnough {
+                // Cancellation is the session going away, and there is nothing
+                // left to refresh when it has.
+                guard (try? await Task.sleep(for: .milliseconds(50))) != nil else { return false }
+            }
+        }
+        conversationLoads += 1
+        return waited
     }
 
     /// The permission preset, as a word rather than a raw value.
@@ -804,10 +866,21 @@ struct SessionDetailView: View {
     /// back. A screen that has an answer and loses it is worse than one that
     /// never had it.
     ///
+    /// One pass holds ``conversationLoads`` for the whole of its conversation
+    /// read, so the poll after a send cannot read the same session alongside it.
+    /// Claimed through ``takeConversationReadLock()`` rather than by incrementing
+    /// here, and released by the `defer` below so that an early return cannot
+    /// leave it held -- a leaked lock is a screen that never loads again.
+    ///
     /// - Returns: whether every read landed. The caller asks again when one did
     ///   not -- a failure is not fatal here, it just is not an answer.
     @discardableResult
     private func load() async -> Bool {
+        // Claimed, not re-checked: the one place either caller may start from,
+        // and it is a single step so that two callers cannot both see an idle
+        // screen before either of them starts.
+        _ = await takeConversationReadLock()
+        defer { conversationLoads -= 1 }
         loading = true
         loadingConversation = true
         // The phone's own copy first. It is instant, it is there when the

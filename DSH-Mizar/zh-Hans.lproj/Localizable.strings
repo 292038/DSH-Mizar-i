@@ -97,6 +97,8 @@
 "Add a Mac" = "添加 Mac";
 "Cannot reach the Mac" = "无法连接 Mac";
 "Could not load the conversation" = "无法加载对话";
+"Could not switch model" = "无法切换模型";
+"Thinking: %@" = "思考等级：%@";
 "Every conversation on this Mac is stored on this phone." = "这台 Mac 上的每段对话都保存在本机。";
 "Full access" = "完全访问";
 "Load earlier messages" = "加载更早的消息";
