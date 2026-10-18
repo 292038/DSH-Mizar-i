@@ -230,7 +230,7 @@ private struct TurnSummary: View {
     /// The state of the turn, and for a running one a clock that moves.
     ///
     /// One `Text` -- the headline is the row's whole statement, and it is read
-    /// as one sentence. Ticked locally rather than by asking the Mac: the host
+    /// as one sentence. Ticked locally rather than by asking the computer: the host
     /// already said when the turn started.
     @ViewBuilder private var headline: some View {
         if turn.isRunning, turn.beganAt != nil {

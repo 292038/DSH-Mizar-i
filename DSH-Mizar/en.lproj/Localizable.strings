@@ -1,7 +1,7 @@
 /* Pairing */
 "Connect to DSH" = "Connect to DSH";
-"Scan the code on your Mac" = "Scan the code on your Mac";
-"On the Mac, open DSH and look for the Mizar panel in the sidebar." = "On the Mac, open DSH and look for the Mizar panel in the sidebar.";
+"Scan the code on your computer" = "Scan the code on your computer";
+"On the computer, open DSH and look for the Mizar panel in the sidebar." = "On the computer, open DSH and look for the Mizar panel in the sidebar.";
 "Or enter it by hand" = "Or enter it by hand";
 "Host, for example 100.64.0.1:19390" = "Host, for example 100.64.0.1:19390";
 "Pairing code" = "Pairing code";
@@ -11,9 +11,9 @@
 "Cannot reach the host" = "Cannot reach the host";
 
 /* Sessions */
-"Sessions started on your Mac appear here." = "Sessions started on your Mac appear here.";
+"Sessions started on your computer appear here." = "Sessions started on your computer appear here.";
 "Pick a session" = "Pick a session";
-"Start one on your Mac, then refresh." = "Start one on your Mac, then refresh.";
+"Start one on your computer, then refresh." = "Start one on your computer, then refresh.";
 "No sessions yet" = "No sessions yet";
 "subagent" = "subagent";
 "Refresh" = "Refresh";
@@ -111,17 +111,17 @@
 "Pressure" = "Pressure";
 "Projected" = "Projected";
 "No context figure yet." = "No context figure yet.";
-"Add a Mac" = "Add a Mac";
-"Cannot reach the Mac" = "Cannot reach the Mac";
+"Add a computer" = "Add a computer";
+"Cannot reach the computer" = "Cannot reach the computer";
 "Could not load the conversation" = "Could not load the conversation";
 "Could not switch model" = "Could not switch model";
 "Thinking: %@" = "Thinking: %@";
-"Every conversation on this Mac is stored on this phone." = "Every conversation on this Mac is stored on this phone.";
+"Every conversation on this computer is stored on this phone." = "Every conversation on this computer is stored on this phone.";
 "Full access" = "Full access";
 "Load earlier messages" = "Load earlier messages";
-"Name this Mac" = "Name this Mac";
-"No Mac paired yet" = "No Mac paired yet";
-"Open DSH on your Mac, find the DSH-Mizar panel in the sidebar, and scan the code it shows." = "Open DSH on your Mac, find the DSH-Mizar panel in the sidebar, and scan the code it shows.";
+"Name this computer" = "Name this computer";
+"No computer paired yet" = "No computer paired yet";
+"Open DSH on your computer, find the DSH-Mizar panel in the sidebar, and scan the code it shows." = "Open DSH on your computer, find the DSH-Mizar panel in the sidebar, and scan the code it shows.";
 "Read only" = "Read only";
 "Rename…" = "Rename…";
 "Scan the code" = "Scan the code";
@@ -146,7 +146,7 @@
 "%lld s" = "%lld s";
 "%lld min %lld s" = "%lld min %lld s";
 "Setting up" = "Setting up";
-"Downloading this Mac's conversations, so they are here when the network is not." = "Downloading this Mac's conversations, so they are here when the network is not.";
+"Downloading this computer's conversations, so they are here when the network is not." = "Downloading this computer's conversations, so they are here when the network is not.";
 "Looking for sessions…" = "Looking for sessions…";
 "About %@ left" = "About %@ left";
 "Nothing to set yet" = "Nothing to set yet";
@@ -155,7 +155,7 @@
 "Settings" = "Settings";
 "No workspace" = "No workspace";
 "Workspaces: %lld" = "Workspaces: %lld";
-"Workspaces: the Mac has not said" = "Workspaces: the Mac has not said";
+"Workspaces: the computer has not said" = "Workspaces: the computer has not said";
 "Workspaces" = "Workspaces";
 "Not in a workspace" = "Not in a workspace";
 " · %lld not in a workspace" = " · %lld not in a workspace";
@@ -183,10 +183,10 @@
 "Packing the log…" = "Packing the log…";
 "Entries recorded" = "Entries recorded";
 "Last export, %lld files, %lld entries" = "Last export, %lld files, %lld entries";
-"A zip with this build and phone, the settings above, every request to the Mac and how it ended, the connection attempts, the sync progress and the recent host events. Device tokens and pairing codes are removed before the file is written, and conversations are not in it." = "A zip with this build and phone, the settings above, every request to the Mac and how it ended, the connection attempts, the sync progress and the recent host events. Device tokens and pairing codes are removed before the file is written, and conversations are not in it.";
+"A zip with this build and phone, the settings above, every request to the computer and how it ended, the connection attempts, the sync progress and the recent host events. Device tokens and pairing codes are removed before the file is written, and conversations are not in it." = "A zip with this build and phone, the settings above, every request to the computer and how it ended, the connection attempts, the sync progress and the recent host events. Device tokens and pairing codes are removed before the file is written, and conversations are not in it.";
 "Source code" = "Source code";
 "Version" = "Version";
-"Monitor and guide a DSH agent from a phone. The Mac decides; this app shows and answers." = "Monitor and guide a DSH agent from a phone. The Mac decides; this app shows and answers.";
+"Monitor and guide a DSH agent from a phone. The computer decides; this app shows and answers." = "Monitor and guide a DSH agent from a phone. The computer decides; this app shows and answers.";
 
 /* Redesign: sidebar, dock, home, pairing */
 "Sessions" = "Sessions";
@@ -200,7 +200,7 @@
 "Showing saved history" = "Showing saved history";
 "Not reachable" = "Not reachable";
 "Through the relay" = "Through the relay";
-"Macs, %@" = "Macs, %@";
+"Computers, %@" = "Computers, %@";
 "No sessions here yet" = "No sessions here yet";
 "Expanded" = "Expanded";
 "Collapsed" = "Collapsed";
@@ -219,18 +219,18 @@
 "%lld of %lld" = "%1$lld of %2$lld";
 "Next" = "Next";
 "What should the agent work on?" = "What should the agent work on?";
-"Start a session on your Mac, then refresh." = "Start a session on your Mac, then refresh.";
+"Start a session on your computer, then refresh." = "Start a session on your computer, then refresh.";
 "Somewhere else…" = "Somewhere else…";
 "Workspace, %@" = "Workspace, %@";
 "Choose a workspace" = "Choose a workspace";
 "Send" = "Send";
 "Close" = "Close";
-"Point at the code on your Mac" = "Point at the code on your Mac";
+"Point at the code on your computer" = "Point at the code on your computer";
 "There are no other steps." = "There are no other steps.";
 "Paired with %@" = "Paired with %@";
 "Haptics" = "Haptics";
 "Feel" = "Feel";
 "A light tap when a turn you are watching finishes, when a request is answered, and when a message is sent." = "A light tap when a turn you are watching finishes, when a request is answered, and when a message is sent.";
-"Choose another Mac" = "Choose another Mac";
+"Choose another computer" = "Choose another computer";
 "Scan a code" = "Scan a code";
 "Search" = "Search";

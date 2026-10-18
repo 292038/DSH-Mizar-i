@@ -4,7 +4,7 @@
 //
 //  When the foreground should keep asking, decided without a clock or a screen.
 //
-//  The report this answers: a turn is sent from the phone (or from the Mac, with
+//  The report this answers: a turn is sent from the phone (or from the computer, with
 //  the phone watching), the session list says it is running, and the operator
 //  leaves the conversation open. The turn finishes ten seconds later and the
 //  screen keeps saying it is running until somebody pulls to refresh. Nothing
@@ -15,7 +15,7 @@
 //
 //  So there is one more poll, and it exists **only while something is running**.
 //  That is the whole design, and it is a decision rather than an implementation
-//  detail: a poll that runs all the time is a phone that asks its Mac a question
+//  detail: a poll that runs all the time is a phone that asks its computer a question
 //  every ten seconds for a day of not being used. The rules are:
 //
 //    - start when a session-list read says at least one session is running,
@@ -180,7 +180,7 @@ public struct RunningPoll: Sendable, Equatable {
     /// The session list is the source, and the whole of it: a subagent's row says
     /// `running` too, and its work is still work the operator may be waiting on.
     /// Being conservative here costs one tick; being wrong the other way is the
-    /// screen that keeps saying a session is running when the Mac says it is not.
+    /// screen that keeps saying a session is running when the computer says it is not.
     ///
     /// - Parameter sessions: the list as the host last gave it.
     /// - Returns: whether anything in it is running.

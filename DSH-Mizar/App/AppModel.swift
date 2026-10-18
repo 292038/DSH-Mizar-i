@@ -42,7 +42,7 @@ final class AppModel {
     private(set) var host: PairedHost?
     /// Every machine this phone is paired with, oldest pairing first.
     ///
-    /// A list rather than one, because "one phone, one Mac" was an assumption
+    /// A list rather than one, because "one phone, one computer" was an assumption
     /// the first version made and it is the wrong one: somebody with a laptop
     /// and a desktop should not have to unpair one to reach the other.
     private(set) var hosts: [PairedHost] = []
@@ -74,7 +74,7 @@ final class AppModel {
 
     /// Whether `sessions` is a list somebody actually gave.
     ///
-    /// The difference between "the Mac says nothing is running" and "this app has
+    /// The difference between "the computer says nothing is running" and "this app has
     /// not asked yet", which is invisible in the array itself and decides whether
     /// the Live Activity may take a check down or start one. True once a stored
     /// index has been loaded or a `session.list` has come back, and false again
@@ -140,8 +140,8 @@ final class AppModel {
     /// How many workspaces this phone is showing, in one line.
     ///
     /// In the refresh sheet, under the progress, because that is the number the
-    /// operator can check against their Mac without leaving the screen they are
-    /// already on. The two cases are said differently on purpose: "the Mac has
+    /// operator can check against their computer without leaving the screen they are
+    /// already on. The two cases are said differently on purpose: "the computer has
     /// not said" is not "zero", and the whole bug this answers came from those
     /// two being treated as the same thing.
     ///
@@ -150,7 +150,7 @@ final class AppModel {
     /// comparing figures would otherwise find one section more than the number
     /// they were given, and conclude the count was wrong.
     var workspaceCountLine: String {
-        guard let workspaces else { return String(localized: "Workspaces: the Mac has not said") }
+        guard let workspaces else { return String(localized: "Workspaces: the computer has not said") }
         let named = String(format: String(localized: "Workspaces: %lld"), workspaces.count)
         let unclaimed = workspaces.isEmpty
             ? 0
@@ -230,18 +230,18 @@ final class AppModel {
     ///
     /// The window that reports a refresh has a branch for "there is nothing
     /// running right now", and before this that branch said "Up to date. Every
-    /// conversation on this Mac is stored on this phone." -- which is a claim
+    /// conversation on this computer is stored on this phone." -- which is a claim
     /// about the operator's data, made out of a request that was never sent.
-    /// Tapping refresh with the Mac unreachable said it.
+    /// Tapping refresh with the computer unreachable said it.
     private(set) var syncProblem: String?
 
     /// Whether there is a stored session list for the current machine.
     ///
-    /// This is what decides whether an unreachable Mac is a dead end or a
+    /// This is what decides whether an unreachable computer is a dead end or a
     /// banner over data that is still here. The phone is opened on trains, in
     /// lifts and on the far side of a relay having a bad day, and a screen that
     /// replaces a conversation the operator already has with "cannot reach the
-    /// Mac" is a screen that threw away the answer to the question they opened
+    /// computer" is a screen that threw away the answer to the question they opened
     /// it with.
     private(set) var hasStoredIndex = false
 
@@ -284,7 +284,7 @@ final class AppModel {
     /// safety net for a notification lost to a dropped socket, not the mechanism.
     ///
     /// Scoped to the machine it came from, and that is not bookkeeping: a
-    /// question read on one Mac and drawn under another is an approval card over
+    /// question read on one computer and drawn under another is an approval card over
     /// a session that is not on this machine at all. It is the same defect the
     /// session screen had, one level up.
     private var pendingState = HostScoped<PendingInteractions>()
@@ -308,8 +308,8 @@ final class AppModel {
     /// The models this host offers, and which host said so.
     ///
     /// Read once per connection and kept, so the machine it was read from is
-    /// part of the value: switching Macs used to draw the first Mac's models in
-    /// the second Mac's picker, and the picker never asks again.
+    /// part of the value: switching computers used to draw the first computer's models in
+    /// the second computer's picker, and the picker never asks again.
     private var modelCatalogState = HostScoped<ModelCatalog>()
     /// See ``modelCatalogState``.
     var modelCatalog: ModelCatalog? { modelCatalogState.value(for: currentTag) }
@@ -322,7 +322,7 @@ final class AppModel {
     /// The poll that follows a session while something is running.
     ///
     /// One task for the whole app, not one per screen. The bug it answers was
-    /// reported with the conversation left open: a turn finished on the Mac and
+    /// reported with the conversation left open: a turn finished on the computer and
     /// the phone went on saying "DeepSeeking" until somebody pulled to refresh,
     /// because the only poll was the one after a send, which ends when the send
     /// settles. Views observe ``runningPollTicks``; none of them starts anything.
@@ -465,7 +465,7 @@ final class AppModel {
 
     /// How many sockets this run has opened.
     ///
-    /// Half of ``HostTag``. The host id says *which Mac* a value is about; this
+    /// Half of ``HostTag``. The host id says *which computer* a value is about; this
     /// says *which conversation with it*. Both halves matter: a read started over
     /// a socket that has since been replaced was answered by a host the app is no
     /// longer talking to, and a host id alone cannot tell that from the same
@@ -552,7 +552,7 @@ final class AppModel {
     ///
     /// Every request is preceded by ``BackgroundSync/mayStartRequest(now:expiresAt:)``,
     /// and there is no retry of anything that fails: an assertion spent retrying
-    /// a Mac that is asleep is an assertion that did not refresh what was
+    /// a computer that is asleep is an assertion that did not refresh what was
     /// running. Whatever arrived is applied; whatever did not is left for the
     /// next foreground, which is the retry the controller already documents.
     ///
@@ -646,8 +646,8 @@ final class AppModel {
     /// came back -- and showed them forever if it never did.
     ///
     /// Reading it is a disk trip, and the machine can change during one: a
-    /// slower read of the first Mac's list landing after the operator switched
-    /// draws that Mac's sessions under this one. The machine is recorded before
+    /// slower read of the first computer's list landing after the operator switched
+    /// draws that computer's sessions under this one. The machine is recorded before
     /// the read and checked after it, which is the same rule the network reads
     /// follow. The socket is deliberately not part of it: this runs before the
     /// handshake, and a stored list belongs to the machine rather than to the
@@ -669,14 +669,14 @@ final class AppModel {
             log.add(.cache, "index: nothing stored for this machine yet")
             return
         }
-        // After the await: what the phone holds is the first Mac's list, and the
-        // second Mac is the one on screen.
+        // After the await: what the phone holds is the first computer's list, and the
+        // second computer is the one on screen.
         guard host?.hostId == hostId else {
             log.add(.cache, "index: read for \(hostId) abandoned, another machine was opened under it")
             return
         }
         hasStoredIndex = !stored.sessions.isEmpty
-        // The phone knows what the Mac last said, even when what it said was
+        // The phone knows what the computer last said, even when what it said was
         // "nothing". That is a fact the Live Activity may act on; an array that
         // was never filled is not.
         sessionsAreKnown = true
@@ -760,7 +760,7 @@ final class AppModel {
         }
         if !Self.launchPairingURIs.isEmpty {
             // Every URI, in order, not just the first. A phone that manages two
-            // Macs is a supported arrangement and this is the only way to reach
+            // computers is a supported arrangement and this is the only way to reach
             // it without walking the pairing screen once per machine -- and it
             // is the arrangement in which anything scoped to one machine can be
             // seen at all. The last one paired is the one left open, which is
@@ -774,9 +774,9 @@ final class AppModel {
         do {
             hosts = try await credentials.loadAll().sorted { $0.pairedAt < $1.pairedAt }
             // The machine the operator last opened, not the one paired last:
-            // with several Macs paired, "paired last" is a fact about a past
+            // with several computers paired, "paired last" is a fact about a past
             // setup step, and opening it leaves the session list, the pending
-            // approvals, the Live Activity and the push registration on a Mac
+            // approvals, the Live Activity and the push registration on a computer
             // the operator was not using. `HostSelection` also owns the fallback
             // for a fresh install and a forgotten machine.
             guard let stored = HostSelection.preferred(
@@ -800,7 +800,7 @@ final class AppModel {
     ///
     /// The whole host-scoped half of the app goes with the machine that is being
     /// left: a catalogue, a pending set, a session list and the model each
-    /// session was last told to use are all facts about *that* Mac, and the
+    /// session was last told to use are all facts about *that* computer, and the
     /// screen draws them for whichever machine is open.
     ///
     /// - Parameter hostId: the machine to open.
@@ -845,7 +845,7 @@ final class AppModel {
     func forget(hostId: String) async {
         try? await credentials.remove(hostId: hostId)
         // The machine is gone, so what this phone remembers of it is gone too.
-        // Leaving it would show one Mac's sessions under another's name the next
+        // Leaving it would show one computer's sessions under another's name the next
         // time somebody paired a machine that reused the id.
         await indexStore.remove(hostId: hostId)
         hosts.removeAll { $0.hostId == hostId }
@@ -886,13 +886,13 @@ final class AppModel {
         statsError = nil
         conversationError = nil
         // Per-machine facts, cleared with the machine. `workspaces` is that
-        // Mac's own list: leaving it in place means the next machine's sessions
+        // computer's own list: leaving it in place means the next machine's sessions
         // are drawn under this one's workspace names -- and a deleted workspace
-        // belonging to a Mac this phone is no longer paired with comes back.
+        // belonging to a computer this phone is no longer paired with comes back.
         titles = [:]
         workspaces = nil
         hasStoredIndex = false
-        // The catalogues, the pending set and the host events are that Mac's too,
+        // The catalogues, the pending set and the host events are that computer's too,
         // and they are kept rather than re-read: leaving them is how the second
         // machine's picker offered the first machine's models. They are also
         // tagged, so they could not be *read* after a switch -- dropping them
@@ -906,7 +906,7 @@ final class AppModel {
 
     /// Every `mizar://pair` URI from the launch arguments, in the order passed.
     ///
-    /// Repeated rather than single, because a phone paired with two Macs is the
+    /// Repeated rather than single, because a phone paired with two computers is the
     /// arrangement the host list exists for and the one an automated run has to
     /// be able to reach: walking the pairing screen twice is a test of the
     /// pairing screen, not of what happens after it. The last one passed is the
@@ -1093,7 +1093,7 @@ final class AppModel {
     /// Deliberately not ``refreshSessions(reconnectingIfNeeded:)``. That is the
     /// foreground refresh: it re-reads the workspace registry, writes the stored
     /// index, and its call reconnects a socket that failed. On a ten-second
-    /// clock, each of those turns a Mac that is asleep into work nobody asked
+    /// clock, each of those turns a computer that is asleep into work nobody asked
     /// for -- a handshake every tick, and a disk write every tick -- and the
     /// whole reason this poll is allowed to exist is that it costs almost
     /// nothing. So a tick is exactly one `session.list` on the connection the
@@ -1136,7 +1136,7 @@ final class AppModel {
     /// Silent on failure by design. A failed tick is not a new problem for the
     /// operator -- the banner over the list already carries the last failure
     /// they can act on -- and a poll that flashed an error every ten seconds
-    /// while the Mac slept would be the app complaining about its own timer.
+    /// while the computer slept would be the app complaining about its own timer.
     private func refreshRunningSessionList() async {
         guard let tag = currentTag else { return }
         guard let connection else {
@@ -1244,7 +1244,7 @@ final class AppModel {
     private func noteHostEvent(_ name: String) {
         // Scoped to the machine that pushed it. The export's "did the host tell
         // us anything" question is about *this* host, and a list that survived a
-        // switch answers it with the previous Mac's events.
+        // switch answers it with the previous computer's events.
         guard let tag = currentTag else { return }
         var events = recentHostEventState.value(for: tag) ?? []
         events.insert(HostSummary.Event(at: Date(), name: name), at: 0)
@@ -1277,7 +1277,7 @@ final class AppModel {
         if let read = try? await loggedCall("interactions.pending", on: connection, as: PendingInteractions.self) {
             // Only if this is still the machine the read was started for. The
             // poll outlives a switch -- it is cancelled on one, but a read
-            // already in flight is not -- and a card from the previous Mac drawn
+            // already in flight is not -- and a card from the previous computer drawn
             // over this one is an approval for a session that is not here.
             guard tag == currentTag else { return }
             pendingState.publish(read, for: tag)
@@ -1645,7 +1645,7 @@ final class AppModel {
             protocolVersion: welcome?.protocolVersion,
             sessionCount: sessions.count,
             titledSessionCount: titles.count,
-            // `nil` stays `nil`: "the Mac has not said how many workspaces it
+            // `nil` stays `nil`: "the computer has not said how many workspaces it
             // has" and "it has none" are different answers here too.
             workspaceCount: workspaces?.count,
             lastError: lastError,
@@ -1715,8 +1715,8 @@ final class AppModel {
     ///
     /// Every assignment below is behind the subject the read was started for.
     /// `call` can reconnect -- which replaces the socket and can land on a
-    /// different pairing entirely -- and a list read for one Mac assigned after
-    /// that draws that Mac's sessions under another one's name. The list is the
+    /// different pairing entirely -- and a list read for one computer assigned after
+    /// that draws that computer's sessions under another one's name. The list is the
     /// machine's, and so is the workspace set written with it.
     ///
     /// - Parameter reconnectingIfNeeded: whether a failure should be retried
@@ -1724,7 +1724,7 @@ final class AppModel {
     ///   can take the whole of the assertion, and a list read that fails
     ///   off screen is a list read for the next foreground.
     ///
-    /// A refresh with no socket at all -- the Mac was unreachable long enough
+    /// A refresh with no socket at all -- the computer was unreachable long enough
     /// for the connection to be torn down -- opens one before it reads. That is
     /// the recovery the list's old yellow Retry button performed by hand, and
     /// with that button gone it has to live in the refresh the operator already
@@ -1759,7 +1759,7 @@ final class AppModel {
             // screen is still usable; throwing the operator out to a failure
             // screen over one dropped request is a worse answer than saying so.
             // Only if this is still the machine it was asked about: a failed read
-            // for a Mac the operator has left is not this screen's problem.
+            // for a computer the operator has left is not this screen's problem.
             guard tag == currentTag else { return }
             lastError = Self.describe(error).isEmpty ? nil : Self.describe(error)
         }
@@ -1788,7 +1788,7 @@ final class AppModel {
         do {
             let result = try await loggedCall("workspace.list", on: connection, as: WorkspaceListResult.self)
             guard result.complete else { return }
-            // The stored list is *this* Mac's registry: "the host has no such
+            // The stored list is *this* computer's registry: "the host has no such
             // workspace" is only an answer about the host that said it.
             guard tag == currentTag else { return }
             workspaces = result.items
@@ -1818,7 +1818,7 @@ final class AppModel {
         as type: T.Type,
     ) async throws -> T {
         guard let connection else {
-            let failure = MizarError(code: "NO_CONNECTION", message: "not connected to the Mac")
+            let failure = MizarError(code: "NO_CONNECTION", message: "not connected to the computer")
             logRequest(method, payload: payload, since: .now, error: failure)
             throw failure
         }
@@ -2047,7 +2047,7 @@ final class AppModel {
                 startInteractionPoll()
                 // `phase` decides which screen is on. This never touched it, so
                 // a retry that *succeeded* left the operator looking at "Cannot
-                // reach the Mac" with a working connection behind it -- the
+                // reach the computer" with a working connection behind it -- the
                 // button did its job and the screen never said so. That was the
                 // bug: "Try again does nothing" was true on the only screen
                 // where it could be seen.
@@ -2061,7 +2061,7 @@ final class AppModel {
                 log.add(.connection, "reconnect attempt \(attempt + 1)/\(attempts) failed: \(message)")
                 lastError = message.isEmpty ? nil : message
                 // Keep the screen's text current. A retry that fails for a new
-                // reason -- no internet rather than the Mac being unreachable --
+                // reason -- no internet rather than the computer being unreachable --
                 // should say so instead of repeating the line from before.
                 if case .failed = phase, !message.isEmpty { phase = .failed(message) }
             }
@@ -2183,18 +2183,18 @@ final class AppModel {
         // checked after it rather than before it.
         await refreshSessions()
         guard connection != nil else {
-            log.add(.sync, "history sync: skipped, not connected to the Mac")
+            log.add(.sync, "history sync: skipped, not connected to the computer")
             // Reported rather than silently skipped. The window is already up
             // by the time this runs, and doing nothing looks exactly like having
             // nothing to do.
-            syncProblem = lastError ?? "Not connected to the Mac."
+            syncProblem = lastError ?? "Not connected to the computer."
             return
         }
         guard !sessions.isEmpty else {
-            log.add(.sync, "history sync: the Mac listed no sessions, or the list could not be read")
-            // Either the Mac listed nothing or the read failed. Both are worth
+            log.add(.sync, "history sync: the computer listed no sessions, or the list could not be read")
+            // Either the computer listed nothing or the read failed. Both are worth
             // saying out loud; neither is "up to date".
-            syncProblem = lastError ?? "The Mac listed no sessions."
+            syncProblem = lastError ?? "The computer listed no sessions."
             return
         }
 
@@ -2304,8 +2304,8 @@ final class AppModel {
             // A cancelled read is not a failure to report. It is a phone being
             // suspended -- or, now, a background sync that ran out of its
             // assertion -- and the screen it would draw the error on is not on
-            // screen. Left in, the operator coming back would find "The Mac did
-            // not answer" waiting for a Mac that answered perfectly well the
+            // screen. Left in, the operator coming back would find "The computer did
+            // not answer" waiting for a computer that answered perfectly well the
             // moment the app could ask again.
             if Task.isCancelled {
                 log.add(.cache, "session \(sessionId): read cancelled; nothing changed")
@@ -2319,7 +2319,7 @@ final class AppModel {
             // made from the absence of an answer. Cancellation is handled above;
             // this is every other silent failure.
             conversationError = message.isEmpty
-                ? "The Mac did not answer. Pull down to try again."
+                ? "The computer did not answer. Pull down to try again."
                 : message
             return await conversations.load(sessionId: sessionId)?.items ?? []
         }
@@ -2440,7 +2440,7 @@ final class AppModel {
     /// - Returns: the frame, or `nil` when it could not be read.
     func stats(for sessionId: String) async -> SessionStatsFrame? {
         guard connection != nil else {
-            statsError = "Not connected to the Mac."
+            statsError = "Not connected to the computer."
             return nil
         }
         do {
@@ -2477,7 +2477,7 @@ final class AppModel {
             // stayed unexplained through several rounds.
             let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
             if !message.isEmpty { lastError = message }
-            statsError = message.isEmpty ? "The Mac did not answer." : message
+            statsError = message.isEmpty ? "The computer did not answer." : message
             return nil
         }
     }
@@ -2597,7 +2597,7 @@ final class AppModel {
         else {
             // Forgets a token from a previous grant. The operator can revoke
             // permission in iOS Settings at any time, and a token that outlives
-            // the permission is a row on the Mac's roster that pushes into
+            // the permission is a row on the computer's roster that pushes into
             // nothing.
             PushRegistration.storedToken = nil
             log.add(.push, "no notification permission (\(settings.authorizationStatus.rawValue)); no token kept")
@@ -2611,7 +2611,7 @@ final class AppModel {
     ///
     /// Two prompts and no more. Notifications, because a phone that cannot be
     /// told anything is a phone the operator has to keep opening; and the local
-    /// network, because the direct route to a Mac on the same Wi-Fi is refused
+    /// network, because the direct route to a computer on the same Wi-Fi is refused
     /// silently without it -- which is the worst kind of failure, since the app
     /// looks connected and never is.
     ///
@@ -2631,7 +2631,7 @@ final class AppModel {
         log.add(.app, "first launch: asking for notification and local-network permission")
         await Permissions.requestNotifications()
         // Only if the answer was yes. Registering regardless gave a phone that
-        // tapped "Don't Allow" a token anyway, which it then handed to the Mac --
+        // tapped "Don't Allow" a token anyway, which it then handed to the computer --
         // so the host logged a healthy registration for a phone that could never
         // show the notification it was being sent.
         await ensurePushRegistration()
@@ -2697,7 +2697,7 @@ final class AppModel {
             // it used to leave the first one's socket open: the new connection
             // replaced the reference without closing what it replaced, and every
             // value scoped to the old host stayed in memory. Dropping the
-            // connection first makes "what belongs to one Mac" the same rule on
+            // connection first makes "what belongs to one computer" the same rule on
             // the launch-pairing path as it is on the host list.
             disconnectCurrent()
             modelChoice = [:]
@@ -2734,8 +2734,8 @@ final class AppModel {
     ///
     /// Every route the pairing knows about is tried in order, direct first,
     /// because the two fail for entirely different reasons and only one of them
-    /// is usually available. A Mac on the same Wi-Fi answers on its LAN address;
-    /// a Mac on a network that blocks inbound traffic answers only through the
+    /// is usually available. A computer on the same Wi-Fi answers on its LAN address;
+    /// a computer on a network that blocks inbound traffic answers only through the
     /// relay. One QR code carries both, and this is what makes that useful.
     ///
     /// A failed attempt costs its own timeout, so the direct attempt is given a

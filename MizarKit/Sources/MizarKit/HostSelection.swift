@@ -4,14 +4,14 @@
 //
 //  Which paired machine the app opens.
 //
-//  A phone may be paired with several Macs, and it talks to exactly one of them
+//  A phone may be paired with several computers, and it talks to exactly one of them
 //  at a time: the session list, the pending approvals, the Live Activity and the
 //  push registration all belong to whichever machine the live socket is dialled
 //  to. "The machine paired last" is a fact about the past, not about where the
-//  operator was working -- pair a second Mac once and every later launch opened
+//  operator was working -- pair a second computer once and every later launch opened
 //  that one, even when the operator had been using the first. That is a wrong
 //  connection rather than a preference: the app looked connected while its
-//  sessions, its notifications and its Live Activity belonged to another Mac.
+//  sessions, its notifications and its Live Activity belonged to another computer.
 //
 //  So the choice is remembered explicitly: the machine the operator last opened
 //  is the machine the next launch opens. The most recently paired host remains
@@ -36,7 +36,7 @@ public enum HostSelection {
             return remembered
         }
         // Deliberately the same fallback the launch path always had: a phone
-        // with no memory (a fresh install, or one whose remembered Mac was
+        // with no memory (a fresh install, or one whose remembered computer was
         // forgotten) opens the machine it was most recently given.
         return hosts.max { $0.pairedAt < $1.pairedAt }
     }
@@ -66,7 +66,7 @@ public enum LastOpenedHostStore {
     /// Written whenever a machine is opened or paired, not when a connection
     /// succeeds: it records where the operator chose to be, which is the
     /// question the next launch has. A machine that is offline at launch shows
-    /// its own failure on its own screen; silently opening a different Mac
+    /// its own failure on its own screen; silently opening a different computer
     /// instead is exactly the behaviour this file exists to remove.
     ///
     /// - Parameters:

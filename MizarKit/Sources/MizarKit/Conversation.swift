@@ -274,7 +274,7 @@ extension SessionRecord {
             //
             // Blocklist, not allowlist. The first version kept only
             // `source.kind == "user"` and that turned out to hide anything typed
-            // on the Mac's own DSH window, which is half the history somebody
+            // on the computer's own DSH window, which is half the history somebody
             // opens this app to read. Hiding the two known injections and
             // showing everything else is the right way round: an unrecognised
             // injection is noise, a hidden message is data loss.
@@ -295,7 +295,7 @@ extension SessionRecord {
             // The turn's summary. The host sends **one** of these per finished
             // turn -- the model's last message, standing for the turn -- so this
             // is the answer, not one step of several. A model that answered
-            // perfectly used to produce nothing on the phone while the Mac
+            // perfectly used to produce nothing on the phone while the computer
             // showed the whole exchange, because this event type was the one the
             // parser did not know.
             //
@@ -328,7 +328,7 @@ extension SessionRecord {
     /// 6393 characters of injected context for 11 characters of conversation,
     /// all arriving as `user/message`. Those two kinds are listed here; anything
     /// else is shown, because a source this build has not seen is far more
-    /// likely to be a message from the Mac's own window than a new injection.
+    /// likely to be a message from the computer's own window than a new injection.
     ///
     /// - Parameter event: the event payload.
     /// - Returns: whether to hide it.
@@ -356,7 +356,7 @@ extension SessionRecord {
     /// A blocklist was chosen first, on the reasoning that an unrecognised
     /// injection is noise while a hidden message is data loss. The census says
     /// otherwise: an unrecognised kind is not a message, and the only kind that
-    /// is one is `user`. A message typed in the Mac's own DSH window carries it
+    /// is one is `user`. A message typed in the computer's own DSH window carries it
     /// too, so nothing a person wrote is lost by asking for it by name.
     ///
     /// A missing `kind` is not treated as `user`. Guessing in that direction is
@@ -379,7 +379,7 @@ extension SessionRecord {
     ///   system/message     data.message.content[]
     ///
     /// Reading only the first is why the model's replies never appeared on the
-    /// phone while the Mac showed the whole exchange. The text was there, one
+    /// phone while the computer showed the whole exchange. The text was there, one
     /// key deeper, and the parser looked in the wrong one.
     ///
     /// - Parameter event: the event payload.

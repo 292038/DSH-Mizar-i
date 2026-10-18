@@ -2,7 +2,7 @@
 //  HostScoped.swift
 //  MizarKit
 //
-//  A value that belongs to one Mac and one connection to it.
+//  A value that belongs to one computer and one connection to it.
 //
 //  The app has shipped this bug three times in different clothes: a value read
 //  for one subject and drawn for another. On the session screen it was a page
@@ -10,9 +10,9 @@
 //  with the session it came from and refuse to draw it for any other -- is what
 //  this is for the machine.
 //
-//  Two Macs make it easy to see and hard to reproduce: a catalogue, a pending
+//  Two computers make it easy to see and hard to reproduce: a catalogue, a pending
 //  set and a session list are each read once and kept, so a switch that leaves
-//  one behind draws the first Mac's models and sessions under the second Mac's
+//  one behind draws the first computer's models and sessions under the second computer's
 //  name. It is the same defect one level up, and it needs the same answer.
 //
 //  The connection is part of the tag, not only the host id. A *reconnect* to the
@@ -60,7 +60,7 @@ public struct HostScoped<Value: Sendable>: Sendable {
     /// The value, when it belongs to this subject.
     ///
     /// - Parameter tag: the subject to read for.
-    /// - Returns: the value, or `nil` when it was read for another Mac or
+    /// - Returns: the value, or `nil` when it was read for another computer or
     ///   another connection to this one.
     public func value(for tag: HostTag) -> Value? {
         self.tag == tag ? value : nil
@@ -89,7 +89,7 @@ public struct HostScoped<Value: Sendable>: Sendable {
 
     /// Record a value read for one subject.
     ///
-    /// Replaces whatever was held, including a value for another Mac: one piece
+    /// Replaces whatever was held, including a value for another computer: one piece
     /// of state answers for one machine at a time, and keeping the other one is
     /// how the wrong answer survives a switch.
     ///

@@ -14,7 +14,7 @@
 //      says what the operator asked it and when the turn began. No request is
 //      made for any of it -- the island is a display of what the phone has, and a
 //      display that only updates when the network answers is a display that stops
-//      exactly when the Mac is busy. The reading itself lives in
+//      exactly when the computer is busy. The reading itself lives in
 //      `RunningSession.running(in:conversations:titles:now:)`, shared with the
 //      background refresh so the two cannot disagree about which row is up. The
 //      title is not in `session.list`; it arrives with the usage frame, and this
@@ -213,7 +213,7 @@ final class LiveActivityController {
     ) async {
         guard sessionsAreKnown else {
             // Nothing has been read yet: the list is empty because the app has
-            // just started, not because the Mac is idle, and the decision layer
+            // just started, not because the computer is idle, and the decision layer
             // cannot tell those apart from a list. Acting on the second one is not
             // hypothetical -- measured at launch, the foreground hook fires
             // before the first `session.list` comes back, an empty list read as

@@ -2,7 +2,7 @@
 //  DSHMizarLiveActivityWidget.swift
 //  DSH-Mizar-LiveActivity
 //
-//  The island and the lock screen: what the phone shows while the Mac works.
+//  The island and the lock screen: what the phone shows while the computer works.
 //
 //  Two processes are involved and this is the second one. The app decides what
 //  the activity *is* -- which sessions are running, what to call them, when the
@@ -269,7 +269,7 @@ private struct Mark: View {
 /// The icon and the app's name, which is what the activity is about.
 ///
 /// The name is `verbatim`: it is the app's name on the App Store and on the
-/// Mac, not a phrase to be translated. An activity that reads 米扎尔 in one
+/// computer, not a phrase to be translated. An activity that reads 米扎尔 in one
 /// language and DSH-Mizar in another would be a different app's card.
 ///
 /// One element with one set of words, assembled here rather than by the

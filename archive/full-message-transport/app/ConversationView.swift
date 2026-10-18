@@ -282,7 +282,7 @@ private struct TurnSummary: View {
     /// Ticked locally rather than by re-reading the session. The host's answer
     /// already said when the turn started, and the difference between that and
     /// now is arithmetic the phone can do for itself -- a screen that asked the
-    /// Mac for the time every second would be a screen that stopped telling the
+    /// computer for the time every second would be a screen that stopped telling the
     /// time whenever the link hiccuped, which on a phone is constant.
     @ViewBuilder private var headline: some View {
         if turn.isRunning, let beganAt = turn.beganAt {

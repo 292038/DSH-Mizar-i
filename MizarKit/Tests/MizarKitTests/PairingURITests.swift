@@ -195,7 +195,7 @@ struct PairingURITests {
 
     @Test("keeps the room in the relay WebSocket path")
     func relayWebSocketKeepsRoom() {
-        // The room is what routes the request to the right Mac; losing it would
+        // The room is what routes the request to the right computer; losing it would
         // produce a URL that connects to the relay and reaches nobody.
         let url = PairingURI.relayWebSocketURL(baseURL: "https://relay.example.com/r/WBKW0NZVT5QZ")
         #expect(url?.path.contains("/r/WBKW0NZVT5QZ/") == true)

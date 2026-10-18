@@ -4,7 +4,7 @@
 //
 //  When a poll that cannot read should stop asking and rebuild the socket.
 //
-//  The bug this exists for: a turn finished on the Mac while the phone sat on
+//  The bug this exists for: a turn finished on the computer while the phone sat on
 //  the session list, and the row went on saying "running" until somebody pulled
 //  to refresh. The poll was asking a socket that had already died, and nothing
 //  told it to open a new one. The rules are pinned here with instants the tests
@@ -55,7 +55,7 @@ struct PollRecoveryTests {
 
     @Test("a missing socket respects the same wait")
     func missingSocketIsRateLimitedToo() {
-        // A Mac that has gone to sleep is the case the wait exists for: the poll
+        // A computer that has gone to sleep is the case the wait exists for: the poll
         // must not handshake every ten seconds at a machine that is not there.
         var recovery = PollRecovery()
         recovery.noteAttempt(at: start)

@@ -38,7 +38,7 @@ public enum BackgroundSync {
     ///
     /// Not a guess at how long a request takes: it is the point at which a
     /// request begun now would land after the assertion is gone. Three seconds
-    /// is longer than a `session.list` against a Mac on the same Wi-Fi and much
+    /// is longer than a `session.list` against a computer on the same Wi-Fi and much
     /// shorter than the system's window, which leaves the reserve doing its job
     /// without eating the sync.
     public static let requestReserve: TimeInterval = 3
@@ -46,12 +46,12 @@ public enum BackgroundSync {
     /// Whether a background refresh is worth waking for at all.
     ///
     /// - Parameters:
-    ///   - paired: whether this phone is paired with a Mac.
+    ///   - paired: whether this phone is paired with a computer.
     ///   - liveActivitiesEnabled: the operator's switch, read at the moment of
     ///     acting rather than remembered from the last foreground refresh.
     /// - Returns: whether to run one.
     public static func shouldRun(paired: Bool, liveActivitiesEnabled: Bool) -> Bool {
-        // Both, and the pairing is not redundant. With no Mac there is nothing
+        // Both, and the pairing is not redundant. With no computer there is nothing
         // to ask, and the activity would be drawn from a cache the app has
         // already put on the island -- a background wake spent on a refresh of
         // something that cannot have changed.

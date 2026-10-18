@@ -93,7 +93,7 @@ struct RunningSessionTests {
 
     @Test("never starts counting after the instant the host's figure was read")
     func neverStartsInTheFuture() {
-        // A Mac whose clock is ahead says the turn began two minutes from now.
+        // A computer whose clock is ahead says the turn began two minutes from now.
         // Subtracting that figure put `countingSince` in the future, where the
         // island's count-up has nothing to count up from (and the ordering put
         // the session ahead of work that actually began earlier). The phone

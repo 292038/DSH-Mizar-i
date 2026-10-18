@@ -4,7 +4,7 @@
 //
 //  When a poll that cannot read should stop asking and rebuild the socket.
 //
-//  The polls deliberately do not reconnect on every tick: on a Mac that is
+//  The polls deliberately do not reconnect on every tick: on a computer that is
 //  asleep, that would turn a ten-second question into a handshake every ten
 //  seconds, and the whole reason the running poll is allowed to exist is that a
 //  tick costs almost nothing. But the polls are also the only readers on a
@@ -22,7 +22,7 @@
 //    - a missing socket counts as a failure with no question asked at all: there
 //      is nothing to try, and the operator's screen is the thing going stale,
 //    - two failures earn one attempt, and attempts are thirty seconds apart. On
-//      a Mac that has gone to sleep the poll tries once every half minute
+//      a computer that has gone to sleep the poll tries once every half minute
 //      instead of six times a minute, and a dropped socket is repaired on the
 //      first tick that notices it.
 //

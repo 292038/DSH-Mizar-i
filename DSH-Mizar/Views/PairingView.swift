@@ -41,7 +41,7 @@ struct PairingView: View {
 
                     Text("Connect to DSH")
                         .font(.largeTitle.weight(.bold))
-                    Text("On the Mac, open DSH and look for the Mizar panel in the sidebar.")
+                    Text("On the computer, open DSH and look for the Mizar panel in the sidebar.")
                         .font(.body)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -51,7 +51,7 @@ struct PairingView: View {
                     Button {
                         showingScanner = true
                     } label: {
-                        Label("Scan the code on your Mac", systemImage: "qrcode.viewfinder")
+                        Label("Scan the code on your computer", systemImage: "qrcode.viewfinder")
                             .font(.headline)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 6)
@@ -228,7 +228,7 @@ private struct ScannerSheet: View {
                 }
                 .padding(20)
                 Spacer()
-                Text(locked ? "Connecting…" : "Point at the code on your Mac")
+                Text(locked ? "Connecting…" : "Point at the code on your computer")
                     .font(.headline)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 20)

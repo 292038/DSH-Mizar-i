@@ -24,14 +24,14 @@ const CODE = 'MOCK-CODE'
 /**
  * Which machine this instance is pretending to be.
  *
- * A phone that is paired with two Macs draws one Mac's state under another's
+ * A phone that is paired with two computers draws one computer's state under another's
  * name unless every read is tagged with the machine it came from, and one mock
  * on one port cannot tell that apart from a working app: both hosts would answer
  * with the same host id, the same sessions and the same providers. Running a
- * second instance on another port is what makes "this belongs to that Mac"
+ * second instance on another port is what makes "this belongs to that computer"
  * observable, so the identity is derived from the port rather than fixed.
  *
- * 19395 stays exactly what it was -- every existing test measures *that* Mac.
+ * 19395 stays exactly what it was -- every existing test measures *that* computer.
  */
 const SECOND_IDENTITY = port === 19396
 
@@ -71,9 +71,9 @@ let answerDelayMs = 0
 /**
  * Whether the mock should refuse every connection.
  *
- * A Mac that is asleep, or on a network that has gone away. Switchable at
+ * A computer that is asleep, or on a network that has gone away. Switchable at
  * runtime by `/offline?on=1` so a test can take the host away *after* the phone
- * has synced from it -- which is the only way to check that an unreachable Mac
+ * has synced from it -- which is the only way to check that an unreachable computer
  * does not take away what the phone already stored.
  */
 let offline = false
@@ -107,7 +107,7 @@ let statsVariant = 'full'
  *
  * The host's clock and the phone's are two clocks, and the app does arithmetic
  * across them: a running turn's start comes off the host, `now` off the phone.
- * A Mac whose clock is ahead is the case that produced a negative duration on
+ * A computer whose clock is ahead is the case that produced a negative duration on
  * screen, and it cannot be reproduced by a fixture whose times are all the
  * phone's. Set by `/reset?skew=NNN`.
  */
@@ -349,16 +349,16 @@ function orphanMessages(beforeSeq) {
 /**
  * The main conversation's prompt and answer on this machine.
  *
- * Deliberately different on the second instance. A test that switches Macs has
+ * Deliberately different on the second instance. A test that switches computers has
  * to be able to say *whose* conversation is on screen, and two hosts serving the
  * same text cannot answer that -- the screen looks the same whichever machine's
  * page was drawn under it.
  */
 const MAIN_PROMPT = SECOND_IDENTITY
-  ? 'The second Mac’s own prompt, and nothing else.'
+  ? 'The second computer’s own prompt, and nothing else.'
   : 'Refactor the parser and run the tests.'
 const MAIN_ANSWER = SECOND_IDENTITY
-  ? 'The second Mac answered this one.'
+  ? 'The second computer answered this one.'
   : 'The parser is now two files.'
 
 /**
@@ -411,7 +411,7 @@ function answer(frame) {
       // workspace, so a test can tell "filtered by the host's list" from
       // "grouped by cwd" -- on the session list *and* in the new-session picker.
       //
-      // `fresh` deliberately holds no sessions: it is on the Mac's sidebar, so
+      // `fresh` deliberately holds no sessions: it is on the computer's sidebar, so
       // it has to be on the phone's list and in the count the refresh sheet
       // reports. `complete` is the host saying so -- without it the phone may
       // only add, which is what kept deleted workspaces on screen.
@@ -591,7 +591,7 @@ function answer(frame) {
       //
       // The second instance offers a provider the first one has never heard of,
       // and no DeepSeek at all. A catalogue is read once per connection and kept
-      // in the app, so a phone that switches Macs without forgetting the first
+      // in the app, so a phone that switches computers without forgetting the first
       // one's catalogue draws models this machine does not have -- which is only
       // visible if the two machines disagree about what they offer.
       return {

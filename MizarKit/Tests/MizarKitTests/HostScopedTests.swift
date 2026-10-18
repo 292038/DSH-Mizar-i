@@ -2,7 +2,7 @@
 //  HostScopedTests.swift
 //  MizarKitTests
 //
-//  What belongs to one Mac is not drawn under another.
+//  What belongs to one computer is not drawn under another.
 //
 //  The app has had this bug three times: a value read for one subject drawn for
 //  another. Each fix has been the same shape -- tag the value, refuse it for
@@ -29,8 +29,8 @@ struct HostScopedTests {
     func refusesAnotherMachinesSubject() {
         var catalog = HostScoped<String>()
         catalog.publish("deepseek", for: first)
-        // The defect, in one line: the second Mac has no catalogue of its own
-        // yet, and the first Mac's is still here. It must read as absent rather
+        // The defect, in one line: the second computer has no catalogue of its own
+        // yet, and the first computer's is still here. It must read as absent rather
         // than as this machine's answer.
         #expect(catalog.value(for: second) == nil)
     }
@@ -48,7 +48,7 @@ struct HostScopedTests {
     @Test("a read that lands after the machine changed is dropped")
     func dropsAReadThatLostItsSubject() {
         var sessions = HostScoped<[String]>()
-        // A read started for the first Mac. While it was in flight the operator
+        // A read started for the first computer. While it was in flight the operator
         // switched, so the subject it was started for is no longer current.
         let started = first
         let current = second

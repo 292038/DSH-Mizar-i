@@ -146,7 +146,7 @@ public enum WorkspaceCatalog {
             return WorkspaceGroup(
                 path: workspace.path,
                 // DSH's own name, repeated rather than improved on: the operator
-                // is looking at this Mac's sidebar, and a workspace called two
+                // is looking at this computer's sidebar, and a workspace called two
                 // different things on two screens is a workspace they have to
                 // check twice. An empty one is not a name, so the directory is
                 // shown instead of a heading with nothing under it.
@@ -190,7 +190,7 @@ public enum WorkspaceCatalog {
     /// The same rule as {@link groups}, without the sessions and **without** the
     /// unclaimed group: the host's workspaces when it has said, and the
     /// directories its sessions have used when it has not. Every workspace is
-    /// offered, including the ones holding no sessions — that is what the Mac
+    /// offered, including the ones holding no sessions — that is what the computer
     /// offers, and a folder the operator opened five minutes ago is exactly
     /// where they want to start something.
     ///

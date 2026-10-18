@@ -12,7 +12,7 @@
 //  The distinction that matters here is between "there is no route to that
 //  address" and "something is there but not answering", because they have
 //  completely different fixes and the failure looks the same on screen. A
-//  timeout against a tailnet address is almost always the first one: a Mac on a
+//  timeout against a tailnet address is almost always the first one: a computer on a
 //  Tailscale network is unreachable from a phone that is not on that same
 //  network, and no amount of retrying changes it.
 //
@@ -46,13 +46,13 @@ public enum ConnectionDiagnosis: Sendable, Equatable {
 
             That address is on a Tailscale private network, and this device does \
             not appear to be on it. Open Tailscale on this phone and sign in \
-            with the same account as the Mac, then try again.
+            with the same account as the computer, then try again.
             """
         case .tailnetPeerSilent(let authority):
             return """
             \(authority) is on your tailnet but did not answer.
 
-            Check that DSH is running on the Mac and that the Mizar panel shows \
+            Check that DSH is running on the computer and that the Mizar panel shows \
             a listening address.
             """
         case .silent(let authority):
@@ -60,7 +60,7 @@ public enum ConnectionDiagnosis: Sendable, Equatable {
             Nothing answered at \(authority).
 
             Check that the address is right and that this phone is on the same \
-            network as the Mac.
+            network as the computer.
             """
         case .offline:
             return "This device has no network connection."
@@ -69,7 +69,7 @@ public enum ConnectionDiagnosis: Sendable, Equatable {
             Could not find \(authority).
 
             If you entered it by hand, check it against the pairing code shown \
-            on the Mac.
+            on the computer.
             """
         case .other(let detail):
             return detail

@@ -98,7 +98,7 @@ struct BackgroundSyncTests {
     @Test("runs for a paired host with the activity switched on, and for nothing else")
     func wantsAPairingAndTheSwitch() {
         #expect(BackgroundSync.shouldRun(paired: true, liveActivitiesEnabled: true))
-        // No Mac: there is nothing to ask, and the activity would be drawn from
+        // No computer: there is nothing to ask, and the activity would be drawn from
         // a cache the app has already put on the island.
         #expect(!BackgroundSync.shouldRun(paired: false, liveActivitiesEnabled: true))
         // The switch is read here as well as at the activity, because waking a

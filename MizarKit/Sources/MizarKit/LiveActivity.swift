@@ -16,7 +16,7 @@
 //  seeded from the last figure the app read off the host -- the
 //  "深度求索中，用时 xx 分 xx 秒" of the running turn's own row -- and then
 //  ticked by whoever is drawing it. **Nothing re-syncs it.** A clock that asked
-//  the Mac for the time every second would stop telling the time whenever the
+//  the computer for the time every second would stop telling the time whenever the
 //  link hiccuped, which on a phone is constant; the running row in the app
 //  already makes that argument for itself.
 //
@@ -96,7 +96,7 @@ public struct RunningSession: Codable, Sendable, Equatable, Identifiable {
     /// ticking and the ordering both use.
     ///
     /// **Never after ``seededAt``.** The figure is measured against the host's
-    /// clock and ``seededAt`` is the phone's, so a Mac whose clock is ahead
+    /// clock and ``seededAt`` is the phone's, so a computer whose clock is ahead
     /// answers with a start the phone has not reached. Subtracting that would
     /// put the start in the future: the widget's `Text(_:style:.timer)` has no
     /// time to count *up* to, and the row would sort ahead of sessions that

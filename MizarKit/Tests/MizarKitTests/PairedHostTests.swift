@@ -50,7 +50,7 @@ struct PairedHostTests {
     @Test("keeps the operator's name when the host's address moves")
     func move() {
         // A tailnet address is stable and a LAN address is not, so this is the
-        // path a Mac that changed networks takes -- and the name the operator
+        // path a computer that changed networks takes -- and the name the operator
         // chose is the whole reason the machine is recognisable afterwards.
         let moved = Self.host().moved(to: "100.64.0.9:19390")
         #expect(moved.authority == "100.64.0.9:19390")

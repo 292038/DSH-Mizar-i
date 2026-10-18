@@ -74,13 +74,13 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     /// Without this, iOS shows nothing for a foreground notification. The plugin
     /// declines to send while the app reports itself in the foreground, which
     /// covers most of it -- but the report is a round trip, and an approval
-    /// asked for in the second between the app opening and the Mac hearing about
+    /// asked for in the second between the app opening and the computer hearing about
     /// it would otherwise vanish.
     ///
     /// This is also where the four switches in the settings screen mean
     /// something. The relay copies the plugin's `kind` into the payload, so the
     /// decision is made here, on the phone, at the moment the notification
-    /// arrives -- not by asking the Mac to stop sending, which would need a round
+    /// arrives -- not by asking the computer to stop sending, which would need a round
     /// trip, a protocol change and a host that believed the phone. Reading
     /// `AppSettings.shared` at delivery time rather than caching it is what makes
     /// a switch take effect on the next notification instead of the next launch.
@@ -94,7 +94,7 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     /// One limit worth stating: a notification that arrives while the app is in
     /// the background is delivered by iOS without asking this delegate anything,
     /// so this suppresses what would appear over the app, and the switches
-    /// describe what the operator wants to see rather than what the Mac sends.
+    /// describe what the operator wants to see rather than what the computer sends.
     /// Filtering the background case is the host's side of the wire.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,

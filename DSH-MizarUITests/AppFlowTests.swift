@@ -29,15 +29,15 @@ final class AppFlowTests: XCTestCase {
     private static let mockPairingURI =
         "mizar://pair?h=127.0.0.1%3A19395&c=MOCK-CODE&n=Mock%20Mac&v=1"
 
-    /// A second Mac, on a second port, with its own identity.
+    /// A second computer, on a second port, with its own identity.
     ///
     /// Every piece of state the app keeps is scoped to a machine, and a single
     /// mock cannot show that: it answers every read with the same host id, the
-    /// same sessions and the same providers, so a screen drawn from one Mac's
-    /// answer under another Mac's name looks exactly like a screen drawn
+    /// same sessions and the same providers, so a screen drawn from one computer's
+    /// answer under another computer's name looks exactly like a screen drawn
     /// correctly. `node scripts/mock-host.mjs 19396` is a *different* machine --
     /// its own host id, its own name, its own session ids, its own model
-    /// catalogue -- which is what makes "this belongs to that Mac" assertable.
+    /// catalogue -- which is what makes "this belongs to that computer" assertable.
     private static let secondMockPairingURI =
         "mizar://pair?h=127.0.0.1%3A19396&c=MOCK-CODE&n=Mock%20Mac%20(second)&v=1"
 
@@ -101,10 +101,10 @@ final class AppFlowTests: XCTestCase {
         _ = done.wait(timeout: .now() + 6)
     }
 
-    /// Put the *second* Mac's fixture back, on the other port.
+    /// Put the *second* computer's fixture back, on the other port.
     ///
     /// The same reset as ``resetMockHost(pending:slow:skew:pageLimit:running:)``,
-    /// for the other machine. A test that switches between two Macs has two
+    /// for the other machine. A test that switches between two computers has two
     /// fixtures to keep apart, and one of them left carrying the previous test's
     /// sends while the other was reset is a test whose second half measures the
     /// first.
@@ -464,7 +464,7 @@ final class AppFlowTests: XCTestCase {
     ///   - naming: whether to wait for the naming prompt before returning.
     ///     It is offered *after* a first download, so a test about that download
     ///     would spend the whole of it here instead of looking at it.
-    ///   - pairingURIs: the Macs to pair with on the way in, in order. One is the
+    ///   - pairingURIs: the computers to pair with on the way in, in order. One is the
     ///     ordinary case; two is a phone that manages more than one machine, which
     ///     is the only setup in which cross-machine state can be observed at all.
     /// - Returns: the running application.
@@ -508,7 +508,7 @@ final class AppFlowTests: XCTestCase {
     ///   - session: a session to open, or `nil` to stay on the list.
     ///   - language: a language to force, or `nil` to follow the system.
     ///   - freshStart: whether to throw the stored data away first.
-    ///   - pairingURIs: the Macs to pair with, in order.
+    ///   - pairingURIs: the computers to pair with, in order.
     /// - Returns: the arguments.
     private static func arguments(
         pairing: Bool,
@@ -519,7 +519,7 @@ final class AppFlowTests: XCTestCase {
     ) -> [String] {
         var arguments: [String] = []
         // Repeated, and in order: the app pairs with each in turn, which is how a
-        // phone that manages two Macs gets that way without a test having to walk
+        // phone that manages two computers gets that way without a test having to walk
         // the pairing screen twice.
         if pairing { for uri in pairingURIs { arguments += ["-mizarPairURI", uri] } }
         if let session { arguments += ["-mizarSelectSession", session] }
@@ -568,7 +568,7 @@ final class AppFlowTests: XCTestCase {
         XCTAssertEqual(XCTWaiter().wait(for: [shown], timeout: Self.patience), .completed, "the sidebar did not open")
     }
 
-    /// Put the list of Macs away.
+    /// Put the list of computers away.
     ///
     /// The sheet closes by itself once a switch has landed, so this only taps
     /// Done when it is still there.
@@ -1076,7 +1076,7 @@ final class AppFlowTests: XCTestCase {
         Self.stallMockHost(0)
     }
 
-    /// An unreachable Mac does not take away what this phone already has.
+    /// An unreachable computer does not take away what this phone already has.
     ///
     /// The other half of the local storage: reading a conversation is entirely
     /// local once it has been synced, so a failure screen that replaces the list
@@ -1091,17 +1091,17 @@ final class AppFlowTests: XCTestCase {
         Self.setMockOffline(true)
         defer { Self.setMockOffline(false) }
 
-        // Second: the same pairing, the same stored data, and a Mac that has
+        // Second: the same pairing, the same stored data, and a computer that has
         // stopped answering.
         let app = launch(session: nil, naming: false, freshStart: false)
         XCTAssertTrue(
             app.staticTexts["demo"].waitForExistence(timeout: Self.patience),
-            "an unreachable Mac hid the sessions this phone already had",
+            "an unreachable computer hid the sessions this phone already had",
         )
         // And it says so rather than pretending everything is fine.
         XCTAssertTrue(
             app.staticTexts["sessions.error"].waitForExistence(timeout: Self.patience),
-            "the app did not say the Mac was unreachable",
+            "the app did not say the computer was unreachable",
         )
         // But it says so quietly. The yellow banner and its Retry button were
         // reported as looking like a development build -- and the retry those
@@ -1115,7 +1115,7 @@ final class AppFlowTests: XCTestCase {
 
         // A refresh while unreachable must not report an all-clear. It did: the
         // pass returned without asking anything and the window said "Up to date.
-        // Every conversation on this Mac is stored on this phone." -- a claim
+        // Every conversation on this computer is stored on this phone." -- a claim
         // about the operator's data made out of a request that was never sent.
         let refresh = app.buttons["sessions.refresh"]
         expect(refresh, "there is no way to refresh")
@@ -1126,7 +1126,7 @@ final class AppFlowTests: XCTestCase {
         )
         XCTAssertFalse(
             app.staticTexts["Up to date"].waitForExistence(timeout: 4),
-            "a refresh against an unreachable Mac claimed everything was already stored",
+            "a refresh against an unreachable computer claimed everything was already stored",
         )
         // The pass has finished when the window stops saying it is looking and
         // starts saying why it could not. Waiting for that is what makes the
@@ -1142,7 +1142,7 @@ final class AppFlowTests: XCTestCase {
             "the progress window did not close",
         )
 
-        // And when the Mac comes back, the list recovers through the gesture it
+        // And when the computer comes back, the list recovers through the gesture it
         // already has. Pull to refresh lands in `refreshSessions`, which opens a
         // socket when there is none -- the recovery the old Retry button did by
         // hand, now on the path the operator already uses.
@@ -1205,7 +1205,7 @@ final class AppFlowTests: XCTestCase {
             "a session in a deleted workspace was listed as a workspace",
         )
         // The host's second workspace holds no sessions and is drawn anyway: it
-        // is on the Mac's sidebar, so it is part of the count the operator is
+        // is on the computer's sidebar, so it is part of the count the operator is
         // comparing.
         expect(
             app.buttons["workspace./Users/you/projects/fresh"],
@@ -1242,7 +1242,7 @@ final class AppFlowTests: XCTestCase {
     }
 
     /// A refresh reports the workspaces the host has, which is the number the
-    /// operator can check against their Mac.
+    /// operator can check against their computer.
     ///
     /// The sheet used to say nothing about workspaces at all, so "the phone has
     /// more of them than DSH does" could only be discovered by counting rows.
@@ -1727,7 +1727,7 @@ final class AppFlowTests: XCTestCase {
         let row = turnRow(app, 4)
         expect(row, "turn 4 is missing, so there is no running row to watch")
 
-        // The Mac finishes the turn. Nothing on the phone is touched from here.
+        // The computer finishes the turn. Nothing on the phone is touched from here.
         Self.setMockSessionRunning(false)
 
         let stopped = XCTNSPredicateExpectation(
@@ -2043,7 +2043,7 @@ final class AppFlowTests: XCTestCase {
     /// A running turn's clock, when the host's clock is ahead of the phone's.
     ///
     /// The start is the host's number and `now` is the phone's, so the two
-    /// disagreeing is ordinary -- a Mac whose clock drifted, a phone that has not
+    /// disagreeing is ordinary -- a computer whose clock drifted, a phone that has not
     /// synced. Subtracting them gave a negative duration, and the row read
     /// "DeepSeeking for -4 s", which is not a time anybody can act on. The
     /// clamp is the kit's own rule (``ConversationTurn/elapsed(asOf:)``), which
@@ -2550,21 +2550,21 @@ final class AppFlowTests: XCTestCase {
         return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
     }
 
-    /// What belongs to one Mac does not follow the operator to the next.
+    /// What belongs to one computer does not follow the operator to the next.
     ///
     /// The app keeps the model and permission catalogues, the pending
     /// interactions and the recent host events for the machine it is talking to,
     /// and none of them were dropped when the machine changed. The catalogues are
     /// the visible half: they are read once per *connection* and never re-read,
-    /// so a phone that switches Macs draws the first Mac's models in the second
-    /// Mac's picker -- and the two mocks disagree about what they offer, which is
+    /// so a phone that switches computers draws the first computer's models in the second
+    /// computer's picker -- and the two mocks disagree about what they offer, which is
     /// the only way that is observable.
     ///
     /// Two hosts, deliberately: one mock answers every read with the same
     /// providers, the same sessions and the same host id, so a screen drawn from
-    /// the wrong Mac's answer looks exactly like a screen drawn from the right
+    /// the wrong computer's answer looks exactly like a screen drawn from the right
     /// one. `scripts/mock-host.mjs 19396` is a different machine.
-    func testSwitchingMacsDoesNotCarryTheFirstMacsCatalog() {
+    func testSwitchingcomputersDoesNotCarryTheFirstcomputersCatalog() {
         Self.resetSecondMockHost()
         let app = launch(
             session: nil,
@@ -2572,69 +2572,69 @@ final class AppFlowTests: XCTestCase {
             running: false,
             pairingURIs: [Self.mockPairingURI, Self.secondMockPairingURI],
         )
-        // The second Mac is the one open: the last pairing is the current one.
+        // The second computer is the one open: the last pairing is the current one.
         if !app.staticTexts["Mock Mac (second)"].waitForExistence(timeout: Self.patience) {
             let dump = app.staticTexts.allElementsBoundByIndex.prefix(25)
                 .map { $0.identifier.isEmpty ? "<no id>" : $0.identifier }
-            XCTFail("the second Mac was not the one opened; screen says: \(dump)")
+            XCTFail("the second computer was not the one opened; screen says: \(dump)")
         }
 
         // The picker is inside a conversation, so one is opened first. Read the
-        // second Mac's catalogue into the app by opening the picker that asks for
+        // second computer's catalogue into the app by opening the picker that asks for
         // it -- which is what makes the catalogue a *cached* value rather than
         // one fetched on demand, and the value the switch below must not carry.
         let demo = app.buttons["workspace./Users/you/projects/demo"]
-        expect(demo, "the second Mac's first workspace is missing")
+        expect(demo, "the second computer's first workspace is missing")
         let secondRow = sessionRow(in: app, titled: "Mock session", in: "demo")
-        XCTAssertTrue(expand(demo, revealing: secondRow), "the second Mac's session never appeared")
+        XCTAssertTrue(expand(demo, revealing: secondRow), "the second computer's session never appeared")
         secondRow.tap()
         let opener = app.buttons["composer.model"]
-        expect(opener, "the second Mac's conversation never opened")
+        expect(opener, "the second computer's conversation never opened")
         opener.tap()
         XCTAssertTrue(
             app.buttons["model.row.kimi-k2"].waitForExistence(timeout: Self.patience),
-            "the second Mac's own catalogue is missing",
+            "the second computer's own catalogue is missing",
         )
         app.navigationBars.buttons["Done"].tap()
         expect(app.buttons["composer.model"], "the picker never closed")
 
-        // Back to the list, and to the first Mac.
+        // Back to the list, and to the first computer.
         openSidebar(app)
         expect(app.buttons["sessions.hosts"], "the session list never came back")
         app.buttons["sessions.hosts"].tap()
         let first = app.buttons["host.row.mock-host-0000-4000-8000-000000000000"]
-        expect(first, "the first Mac is not in the list")
+        expect(first, "the first computer is not in the list")
         first.tap()
         // Choosing a machine opens it, and the list of machines puts itself
         // away once the switch has landed.
         closeHosts(app)
-        expect(app.buttons["sessions.hosts"], "the first Mac's session list never arrived")
+        expect(app.buttons["sessions.hosts"], "the first computer's session list never arrived")
 
-        // A conversation on the first Mac, so its picker -- and therefore its
+        // A conversation on the first computer, so its picker -- and therefore its
         // catalogue -- is reachable. Opening the picker is what asks for it.
         let firstDemo = app.buttons["workspace./Users/you/projects/demo"]
-        expect(firstDemo, "the first Mac's first workspace is missing")
+        expect(firstDemo, "the first computer's first workspace is missing")
         let firstRow = sessionRow(in: app, titled: "Mock session", in: "demo")
-        XCTAssertTrue(expand(firstDemo, revealing: firstRow), "the first Mac's session never appeared")
+        XCTAssertTrue(expand(firstDemo, revealing: firstRow), "the first computer's session never appeared")
         firstRow.tap()
-        expect(app.buttons["composer.model"], "the first Mac's conversation never opened")
+        expect(app.buttons["composer.model"], "the first computer's conversation never opened")
         app.buttons["composer.model"].tap()
         XCTAssertTrue(
             app.buttons["model.row.deepseek-flash"].waitForExistence(timeout: Self.patience),
-            "the first Mac's catalogue is missing",
+            "the first computer's catalogue is missing",
         )
         XCTAssertFalse(
             app.buttons["model.row.kimi-k2"].exists,
-            "the second Mac's models are still offered under the first Mac",
+            "the second computer's models are still offered under the first computer",
         )
     }
 
-    /// The phone reopens the Mac the operator last chose, not the one paired last.
+    /// The phone reopens the computer the operator last chose, not the one paired last.
     ///
-    /// With two Macs paired, the launch path used to open the most recently
+    /// With two computers paired, the launch path used to open the most recently
     /// paired machine whatever the operator had been using: the app looked
     /// connected, but its session list, its approvals, its notifications and its
-    /// Live Activity belonged to the other Mac. Being paired is not the same as
+    /// Live Activity belonged to the other computer. Being paired is not the same as
     /// being chosen, and the difference is visible on the first screen.
     func testTheLastOpenedMacIsTheOneReopened() {
         Self.resetSecondMockHost()
@@ -2644,24 +2644,24 @@ final class AppFlowTests: XCTestCase {
             running: false,
             pairingURIs: [Self.mockPairingURI, Self.secondMockPairingURI],
         )
-        // The second Mac was paired last, so this first launch legitimately
+        // The second computer was paired last, so this first launch legitimately
         // opens it: with no choice recorded yet, "the machine given most
         // recently" is the only answer the phone has.
         XCTAssertTrue(
             app.staticTexts["Mock Mac (second)"].waitForExistence(timeout: Self.patience),
-            "the launch did not open the most recently paired Mac",
+            "the launch did not open the most recently paired computer",
         )
 
         // Now choose the other one, exactly as the operator would.
         expect(app.buttons["sessions.hosts"], "the session list never came back")
         app.buttons["sessions.hosts"].tap()
         let first = app.buttons["host.row.mock-host-0000-4000-8000-000000000000"]
-        expect(first, "the first Mac is not in the list")
+        expect(first, "the first computer is not in the list")
         first.tap()
         closeHosts(app)
         XCTAssertTrue(
             app.staticTexts["Mock Mac (fixture)"].waitForExistence(timeout: Self.patience),
-            "choosing the first Mac did not open it",
+            "choosing the first computer did not open it",
         )
 
         // A new process, no pairing arguments: what the app opens is what it
@@ -2677,11 +2677,11 @@ final class AppFlowTests: XCTestCase {
         reopened.launch()
         XCTAssertTrue(
             reopened.staticTexts["Mock Mac (fixture)"].waitForExistence(timeout: Self.patience),
-            "the relaunch opened a Mac other than the one the operator last chose",
+            "the relaunch opened a computer other than the one the operator last chose",
         )
         XCTAssertFalse(
             reopened.staticTexts["Mock Mac (second)"].exists,
-            "the relaunch kept the Mac paired last instead of the one last chosen",
+            "the relaunch kept the computer paired last instead of the one last chosen",
         )
     }
 

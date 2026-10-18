@@ -27,7 +27,7 @@
 	</dict>
 	<!-- Required for iOS 14 and later when connecting to a local-network host. -->
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>DSH-Mizar connects to your Mac on the local network to monitor and guide your agent.</string>
+	<string>DSH-Mizar connects to your computer on the local network to monitor and guide your agent.</string>
 	<!--
 	  Declared because the app browses for it. iOS raises the local-network
 	  permission prompt when an app first *uses* the local network, and a Bonjour
@@ -36,7 +36,7 @@
 
 	  Nothing has to advertise it. The browse exists to raise the question before
 	  the operator is halfway through scanning a pairing code, not to find
-	  anything: a Mac on the same Wi-Fi is reached at the address in the QR.
+	  anything: a computer on the same Wi-Fi is reached at the address in the QR.
 	-->
 	<key>NSBonjourServices</key>
 	<array>
@@ -67,7 +67,7 @@
 	<false/>
 	<!-- The pairing QR is scanned in-app, so the camera is used only for that. -->
 	<key>NSCameraUsageDescription</key>
-	<string>Scan the pairing code shown on your Mac.</string>
+	<string>Scan the pairing code shown on your computer.</string>
 	<!--
 	  Live Activities, declared on the app rather than on the extension.
 
@@ -82,7 +82,7 @@
 	  score changing every few seconds -- and this activity's one moving number is
 	  a `Text(_:style:.timer)` that the *system* ticks, with no update from the app
 	  at all. What the app sends is a change of state: a session appeared, a
-	  session stopped, or a fresh figure arrived from the Mac. Claiming frequent
+	  session stopped, or a fresh figure arrived from the computer. Claiming frequent
 	  updates would be asking for a budget nothing here spends.
 	-->
 	<key>NSSupportsLiveActivities</key>

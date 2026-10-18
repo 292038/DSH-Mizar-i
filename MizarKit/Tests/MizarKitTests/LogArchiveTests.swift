@@ -214,7 +214,7 @@ struct LogScrubberTests {
     @Test("leaves an ordinary line alone")
     func keepsOrdinaryText() {
         // A scrubber that mangles the log is a scrubber that gets turned off.
-        let line = "2025-10-17T01:02:03.456Z  request     session.messages(sessionId) → failed in 60012 ms UNAVAILABLE: the Mac did not answer"
+        let line = "2025-10-17T01:02:03.456Z  request     session.messages(sessionId) → failed in 60012 ms UNAVAILABLE: the computer did not answer"
         #expect(LogScrubber.redact(line) == line)
         #expect(!LogScrubber.containsSecret(line))
     }
@@ -327,7 +327,7 @@ struct LogArchiveTests {
             sessionCount: 3,
             titledSessionCount: 2,
             workspaceCount: 4,
-            lastError: "the Mac did not answer",
+            lastError: "the computer did not answer",
             pendingApprovals: [
                 HostSummary.Approval(
                     requestId: "r1",

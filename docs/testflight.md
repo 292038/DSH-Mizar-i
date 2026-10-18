@@ -10,8 +10,8 @@
 |---|---|
 | **Bundle ID** | `me.shirazu.dshmizar` |
 | **显示名** | `DSH-Mizar` |
-| **版本号** | `0.7.1` |
-| **构建号** | `12` |
+| **版本号** | `0.9.0` |
+| **构建号** | `22` |
 | **Team ID** | `5Q2A46685M` |
 | 团队名 | Vreeland Lee |
 | 签名身份 | `Apple Distribution: Vreeland Lee (5Q2A46685M)` |
@@ -57,7 +57,7 @@
 release/
 ├─ DSH-Mizar.xcarchive        ← 双击打开 Organizer，用它上传
 ├─ export/DSH-Mizar.ipa       ← 已签名的构建，可以手动用 Transporter 上传
-└─ dsh-mizar-0.1.0.tgz        ← Mac 端插件本体（npm 包，装到 DSH 里）
+└─ dsh-mizar-0.1.0.tgz        ← 电脑端插件本体（npm 包，装到 DSH 里）
 ```
 
 ---
@@ -191,14 +191,14 @@ Xcode 的 **Organizer** 会打开：
 
 **这个 App 单独装上是用不了的。**
 
-它要连到一台跑着 DSH 的 Mac，而那台 Mac 上要装 `dsh-mizar` 插件。测试人员必须同时有：
+它要连到一台跑着 DSH 的电脑，而那台电脑上要装 `dsh-mizar` 插件。测试人员必须同时有：
 
-1. 一台 Mac，装了 DSH 和本插件
-2. Mac 和手机在同一个局域网，或 Mac 已经连上中继（见 [中继部署](relay-deployment.md)）
-3. 从 Mac 的 DSH Web 面板扫码配对
+1. 一台电脑，装了 DSH 和本插件
+2. 电脑和手机在同一个局域网，或电脑已经连上中继（见 [中继部署](relay-deployment.md)）
+3. 从电脑的 DSH Web 面板扫码配对
 
-所以 **TestFlight 的适用范围是"你自己"或"你帮忙配好 Mac 的人"**。作为公开上架它没有
+所以 **TestFlight 的适用范围是"你自己"或"你帮忙配好电脑的人"**。作为公开上架它没有
 独立价值，审核时也会被问到"用户拿到这个 App 能做什么"。
 
-要发布给不认识的人，缺的不是 TestFlight，而是：Mac 端插件的公开分发方式 + 配对引导
+要发布给不认识的人，缺的不是 TestFlight，而是：电脑端插件的公开分发方式 + 配对引导
 流程，或者一个中继服务。

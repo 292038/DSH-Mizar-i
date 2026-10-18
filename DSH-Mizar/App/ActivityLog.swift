@@ -7,7 +7,7 @@
 //  Two destinations, and both are needed. `os.Logger` is what a developer looks
 //  at while the phone is plugged in -- free when nobody is streaming, structured,
 //  and visible in Console.app next to everything else the system is saying. The
-//  ring buffer is what the operator can *send*: a device log needs a Mac, a cable
+//  ring buffer is what the operator can *send*: a device log needs a computer, a cable
 //  and a person who knows `log collect`, and the report that matters arrives as
 //  "here is the zip" from somebody who has none of those.
 //

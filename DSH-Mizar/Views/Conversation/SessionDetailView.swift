@@ -616,7 +616,7 @@ struct SessionDetailView: View {
             let waitedLongEnough = ContinuousClock.now.advanced(by: .seconds(20))
             // One sleep at a time, with the deadline re-measured: the lock is
             // held for the length of a network round trip, and giving up on a
-            // slow Mac while it is about to release would be a second reader
+            // slow computer while it is about to release would be a second reader
             // rather than a patient one.
             while conversationLoads > 0, ContinuousClock.now < waitedLongEnough {
                 // Cancellation is the session going away, and there is nothing
@@ -670,7 +670,7 @@ struct SessionDetailView: View {
     /// Measured from the host's side, that pair sustained itself: a fresh
     /// WebSocket every few seconds, each one re-downloading the same 244 KB
     /// page, `session.stats` printing twice for every `session.messages`, and no
-    /// answer ever settling on screen. Every request the Mac received was
+    /// answer ever settling on screen. Every request the computer received was
     /// answered correctly, which is why this looked like "cannot connect" while
     /// the connection was in fact fine.
     private func reload() async {

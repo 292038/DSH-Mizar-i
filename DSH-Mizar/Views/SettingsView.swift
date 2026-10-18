@@ -90,7 +90,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(verbatim: "DSH-Mizar")
                         .font(.title2.weight(.bold))
-                    Text(model.host.map { String(format: String(localized: "Paired with %@"), $0.displayName) } ?? String(localized: "No Mac paired yet"))
+                    Text(model.host.map { String(format: String(localized: "Paired with %@"), $0.displayName) } ?? String(localized: "No computer paired yet"))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -276,7 +276,7 @@ struct SettingsView: View {
         } footer: {
             Text(
                 String(
-                    localized: "A zip with this build and phone, the settings above, every request to the Mac and how it ended, the connection attempts, the sync progress and the recent host events. Device tokens and pairing codes are removed before the file is written, and conversations are not in it.",
+                    localized: "A zip with this build and phone, the settings above, every request to the computer and how it ended, the connection attempts, the sync progress and the recent host events. Device tokens and pairing codes are removed before the file is written, and conversations are not in it.",
                 ),
             )
         }
@@ -324,7 +324,7 @@ struct SettingsView: View {
         } footer: {
             Text(
                 String(
-                    localized: "Monitor and guide a DSH agent from a phone. The Mac decides; this app shows and answers.",
+                    localized: "Monitor and guide a DSH agent from a phone. The computer decides; this app shows and answers.",
                 ),
             )
         }

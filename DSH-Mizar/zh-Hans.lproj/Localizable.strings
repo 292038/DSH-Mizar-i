@@ -1,8 +1,8 @@
 /* DSH-Mizar 简体中文 */
 /* Pairing */
 "Connect to DSH" = "连接到 DSH";
-"Scan the code on your Mac" = "扫描 Mac 上的二维码";
-"On the Mac, open DSH and look for the Mizar panel in the sidebar." = "在 Mac 上打开 DSH，在侧边栏找到 Mizar 面板。";
+"Scan the code on your computer" = "扫描电脑上的二维码";
+"On the computer, open DSH and look for the Mizar panel in the sidebar." = "在电脑上打开 DSH，在侧边栏找到 Mizar 面板。";
 "Or enter it by hand" = "或手动输入";
 "Host, for example 100.64.0.1:19390" = "主机，例如 100.64.0.1:19390";
 "Pairing code" = "配对码";
@@ -12,9 +12,9 @@
 "Cannot reach the host" = "无法连接到主机";
 
 /* Sessions */
-"Sessions started on your Mac appear here." = "在 Mac 上启动的会话会显示在这里。";
+"Sessions started on your computer appear here." = "在电脑上启动的会话会显示在这里。";
 "Pick a session" = "选择一个会话";
-"Start one on your Mac, then refresh." = "在 Mac 上启动一个，然后刷新。";
+"Start one on your computer, then refresh." = "在电脑上启动一个，然后刷新。";
 "No sessions yet" = "还没有会话";
 "subagent" = "子代理";
 "Refresh" = "刷新";
@@ -111,17 +111,17 @@
 "Pressure" = "压力";
 "Projected" = "预估";
 "No context figure yet." = "暂无上下文数据。";
-"Add a Mac" = "添加 Mac";
-"Cannot reach the Mac" = "无法连接 Mac";
+"Add a computer" = "添加电脑";
+"Cannot reach the computer" = "无法连接电脑";
 "Could not load the conversation" = "无法加载对话";
 "Could not switch model" = "无法切换模型";
 "Thinking: %@" = "思考等级：%@";
-"Every conversation on this Mac is stored on this phone." = "这台 Mac 上的每段对话都保存在本机。";
+"Every conversation on this computer is stored on this phone." = "这台电脑上的每段对话都保存在本机。";
 "Full access" = "完全访问";
 "Load earlier messages" = "加载更早的消息";
-"Name this Mac" = "给这台 Mac 命名";
-"No Mac paired yet" = "尚未配对任何 Mac";
-"Open DSH on your Mac, find the DSH-Mizar panel in the sidebar, and scan the code it shows." = "在 Mac 上打开 DSH，在侧边栏找到 DSH-Mizar 面板，扫描其中的二维码。";
+"Name this computer" = "给这台电脑命名";
+"No computer paired yet" = "尚未配对任何电脑";
+"Open DSH on your computer, find the DSH-Mizar panel in the sidebar, and scan the code it shows." = "在电脑上打开 DSH，在侧边栏找到 DSH-Mizar 面板，扫描其中的二维码。";
 "Read only" = "只读";
 "Rename…" = "重命名…";
 "Scan the code" = "扫描二维码";
@@ -146,7 +146,7 @@
 "%lld s" = "%lld 秒";
 "%lld min %lld s" = "%lld 分 %lld 秒";
 "Setting up" = "正在初始化";
-"Downloading this Mac's conversations, so they are here when the network is not." = "正在下载这台 Mac 上的对话，断网时也能查看。";
+"Downloading this computer's conversations, so they are here when the network is not." = "正在下载这台电脑上的对话，断网时也能查看。";
 "Looking for sessions…" = "正在查找会话…";
 "About %@ left" = "约剩 %@";
 "Nothing to set yet" = "暂时没有设置项";
@@ -155,7 +155,7 @@
 "Settings" = "设置";
 "No workspace" = "无工作区";
 "Workspaces: %lld" = "工作区：%lld 个";
-"Workspaces: the Mac has not said" = "工作区：主机没有给出";
+"Workspaces: the computer has not said" = "工作区：主机没有给出";
 "Workspaces" = "工作区";
 "Not in a workspace" = "未归档到工作区";
 " · %lld not in a workspace" = " · 未归档 %lld 个";
@@ -183,10 +183,10 @@
 "Packing the log…" = "正在打包日志…";
 "Entries recorded" = "已记录条目";
 "Last export, %lld files, %lld entries" = "上次导出：%lld 个文件，%lld 条记录";
-"A zip with this build and phone, the settings above, every request to the Mac and how it ended, the connection attempts, the sync progress and the recent host events. Device tokens and pairing codes are removed before the file is written, and conversations are not in it." = "压缩包内含：版本与机型、上面的设置、每一次对 Mac 的请求及其结果、连接尝试、同步进度与最近的主机事件。写入前会移除设备令牌与配对码，且不包含任何对话内容。";
+"A zip with this build and phone, the settings above, every request to the computer and how it ended, the connection attempts, the sync progress and the recent host events. Device tokens and pairing codes are removed before the file is written, and conversations are not in it." = "压缩包内含：版本与机型、上面的设置、每一次对电脑的请求及其结果、连接尝试、同步进度与最近的主机事件。写入前会移除设备令牌与配对码，且不包含任何对话内容。";
 "Source code" = "源代码";
 "Version" = "版本";
-"Monitor and guide a DSH agent from a phone. The Mac decides; this app shows and answers." = "在手机上查看并指挥 DSH agent。判断由 Mac 做出，这里负责呈现与应答。";
+"Monitor and guide a DSH agent from a phone. The computer decides; this app shows and answers." = "在手机上查看并指挥 DSH agent。判断由电脑做出，这里负责呈现与应答。";
 
 /* Redesign: sidebar, dock, home, pairing */
 "Sessions" = "会话";
@@ -200,7 +200,7 @@
 "Showing saved history" = "正在显示本机保存的历史";
 "Not reachable" = "无法连接";
 "Through the relay" = "经由中继";
-"Macs, %@" = "Mac，%@";
+"Computers, %@" = "电脑，%@";
 "No sessions here yet" = "这里还没有会话";
 "Expanded" = "已展开";
 "Collapsed" = "已收起";
@@ -219,18 +219,18 @@
 "%lld of %lld" = "第 %1$lld 个，共 %2$lld 个";
 "Next" = "下一个";
 "What should the agent work on?" = "想让 Agent 做点什么？";
-"Start a session on your Mac, then refresh." = "先在 Mac 上开始一个会话，然后刷新。";
+"Start a session on your computer, then refresh." = "先在电脑上开始一个会话，然后刷新。";
 "Somewhere else…" = "其他位置…";
 "Workspace, %@" = "工作区，%@";
 "Choose a workspace" = "选择工作区";
 "Send" = "发送";
 "Close" = "关闭";
-"Point at the code on your Mac" = "对准 Mac 上的二维码";
+"Point at the code on your computer" = "对准电脑上的二维码";
 "There are no other steps." = "没有别的步骤。";
 "Paired with %@" = "已与 %@ 配对";
 "Haptics" = "触感反馈";
 "Feel" = "手感";
 "A light tap when a turn you are watching finishes, when a request is answered, and when a message is sent." = "你正在看的一轮完成、回答请求、发送消息时，轻轻震动一下。";
-"Choose another Mac" = "选择其他 Mac";
+"Choose another computer" = "选择其他电脑";
 "Scan a code" = "扫描二维码";
 "Search" = "搜索";

@@ -5,7 +5,7 @@
 //  The conversation pane with no conversation in it -- which is a place to
 //  start one, not an empty screen.
 //
-//  The Mac's name, the mark lighting up dot-outward as if finding it, and the
+//  The computer's name, the mark lighting up dot-outward as if finding it, and the
 //  composer, ready: type, choose where the work happens, send. Sending starts a
 //  session in that workspace with those words as its first prompt and opens it
 //  -- the operator's words flying up into the new conversation as they would in
@@ -32,7 +32,7 @@ struct HomeView: View {
             greeting
             Spacer(minLength: 24)
             if model.workspaceChoices.isEmpty {
-                Text("Start a session on your Mac, then refresh.")
+                Text("Start a session on your computer, then refresh.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .padding(.bottom, 20)
@@ -118,7 +118,7 @@ struct HomeView: View {
     }
 
     /// Where the new session will work: one button, labelled with its choice,
-    /// opening the list of the Mac's workspaces.
+    /// opening the list of the computer's workspaces.
     private var workspaceMenu: some View {
         Menu {
             ForEach(model.workspaceChoices) { choice in

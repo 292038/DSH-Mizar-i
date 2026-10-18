@@ -163,7 +163,7 @@ struct WorkspaceCatalogTests {
 
     @Test("a workspace with no sessions is still drawn")
     func emptyWorkspaceIsDrawn() {
-        // It is in DSH's registry and on the Mac's sidebar, so it is one of the
+        // It is in DSH's registry and on the computer's sidebar, so it is one of the
         // workspaces the phone is supposed to be counting.
         let groups = WorkspaceCatalog.groups(
             sessions: [session("s1", cwd: "/Users/you/projects/demo")],
@@ -219,7 +219,7 @@ struct WorkspaceCatalogTests {
         // The one case the two spellings of "nothing" differ on. A workspace
         // deleted and recreated at the same directory has no sessions filed
         // under it, and matching on the path would hand it the dead workspace's
-        // conversations -- which the Mac does not have there either.
+        // conversations -- which the computer does not have there either.
         let groups = WorkspaceCatalog.groups(
             sessions: [session("s1", cwd: "/Users/you/projects/demo")],
             workspaces: [workspace("w1", "/Users/you/projects/demo", sessionIds: [])],
@@ -283,7 +283,7 @@ struct WorkspaceCatalogTests {
 
     @Test("a session with no directory and no workspace is still reachable")
     func sessionWithoutADirectoryIsUnclaimed() {
-        // Nothing on the Mac's sidebar knows about it, and nothing on the phone
+        // Nothing on the computer's sidebar knows about it, and nothing on the phone
         // would either if the leftover group did not exist.
         let groups = WorkspaceCatalog.groups(
             sessions: [session("s1", cwd: nil)],
@@ -319,7 +319,7 @@ struct WorkspaceCatalogTests {
 
     @Test("DSH's own name for a workspace is the one shown")
     func hostTitleIsUsed() {
-        // The operator is looking at this Mac's sidebar. A workspace called two
+        // The operator is looking at this computer's sidebar. A workspace called two
         // different things on two screens is one they have to check twice.
         let groups = WorkspaceCatalog.groups(
             sessions: [],
@@ -414,7 +414,7 @@ struct StoredWorkspaceTests {
     func membershipSurvivesTheFile() async throws {
         // The difference decides whether a session is matched by the id DSH
         // filed or by the directory it happens to sit in, and the phone reads it
-        // back off disk on a launch that may never reach the Mac. A round trip
+        // back off disk on a launch that may never reach the computer. A round trip
         // that collapsed the two would put a dead workspace's conversations back
         // under a live one -- or lose a workspace's sessions entirely.
         let dir = directory()

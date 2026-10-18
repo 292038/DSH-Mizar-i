@@ -4,7 +4,7 @@ import PackageDescription
 // MizarKit — the DSH-Mizar protocol layer.
 //
 // Built as a Swift package rather than straight into the app target for one
-// practical reason: `swift test` runs on the host Mac in about a second, while
+// practical reason: `swift test` runs on the host computer in about a second, while
 // anything requiring a simulator round-trip costs far more per iteration. The
 // app project consumes this as a local package.
 //

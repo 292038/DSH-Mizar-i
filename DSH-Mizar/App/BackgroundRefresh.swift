@@ -212,7 +212,7 @@ final class BackgroundRefresh {
             log.add(
                 .sync,
                 "background refresh: not wanted"
-                    + (model.host == nil ? " -- no Mac is paired" : " -- the Live Activity is switched off"),
+                    + (model.host == nil ? " -- no computer is paired" : " -- the Live Activity is switched off"),
             )
             task.setTaskCompleted(success: true)
             return
@@ -241,7 +241,7 @@ final class BackgroundRefresh {
             log.add(
                 .live,
                 "background sync: skipped, "
-                    + (model.host == nil ? "no Mac is paired" : "the Live Activity is switched off"),
+                    + (model.host == nil ? "no computer is paired" : "the Live Activity is switched off"),
             )
             return
         }

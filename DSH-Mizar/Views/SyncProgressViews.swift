@@ -5,7 +5,7 @@
 //  The two places this app says how long something is going to take.
 //
 //  They are the same numbers in two sizes, and they exist because of the same
-//  complaint: a first pairing downloads every conversation on the Mac, and a
+//  complaint: a first pairing downloads every conversation on the computer, and a
 //  refresh re-reads them all, and both used to be a spinner with no end and no
 //  idea how far along it was. Over a relay on a phone that is minutes, which is
 //  long enough that "is it working" becomes a real question.
@@ -36,7 +36,7 @@ func spellDuration(_ seconds: TimeInterval) -> String {
 ///
 /// Full screen rather than a sheet because there is nothing behind it worth
 /// looking at: this runs immediately after pairing, when the phone has never
-/// heard of this Mac, so every screen it could cover is empty -- and an empty
+/// heard of this computer, so every screen it could cover is empty -- and an empty
 /// screen behind a small dialog is indistinguishable from a broken one.
 struct FirstLoadView: View {
     let progress: AppModel.SyncProgress?
@@ -60,7 +60,7 @@ struct FirstLoadView: View {
                 Text("Setting up")
                     .font(.title.weight(.bold))
                     .accessibilityIdentifier("firstload.title")
-                Text("Downloading this Mac's conversations, so they are here when the network is not.")
+                Text("Downloading this computer's conversations, so they are here when the network is not.")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -163,7 +163,7 @@ struct SyncProgressSheet: View {
                     // Not "up to date". Saying everything is stored when the
                     // request was never sent is a claim about the operator's
                     // data made out of nothing -- and it is what tapping refresh
-                    // with the Mac unreachable used to say.
+                    // with the computer unreachable used to say.
                     Label("Could not refresh", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                     Text(problem)
@@ -175,16 +175,16 @@ struct SyncProgressSheet: View {
                     Label("Up to date", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                         .symbolEffect(.bounce, options: .nonRepeating)
-                    Text("Every conversation on this Mac is stored on this phone.")
+                    Text("Every conversation on this computer is stored on this phone.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
 
                 // What the host says it has, which is the figure the operator can
-                // check against the Mac's own sidebar. A refresh is when somebody
+                // check against the computer's own sidebar. A refresh is when somebody
                 // would notice the two disagreeing, so it is where the answer
-                // belongs -- and "the Mac has not said" is a different line from
+                // belongs -- and "the computer has not said" is a different line from
                 // "0", because only one of them is a reason to act.
                 Text(model.workspaceCountLine)
                     .font(.caption2)

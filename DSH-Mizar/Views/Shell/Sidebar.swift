@@ -2,16 +2,16 @@
 //  Sidebar.swift
 //  DSH-Mizar
 //
-//  The Mac's sessions, grouped the way DSH groups them.
+//  The computer's sessions, grouped the way DSH groups them.
 //
-//  Top to bottom: the Mac's name and a refresh, a search field, "New session",
+//  Top to bottom: the computer's name and a refresh, a search field, "New session",
 //  then one row per workspace. Workspaces start folded -- a list of five
 //  workspaces each holding a dozen sessions is not a list anybody can read --
 //  and open with a tap, their sessions rising into place one after another. The
 //  workspace holding the session on screen opens by itself, so the operator can
 //  always see where they are.
 //
-//  The shape mirrors the Mac's own sidebar because that is what the operator is
+//  The shape mirrors the computer's own sidebar because that is what the operator is
 //  looking at when they reach for their phone, and a phone that arranges the
 //  same sessions differently is a second thing to learn.
 //
@@ -85,7 +85,7 @@ struct SidebarView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
-            // One plain text, alone: the Mac's name is how the operator knows
+            // One plain text, alone: the computer's name is how the operator knows
             // which machine this is, and it is the one string on this screen
             // that is theirs rather than the app's.
             Text(model.host?.displayName ?? model.welcome?.hostName ?? String(localized: "Sessions"))
@@ -246,7 +246,7 @@ struct SidebarView: View {
                 .foregroundStyle(.tertiary)
             Text("No sessions yet")
                 .font(.headline)
-            Text("Start one on your Mac, then refresh.")
+            Text("Start one on your computer, then refresh.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -357,7 +357,7 @@ enum SessionTitle {
 
 // MARK: - Footer
 
-/// The Mac this is, how it is reached, and the way to the settings.
+/// The computer this is, how it is reached, and the way to the settings.
 private struct SidebarFooter: View {
     let actions: SidebarActions
     @Environment(AppModel.self) private var model
@@ -387,7 +387,7 @@ private struct SidebarFooter: View {
                 .liquidCapsule(interactive: true)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(Text("Macs, \(status)"))
+            .accessibilityLabel(Text("Computers, \(status)"))
             .accessibilityIdentifier("sessions.hosts")
 
             Button(action: actions.settings) {
@@ -424,7 +424,7 @@ private struct SidebarFooter: View {
     }
 }
 
-/// Green and breathing while the Mac is reachable; grey and still when it is
+/// Green and breathing while the computer is reachable; grey and still when it is
 /// not.
 private struct ConnectionDot: View {
     let live: Bool

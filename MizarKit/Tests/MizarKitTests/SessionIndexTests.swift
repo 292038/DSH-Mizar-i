@@ -4,7 +4,7 @@
 //
 //  The store that decides whether the app has a session list before the network
 //  does anything. Its failure modes are the interesting part: a file written for
-//  one Mac drawn under another's name, a session id that escapes the directory,
+//  one computer drawn under another's name, a session id that escapes the directory,
 //  and a cache that will not write taking the app down with it.
 //
 
@@ -66,7 +66,7 @@ struct SessionIndexTests {
 
     @Test("a file written for another host is not this host's list")
     func refusesAnotherHost() async {
-        // A phone with two Macs. Drawing one machine's sessions under the
+        // A phone with two computers. Drawing one machine's sessions under the
         // other's name is worse than drawing none, and the two files are one
         // escaping bug apart.
         let dir = directory()

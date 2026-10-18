@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import MizarKit
 
-private func pairedHost(_ id: String, pairedAt: TimeInterval, name: String = "Mac") -> PairedHost {
+private func pairedHost(_ id: String, pairedAt: TimeInterval, name: String = "computer") -> PairedHost {
     PairedHost(
         hostId: id,
         hostName: name,
@@ -22,7 +22,7 @@ struct HostSelectionTests {
 
         // The second machine was paired later; the operator went back to the
         // first. A launch has to follow the operator, or the app comes up on a
-        // Mac whose sessions, notifications and Live Activity are not the ones
+        // computer whose sessions, notifications and Live Activity are not the ones
         // the operator was using.
         let chosen = HostSelection.preferred(in: [second, first], lastOpenedId: "host-a")
         #expect(chosen?.hostId == "host-a")

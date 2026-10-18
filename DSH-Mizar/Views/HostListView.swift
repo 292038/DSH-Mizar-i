@@ -5,7 +5,7 @@
 //  The machines this phone is paired with, and the way to add another.
 //
 //  This is the first screen once anything is paired, and the only screen when
-//  nothing is. A phone that manages one Mac is the common case and gets a list
+//  nothing is. A phone that manages one computer is the common case and gets a list
 //  of one; a phone that manages three should not have to unpair to switch, which
 //  is what the first version required.
 //
@@ -61,7 +61,7 @@ struct HostListView: View {
                 Button {
                     showingPairing = true
                 } label: {
-                    Label("Add a Mac", systemImage: "plus")
+                    Label("Add a computer", systemImage: "plus")
                 }
                 .accessibilityIdentifier("hosts.add")
             }
@@ -135,7 +135,7 @@ struct RenameSheet: View {
                         .textInputAutocapitalization(.words)
                         .accessibilityIdentifier("rename.field")
                 } header: {
-                    Text("Name this Mac")
+                    Text("Name this computer")
                 } footer: {
                     Text("Shown only on this phone. Leave it empty to use the machine's own name, \(host.hostName).")
                 }
@@ -176,7 +176,7 @@ extension PairedHost: @retroactive Identifiable {
 /// It says what to do rather than showing an empty list, and it is the whole of
 /// the first-run experience: there is nothing else this app can usefully do
 /// without a machine on the other end. Drawn in the icon's own navy, with the
-/// mark sending its signal up and out -- looking for a Mac to answer it.
+/// mark sending its signal up and out -- looking for a computer to answer it.
 struct UnpairedView: View {
     @State private var showingPairing = false
 
@@ -201,11 +201,11 @@ struct UnpairedView: View {
                 MizarMarkSearching(accent: Color(red: 0.235, green: 0.796, blue: 0.957), ink: .white)
                     .frame(width: 112)
                     .padding(.bottom, 36)
-                Text("No Mac paired yet")
+                Text("No computer paired yet")
                     .font(.largeTitle.weight(.bold))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
-                Text("Open DSH on your Mac, find the DSH-Mizar panel in the sidebar, and scan the code it shows.")
+                Text("Open DSH on your computer, find the DSH-Mizar panel in the sidebar, and scan the code it shows.")
                     .font(.body)
                     .foregroundStyle(.white.opacity(0.7))
                     .multilineTextAlignment(.center)

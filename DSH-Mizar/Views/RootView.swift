@@ -40,7 +40,7 @@ struct RootView: View {
                 //
                 // The distinction matters more than it looks. Reading a
                 // conversation is entirely local once it has been synced, so
-                // replacing it with "Cannot reach the Mac" takes away an answer
+                // replacing it with "Cannot reach the computer" takes away an answer
                 // the operator already has -- and the phone is opened on trains,
                 // in lifts, and on the far side of a relay having a bad day.
                 if model.hasStoredIndex {
@@ -120,7 +120,7 @@ private extension RootView {
     }
 }
 
-/// The moment between opening the app and knowing which Mac it is for.
+/// The moment between opening the app and knowing which computer it is for.
 private struct LaunchingView: View {
     var body: some View {
         VStack(spacing: 20) {
@@ -140,7 +140,7 @@ private struct LaunchingView: View {
 /// phone that *has* synced gets its data instead, with the failure as a banner
 /// over the top.
 ///
-/// - Parameter message: why the Mac could not be reached.
+/// - Parameter message: why the computer could not be reached.
 private struct UnreachableView: View {
     let message: String
 
@@ -150,7 +150,7 @@ private struct UnreachableView: View {
 
     var body: some View {
         ContentUnavailableView {
-            Label("Cannot reach the Mac", systemImage: "exclamationmark.triangle")
+            Label("Cannot reach the computer", systemImage: "exclamationmark.triangle")
         } description: {
             Text(message)
         } actions: {
@@ -190,7 +190,7 @@ private struct UnreachableView: View {
             // Sheets, not links: this screen has no navigation stack, so the
             // links it used to carry went nowhere.
             if !model.hosts.isEmpty {
-                Button("Choose another Mac") { showingHosts = true }
+                Button("Choose another computer") { showingHosts = true }
             } else {
                 Button("Scan a code") { showingPairing = true }
             }

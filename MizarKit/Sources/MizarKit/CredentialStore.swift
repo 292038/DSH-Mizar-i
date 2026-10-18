@@ -10,7 +10,7 @@
 //  reboot, never copied to another device by a backup or iCloud sync.
 //
 //  The store is a protocol because the Keychain is unavailable in unit tests —
-//  and, on a Mac, reaching for it can prompt. Tests inject an in-memory store;
+//  and, on a computer, reaching for it can prompt. Tests inject an in-memory store;
 //  nothing else about the client changes.
 //
 
@@ -27,7 +27,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
     public let hostName: String
     /// What the operator called this machine on this phone.
     ///
-    /// Phone-local and never sent. Someone with three Macs does not want to
+    /// Phone-local and never sent. Someone with three computers does not want to
     /// distinguish them by `Shirazus-Mac-mini.local` and two UUIDs, and a name
     /// they typed is theirs to change without touching the host.
     public let label: String?
@@ -130,7 +130,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
             // it here renamed the machine back to the host's own name the moment
             // its address changed, which is the one thing the label exists to
             // avoid -- `Shirazus-Mac-mini.local` is exactly what somebody with
-            // two Macs cannot tell apart.
+            // two computers cannot tell apart.
             label: label,
         )
     }
@@ -155,7 +155,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
 
 /// Storage for the paired-host credentials.
 ///
-/// A list, not a single pairing. One phone managing one Mac was the first
+/// A list, not a single pairing. One phone managing one computer was the first
 /// version's assumption and it is the wrong one for the product: somebody with a
 /// laptop and a desktop should not have to unpair one to reach the other.
 public protocol CredentialStore: Sendable {

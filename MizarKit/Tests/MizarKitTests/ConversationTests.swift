@@ -172,9 +172,9 @@ struct ConversationTests {
         #expect(result.conversationItems().isEmpty)
     }
 
-    @Test("a message typed on the Mac is shown, because it carries the same kind")
+    @Test("a message typed on the computer is shown, because it carries the same kind")
     func desktopMessageIsShown() throws {
-        // There is no `desktop` kind in the log. A message typed in the Mac's
+        // There is no `desktop` kind in the log. A message typed in the computer's
         // own DSH window carries `user` like any other, which is why asking for
         // that kind by name loses nothing a person wrote -- the earlier change
         // to a blocklist was made to recover messages that were never being
@@ -182,7 +182,7 @@ struct ConversationTests {
         let result = try page("""
         {"sessionId":"s1","asOfSeq":2,"hasMore":false,"records":[
           {"type":"event","event":{"type":"user/message","seq":1,"time":1,
-            "data":{"source":{"kind":"user"},"content":[{"type":"text","text":"from the Mac"}]}}}
+            "data":{"source":{"kind":"user"},"content":[{"type":"text","text":"from the computer"}]}}}
         ]}
         """)
         #expect(result.conversationItems().count == 1)
@@ -206,7 +206,7 @@ struct ConversationTests {
     func assistantMessageIsShown() throws {
         // `assistant/message` is the committed reply and was the one event type
         // the parser did not know. A model that answered perfectly produced
-        // nothing on the phone while the Mac showed the whole exchange.
+        // nothing on the phone while the computer showed the whole exchange.
         let result = try page("""
         {"sessionId":"s1","asOfSeq":3,"hasMore":false,"records":[
           {"type":"event","event":{"type":"user/message","seq":1,"time":1,
@@ -277,7 +277,7 @@ struct ConversationTests {
         // Copied from a live session log, trimmed. The text is at
         // `data.message.content`, one key deeper than a user message's
         // `data.content` -- and reading only the latter is why every reply was
-        // missing from the phone while the Mac showed the whole exchange.
+        // missing from the phone while the computer showed the whole exchange.
         let result = try page("""
         {"sessionId":"s1","asOfSeq":29,"hasMore":false,"records":[
           {"type":"event","event":{"type":"assistant/message","seq":29,"time":1791089307181,
@@ -396,7 +396,7 @@ struct ConversationTests {
         // and a message the model produced keeps them at `data.message.content`.
         //
         // That placement is what was wrong. Every reply was missing from the
-        // phone while the Mac showed the whole exchange, and no test caught it
+        // phone while the computer showed the whole exchange, and no test caught it
         // because every fixture had been written to match the parser rather than
         // the host.
         let result = try page("""

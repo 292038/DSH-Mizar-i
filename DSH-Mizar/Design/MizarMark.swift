@@ -6,7 +6,7 @@
 //  move.
 //
 //  Drawn rather than imported, so each arc can be lit on its own: the pairing
-//  screen sends a pulse up through them like a signal looking for a Mac, the
+//  screen sends a pulse up through them like a signal looking for a computer, the
 //  first download fills them a third at a time, and the home screen lights them
 //  dot-outward the moment it appears. The geometry is the icon's own (a 68×46
 //  box, the arcs centred on the dot and spanning 124°).
@@ -78,7 +78,7 @@ struct MizarMark: View {
 
 /// The mark, lighting dot-outward once, then resting.
 ///
-/// The home screen's greeting: the signal finding its Mac.
+/// The home screen's greeting: the signal finding its computer.
 struct MizarMarkConnecting: View {
     var accent: Color = .accentColor
     var ink: Color = .primary

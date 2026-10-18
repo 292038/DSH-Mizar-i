@@ -13,7 +13,7 @@
 //  Three decisions are worth stating.
 //
 //  **It is a directory of plain files in a zip, not one blob.** An operator can
-//  unzip it on the Mac and read `activity.log` with `less`; a machine can parse
+//  unzip it on the computer and read `activity.log` with `less`; a machine can parse
 //  `requests.jsonl`; and neither needs this app to interpret it. A binary or
 //  opaque format would make the archive useful only to whoever wrote the reader.
 //
@@ -236,7 +236,7 @@ public enum LogScrubber {
 ///
 /// Gathered in the app -- it is the only place that can see `Bundle.main`,
 /// `UIDevice` and `UNUserNotificationCenter` -- and passed in, so this file
-/// stays testable on a Mac.
+/// stays testable on a computer.
 public struct EnvironmentFacts: Codable, Sendable, Equatable {
     /// `CFBundleShortVersionString`.
     public var appVersion: String
@@ -675,7 +675,7 @@ public enum LogArchiveWriter {
                           permission.
         settings.json     Which notifications the operator has switched on, and
                           whether the Live Activity is allowed.
-        host.json         The Mac this phone is paired with, what the host last
+        host.json         The computer this phone is paired with, what the host last
                           reported, and anything that was waiting on the
                           operator's answer.
         activity.log      Everything the app did, in order, with timestamps.

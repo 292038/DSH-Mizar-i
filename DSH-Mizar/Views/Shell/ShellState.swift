@@ -30,12 +30,12 @@ final class ShellState {
     /// On a regular width the sidebar sits beside the conversation rather than
     /// under it; this is whether it is showing there.
     var pinnedVisible = true
-    /// Which workspaces are open, per Mac, for the life of the process.
+    /// Which workspaces are open, per computer, for the life of the process.
     ///
     /// Collapsed is the default -- the set starts empty -- because a list of
     /// five workspaces each holding a dozen sessions is not a list anybody can
     /// read. Kept here rather than in the sidebar so that a switch to another
-    /// Mac and back finds its groups as they were left.
+    /// computer and back finds its groups as they were left.
     private var expandedByHost: [String: Set<String>] = [:]
 
     private var dragOrigin: CGFloat = 0

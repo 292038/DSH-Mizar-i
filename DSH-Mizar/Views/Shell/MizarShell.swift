@@ -2,7 +2,7 @@
 //  MizarShell.swift
 //  DSH-Mizar
 //
-//  The app, once a Mac is paired: a sidebar of workspaces, and the conversation.
+//  The app, once a computer is paired: a sidebar of workspaces, and the conversation.
 //
 //  On a phone the conversation is the screen and the sidebar is underneath it.
 //  Opening the sidebar -- the button at the top left, or a sideways drag anywhere
@@ -78,7 +78,7 @@ struct MizarShell: View {
             // A session chosen from anywhere -- a row, a notification, a launch
             // argument, a session just created -- is a session the operator
             // wants to see, so the card comes back. A selection that goes away
-            // (a disconnect, a switch of Mac) puts the list back in front.
+            // (a disconnect, a switch of computer) puts the list back in front.
             if selected != nil {
                 shell.close()
             } else if !shell.settledOpen {
@@ -226,7 +226,7 @@ struct MizarShell: View {
         )
     }
 
-    /// The one-time "what should this Mac be called" prompt.
+    /// The one-time "what should this computer be called" prompt.
     private var namingSheet: some View {
         Group {
             if let host = model.pendingNameHostId.flatMap({ id in
@@ -298,12 +298,12 @@ struct SidebarGlyph: Shape {
     }
 }
 
-/// The list of Macs, as a sheet of its own.
+/// The list of computers, as a sheet of its own.
 ///
 /// It used to be pushed inside the session list's navigation, and the way back
 /// was the back button. As a sheet it has a Done button -- and it closes by
-/// itself once a switch has landed, because the operator chose a Mac to look at
-/// its sessions, not to keep looking at the list of Macs.
+/// itself once a switch has landed, because the operator chose a computer to look at
+/// its sessions, not to keep looking at the list of computers.
 private struct HostsSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
