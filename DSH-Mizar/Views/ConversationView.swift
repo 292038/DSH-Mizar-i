@@ -299,47 +299,41 @@ private struct ConversationRow: View {
 
 // MARK: - Messages
 
-/// Markdown, when the text has any.
+/// Whether a message body is worth drawing as blocks.
+///
+/// Cheap and deliberately narrow: a false negative shows backticks, a false
+/// positive costs one parse. The line-anchored markers are checked per line
+/// rather than by substring -- `"\n# "` never matched a body that *was* a
+/// heading, which is the common case of a short reply.
 enum MessageMarkdown {
-    /// The message as Markdown, falling back to plain text.
-    ///
-    /// Three attempts, narrowest last, because `AttributedString` refuses a
-    /// string it cannot parse and a half-finished answer is exactly that: an
-    /// unterminated code fence fails `.full`, so it is retried inline-only, and
-    /// plain text is the floor.
-    static func parse(_ text: String) -> AttributedString? {
-        guard looksLikeMarkdown(text) else { return nil }
-        if let full = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .full)) {
-            return full
-        }
-        return try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace),
-        )
-    }
-
-    /// Cheap and deliberately narrow: a false negative shows backticks, a false
-    /// positive costs a parse.
     static func looksLikeMarkdown(_ text: String) -> Bool {
-        text.contains("**") || text.contains("`") || text.contains("\n# ")
-            || text.contains("\n- ") || text.contains("\n* ") || text.contains("\n1. ")
-            || text.contains("](") || text.contains("\n> ") || text.contains("\n```")
+        if text.contains("**") || text.contains("`") || text.contains("](") || text.contains("|") {
+            return true
+        }
+        return text.split(separator: "\n", omittingEmptySubsequences: true).contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("# ") || trimmed.hasPrefix("> ") || trimmed.hasPrefix("```") {
+                return true
+            }
+            if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") || trimmed.hasPrefix("+ ") {
+                return true
+            }
+            return trimmed.range(of: #"^\d{1,3}[.)]\s"#, options: .regularExpression) != nil
+        }
     }
 }
 
-/// Selectable text, Markdown or plain.
+/// Selectable text: blocks when the body is Markdown, one run of text otherwise.
 ///
-/// The Markdown form carries the raw text as its accessibility label, so what
+/// The block form carries the raw text as its accessibility label, so what
 /// VoiceOver reads -- and what a test finds -- is what was said, not the
 /// rendering of it.
 private struct MessageText: View {
     let text: String
 
     var body: some View {
-        if let formatted = MessageMarkdown.parse(text) {
-            Text(formatted)
-                .textSelection(.enabled)
-                .accessibilityLabel(text)
+        if MessageMarkdown.looksLikeMarkdown(text) {
+            MarkdownMessage(text)
         } else {
             Text(text)
                 .textSelection(.enabled)
