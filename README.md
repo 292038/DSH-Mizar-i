@@ -125,3 +125,13 @@ scripts/release.sh upload     # 直接传到 App Store Connect（TestFlight）
 | `archive/` | 0.7.2 之前「全量传输」的渲染实现，不编译，留着备用 |
 
 协议本身在插件仓库：`docs/protocol-v1.md`。
+
+## 许可
+
+本项目以 **GNU General Public License v3.0**（GPLv3，SPDX：`GPL-3.0-only`）发布。
+许可证全文见 [LICENSE](LICENSE)。
+
+另附一条 **App Store 额外许可**（GPLv3 第 7 条）：允许通过 Apple App Store /
+TestFlight 分发本程序及其衍生作品，以化解 GPLv3 与商店条款、DRM 以及第 6 条
+「安装信息」要求之间的冲突；源码仍须按 GPLv3 提供。全文见
+[LICENSE-EXCEPTION](LICENSE-EXCEPTION)。

@@ -1,0 +1,31 @@
+DSH-Mizar iOS — additional permission under GNU GPL version 3, section 7
+
+Copyright (C) 2026 ShirazuNagisa
+
+The GNU General Public License, version 3 ("GPLv3") does not permit conveying a
+covered work under restrictions that are not part of the GPLv3 (section 7), and
+section 6 requires "Installation Information" for certain User Products. The
+terms of service of the Apple App Store and TestFlight, and the technical
+measures those channels apply, include such restrictions and require such
+information.
+
+As an additional permission under section 7 of the GPLv3, the copyright holders
+of this program grant you permission to convey this program, and works based on
+it, through the Apple App Store, TestFlight, or another distribution channel
+operated by Apple Inc., notwithstanding:
+
+  (a) any term of service, digital rights management, or device-restriction
+      measure that channel applies to the work; and
+
+  (b) section 6's Installation Information requirement, to the extent the
+      channel neither supplies that information nor permits the work to supply
+      it.
+
+This permission is limited to conveying the work through the channels named
+above. It does not relieve you of any other obligation under the GPLv3: if you
+convey the work or a work based on it, the complete corresponding source must
+still be made available under the GPLv3, and this permission does not permit
+combining the work with code whose licence the GPLv3 does not permit.
+
+You may grant this same permission for your own modified versions; whether you
+do or not, it remains an additional permission of this work under section 7.
