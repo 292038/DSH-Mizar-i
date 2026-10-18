@@ -2,7 +2,7 @@
 //  SettingsView.swift
 //  DSH-Mizar
 //
-//  The second tab: what the app does, what happened, and what it is.
+//  The settings sheet: what the app does, what happened, and what it is.
 //
 //  Four sections, in the order somebody needs them: what this phone will tell
 //  you (notifications), what it shows while it is working (the Live Activity),
@@ -37,16 +37,30 @@ struct SettingsView: View {
     @State private var exporting = false
     /// What iOS thinks of this app's notifications, read when the screen opens.
     @State private var permission: NotificationPermission?
+    /// Closes the sheet this screen is presented in.
+    var onDone: (() -> Void)?
+    /// The one switch every haptic in the app answers to.
+    @AppStorage(Haptics.storageKey) private var hapticsEnabled = true
 
     var body: some View {
         NavigationStack {
             List {
+                header
                 notificationsSection
                 liveActivitySection
+                feelSection
                 logsSection
                 aboutSection
             }
             .navigationTitle(Text("Settings"))
+            .toolbar {
+                if let onDone {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done", action: onDone)
+                            .accessibilityIdentifier("settings.done")
+                    }
+                }
+            }
             .task {
                 // Asked here rather than at launch: this is the screen where the
                 // answer is meaningful, and reading it is a call into the
@@ -56,6 +70,49 @@ struct SettingsView: View {
             .sheet(item: $sharing) { archive in
                 ShareSheet(items: [archive.url])
             }
+        }
+    }
+
+    // MARK: - Header
+
+    /// What this is, before what it does: the icon, the name, the version.
+    private var header: some View {
+        Section {
+            HStack(spacing: 16) {
+                MizarMarkConnecting(accent: Color(red: 0.235, green: 0.796, blue: 0.957), ink: .white)
+                    .frame(width: 36)
+                    .frame(width: 64, height: 64)
+                    .background(
+                        LinearGradient(colors: [Theme.navy, Theme.navyDeep], startPoint: .top, endPoint: .bottom),
+                        in: RoundedRectangle(cornerRadius: 15, style: .continuous),
+                    )
+                    .shadow(color: Theme.navy.opacity(0.35), radius: 10, y: 4)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(verbatim: "DSH-Mizar")
+                        .font(.title2.weight(.bold))
+                    Text(model.host.map { String(format: String(localized: "Paired with %@"), $0.displayName) } ?? String(localized: "No Mac paired yet"))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.vertical, 6)
+            .listRowBackground(Color.clear)
+        }
+    }
+
+    // MARK: - 触感
+
+    private var feelSection: some View {
+        Section {
+            Toggle(isOn: $hapticsEnabled) {
+                Label("Haptics", systemImage: "hand.tap")
+            }
+            .accessibilityIdentifier("settings.haptics")
+        } header: {
+            Text("Feel")
+        } footer: {
+            Text(String(localized: "A light tap when a turn you are watching finishes, when a request is answered, and when a message is sent."))
         }
     }
 

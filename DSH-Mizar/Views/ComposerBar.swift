@@ -5,7 +5,8 @@
 //  The strip between the conversation and the field: which model is answering,
 //  how full the context window is, and the host's own commands.
 //
-//  It is laid out like DSH's own composer, and it replaced a segmented control
+//  It lives inside the composer's glass, along its bottom edge, and it replaced
+//  a segmented control
 //  that swapped the conversation for a usage screen. The swap was the problem:
 //  "what is it doing" and "what has it cost" are asked at the same time, and a
 //  control that shows one by hiding the other makes the second question cost a
@@ -19,7 +20,8 @@
 import SwiftUI
 import MizarKit
 
-/// The three controls above the composer.
+/// The controls along the bottom of the composer: the host's commands, which
+/// model is answering, and how full the context window is.
 struct ComposerBar: View {
     let sessionId: String
     /// The session's usage frame, when it has been read.
@@ -31,7 +33,8 @@ struct ComposerBar: View {
     /// empty. A closure handed down into an overlay is the kind of indirection
     /// that fails silently, so the button owns the write instead.
     @Binding var draft: String
-    /// Whether the field holds the keyboard, so a command can focus it.
+    /// Whether the field holds the keyboard, so a command can focus it -- and so
+    /// the row can make room for the text while it is being typed.
     @FocusState.Binding var focused: Bool
     @Environment(AppModel.self) private var model
     /// Which panel is open, owned by the screen rather than by this view.
@@ -39,21 +42,14 @@ struct ComposerBar: View {
     /// These were `@State` here, and the bar sits inside an overlay whose
     /// content SwiftUI rebuilds as the conversation scrolls. A panel whose
     /// openness is stored in a view that gets rebuilt closes itself the moment
-    /// it opens -- which is what happened: the buttons worked and nothing
-    /// appeared.
+    /// it opens.
     @Binding var showingModel: Bool
     @Binding var showingContext: Bool
     @Binding var showingCommands: Bool
+    @Namespace private var sheets
 
     /// DSH's own commands. The slash forms are what the host parses; the titles
-    /// are what the operator is choosing between.
-    ///
-    /// The titles are looked up here rather than drawn as raw words: this list
-    /// is a sheet inside the conversation, and an operator reading 命令 should
-    /// not then be choosing between "Goal", "Plan", "Compact" and "Model". The
-    /// lookup happens once, when the list is first used, because the app's
-    /// language does not change under a running process. The slash forms are
-    /// deliberately untouched: `/goal` is what the host parses, not a label.
+    /// are what the operator is choosing between, in their language.
     static let commands: [(slash: String, title: String, symbol: String)] = [
         ("/goal", String(localized: "Goal"), "target"),
         ("/plan", String(localized: "Plan"), "list.bullet.rectangle"),
@@ -63,36 +59,23 @@ struct ComposerBar: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            // The model takes whatever the other two leave. They are fixed
-            // words -- "上下文 35%" and "+ 命令" are exactly as wide as their own
-            // text -- while the model name is the one thing here that can be
-            // long. Equal thirds truncated it to "deepsee…", naming neither the
-            // model nor the effort; the reference bar is proportioned this way.
+            commandButton
             modelPill
                 .layoutPriority(1)
             contextPill
-                .fixedSize(horizontal: true, vertical: false)
-            commandButton
-                .fixedSize(horizontal: true, vertical: false)
         }
-        .padding(.horizontal, 8)
-        .padding(.top, 6)
-        .padding(.bottom, 2)
-        // A sheet for all three, and the same detent for all three.
-        //
-        // They were popovers, which is the tidier panel for this kind of detail
-        // -- but a popover presented from this bar never appeared. The bar lives
-        // in an overlay on the scroll view, and SwiftUI would not anchor a
-        // popover there: the button's action ran and nothing came up. A sheet
-        // presents from anywhere, it is the system's own control, and the point
-        // the operator raised was that the three should look the same.
+        .animation(.mizarSmooth, value: focused)
+        // Sheets, zooming out of the control that opened them. They were
+        // popovers once, and a popover anchored in this overlay never appeared.
         .sheet(isPresented: $showingModel) {
             ModelPickerView(sessionId: sessionId, stats: stats)
+                .navigationTransition(.zoom(sourceID: "model", in: sheets))
         }
         .sheet(isPresented: $showingContext) {
             ContextDetail(stats: stats)
-                .presentationDetents([.height(300)])
+                .presentationDetents([.height(320)])
                 .presentationDragIndicator(.visible)
+                .navigationTransition(.zoom(sourceID: "context", in: sheets))
         }
         .sheet(isPresented: $showingCommands) {
             CommandList { command in
@@ -102,15 +85,15 @@ struct ComposerBar: View {
                 focused = true
                 showingCommands = false
             }
-            .presentationDetents([.height(260)])
+            .presentationDetents([.height(300)])
             .presentationDragIndicator(.visible)
+            .navigationTransition(.zoom(sourceID: "commands", in: sheets))
         }
     }
 
     /// `deepseek-v4 · High`, as the host reports the route it is using.
     private var modelLabel: String {
-        // A pending change wins: it is what the next turn will use, and showing
-        // the old one until it takes effect reads as the picker not working.
+        // A pending change wins: it is what the next turn will use.
         guard let selection = stats?.model?.next ?? stats?.model?.lastUsed ?? fallbackSelection else {
             return String(localized: "Model")
         }
@@ -122,40 +105,36 @@ struct ComposerBar: View {
     }
 
     /// The route a new turn would take, when this session has not chosen one.
-    ///
-    /// A session that has never run reports no selection at all, and the button
-    /// then read just "Model" -- which is the one thing it must never say, since
-    /// naming the model is its whole job. The catalog's default answers it.
+    /// The button naming nothing but "Model" is the one thing it must never do.
     private var fallbackSelection: ModelSelection? {
         model.modelCatalog?.defaultSelection
     }
 
     private var modelPill: some View {
         Button { showingModel = true } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 Image(systemName: "cpu")
-                    .font(.system(size: 11, weight: .semibold))
-                Text(modelLabel)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-                    // Tail, not middle. Middle truncation of "deepseek-flash"
-                    // gives "deepsee…sh", which names neither the family nor the
-                    // size; dropping the end at least keeps "deepseek-fl…".
-                    .truncationMode(.tail)
-                Spacer(minLength: 2)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12, weight: .semibold))
+                if !focused {
+                    Text(modelLabel)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                        // Tail, not middle: "deepseek-fl…" still names the family.
+                        .truncationMode(.tail)
+                        .transition(.blurReplace)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                        .transition(.blurReplace)
+                }
             }
-            .padding(.horizontal, 12)
-            // Taller than it was. At 6pt of padding the three controls read as a
-            // compressed strip rather than as the row of buttons the reference
-            // shows.
-            .frame(height: 34)
-            .frame(maxWidth: .infinity)
+            .padding(.horizontal, focused ? 0 : 11)
+            .frame(width: focused ? 32 : nil, height: 32)
+            .background(.fill.tertiary, in: Capsule())
+            .contentShape(.capsule)
         }
-        .buttonStyle(.plain)
-        .liquidCapsule()
+        .buttonStyle(.pressable)
+        .matchedTransitionSource(id: "model", in: sheets)
         .accessibilityLabel("Model, \(modelLabel)")
         .accessibilityIdentifier("composer.model")
     }
@@ -168,26 +147,30 @@ struct ComposerBar: View {
         Button { showingContext = true } label: {
             HStack(spacing: 5) {
                 ContextRing(percent: contextPercent)
-                Text(contextLabel)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-                Spacer(minLength: 2)
+                if let contextPercent {
+                    Text("\(contextPercent)%")
+                        .font(.caption.monospacedDigit().weight(.medium))
+                        .contentTransition(.numericText())
+                        .animation(.mizarSmooth, value: contextPercent)
+                }
             }
-            .padding(.horizontal, 12)
-            .frame(height: 34)
+            .padding(.horizontal, 9)
+            .frame(height: 32)
+            .background(.fill.tertiary, in: Capsule())
+            .contentShape(.capsule)
         }
-        .buttonStyle(.plain)
-        .liquidCapsule()
+        .buttonStyle(.pressable)
+        .fixedSize()
         .disabled(stats?.context == nil)
+        .matchedTransitionSource(id: "context", in: sheets)
         .accessibilityLabel("Context, \(contextLabel)")
         .accessibilityIdentifier("composer.context")
     }
 
     private var contextLabel: String {
         // "Context" is the catalogue key on its own and the figure is appended
-        // to it. `String(localized: "Context \(percent)%")` builds the key
-        // `Context %lld%`, which was in the catalogue and still did not resolve
-        // -- so the Chinese interface showed the English word.
+        // to it: `String(localized: "Context \(percent)%")` builds a key that
+        // did not resolve, and the Chinese interface showed the English word.
         guard let percent = contextPercent else { return String(localized: "Context") }
         return "\(String(localized: "Context")) \(percent)%"
     }
@@ -196,18 +179,16 @@ struct ComposerBar: View {
 
     private var commandButton: some View {
         Button { showingCommands = true } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .bold))
-                Text("Commands")
-                    .font(.caption.weight(.medium))
-                Spacer(minLength: 2)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 34)
+            Image(systemName: "plus")
+                .font(.system(size: 15, weight: .semibold))
+                .rotationEffect(.degrees(showingCommands ? 45 : 0))
+                .animation(.mizarBouncy, value: showingCommands)
+                .frame(width: 32, height: 32)
+                .background(.fill.tertiary, in: Circle())
+                .contentShape(.circle)
         }
-        .buttonStyle(.plain)
-        .liquidCapsule()
+        .buttonStyle(.pressable)
+        .matchedTransitionSource(id: "commands", in: sheets)
         .accessibilityLabel("Commands")
         .accessibilityIdentifier("composer.commands")
     }
@@ -232,57 +213,86 @@ private struct CommandList: View {
                     Button {
                         onPick(command.slash + " ")
                     } label: {
-                        HStack(spacing: 10) {
+                        HStack(spacing: 14) {
                             Image(systemName: command.symbol)
-                                .frame(width: 20)
-                                .foregroundStyle(.secondary)
+                                .font(.body.weight(.medium))
+                                .frame(width: 30, height: 30)
+                                .foregroundStyle(Color.accentColor)
+                                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                             Text(command.title)
                             Spacer(minLength: 12)
                             Text(command.slash)
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.tertiary)
                         }
-                        .padding(.horizontal, 16)
-                        .frame(height: 46)
+                        .padding(.horizontal, 20)
+                        .frame(height: 50)
                         .contentShape(.rect)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pressable(scale: 0.98, dims: true))
                     .accessibilityIdentifier("command.\(command.slash.dropFirst())")
                 }
                 Spacer(minLength: 0)
             }
+            .padding(.top, 4)
             .navigationTitle("Commands")
             .navigationBarTitleDisplayMode(.inline)
         }
     }
 }
 
-/// The little occupancy dial beside the context figure.
-private struct ContextRing: View {
+/// The little occupancy dial.
+///
+/// Its colour slides rather than switches: the accent while there is room,
+/// warming to amber past three quarters and to red past nine tenths -- a window
+/// that is nearly full is the thing that makes a session start summarising
+/// itself, and it should be visible before it happens rather than after. Past
+/// nine tenths it also breathes, once every few seconds.
+struct ContextRing: View {
     let percent: Int?
+    var size: CGFloat = 15
+    var lineWidth: CGFloat = 2.4
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
             Circle()
-                .stroke(.secondary.opacity(0.25), lineWidth: 2)
-            if let percent {
-                Circle()
-                    .trim(from: 0, to: min(1, max(0, Double(percent) / 100)))
-                    .stroke(tint, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
+                .stroke(.secondary.opacity(0.22), lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: fraction)
+                .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
         }
-        .frame(width: 12, height: 12)
+        .frame(width: size, height: size)
+        .animation(.mizarGentle, value: percent)
+        .modifier(Breathing(active: (percent ?? 0) >= 90 && !reduceMotion))
     }
 
-    /// Amber past three quarters, red past nine tenths. A window that is nearly
-    /// full is the thing that makes a session start summarising itself, and it
-    /// should be visible before it happens rather than after.
+    private var fraction: CGFloat { min(1, max(0, CGFloat(percent ?? 0) / 100)) }
+
     private var tint: Color {
         guard let percent else { return .secondary }
-        if percent >= 90 { return .red }
-        if percent >= 75 { return .orange }
+        if percent >= 90 { return Theme.failed }
+        if percent >= 75 { return Theme.waiting }
         return .accentColor
+    }
+}
+
+/// A slow pulse, for a figure that wants to be looked at.
+private struct Breathing: ViewModifier {
+    let active: Bool
+
+    func body(content: Content) -> some View {
+        if active {
+            // Rest, then one quick swell and settle -- a breath, not a throb.
+            content.phaseAnimator([1.0, 1.2]) { view, scale in
+                view.scaleEffect(scale)
+            } animation: { scale in
+                scale > 1 ? .easeOut(duration: 0.3).delay(2.6) : .spring(duration: 0.5, bounce: 0.3)
+            }
+        } else {
+            content
+        }
     }
 }
 
@@ -329,60 +339,6 @@ private struct ContextDetail: View {
             Spacer(minLength: 16)
             Text(value)
                 .font(.caption.monospacedDigit().weight(.medium))
-        }
-    }
-}
-
-extension View {
-    /// A capsule of the system's own translucent material.
-    ///
-    /// Liquid glass where the OS has it and a thin material where it does not.
-    /// The deployment target is iOS 18, so the newer effect has to be asked for
-    /// rather than assumed -- but asking for it matters: on the phone this runs
-    /// on it is the difference between a control that looks native and one that
-    /// looks like a rounded rectangle.
-    @ViewBuilder
-    func liquidCapsule() -> some View {
-        liquidSurface(in: Capsule())
-    }
-
-    /// The same material in any shape, or nothing at all.
-    ///
-    /// - Parameters:
-    ///   - shape: what to pour it into.
-    ///   - condition: when false the view is returned untouched, which is how a
-    ///     control that fills itself with a solid colour avoids a layer of glass
-    ///     underneath it.
-    /// - Returns: the surfaced view.
-    @ViewBuilder
-    func liquidSurface<S: Shape>(in shape: S, when condition: Bool = true) -> some View {
-        if condition {
-            if #available(iOS 26.0, *) {
-                self.glassEffect(.regular, in: shape)
-            } else {
-                self.background(.ultraThinMaterial, in: shape)
-            }
-        } else {
-            self
-        }
-    }
-}
-
-/// Groups neighbouring glass so it blends instead of meeting in a seam.
-///
-/// `GlassEffectContainer` is iOS 26; before that each surface stands alone, which
-/// is what every other OS version expects anyway.
-struct GlassRow<Content: View>: View {
-    var spacing: CGFloat = 8
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: spacing) {
-                content
-            }
-        } else {
-            content
         }
     }
 }

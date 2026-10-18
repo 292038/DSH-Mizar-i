@@ -35,6 +35,7 @@ struct ModelPickerView: View {
     /// message the operator cannot read until they have given up on this sheet
     /// and gone back.
     @State private var switchError: String?
+    @Namespace private var tick
 
     var body: some View {
         NavigationStack {
@@ -170,9 +171,11 @@ struct ModelPickerView: View {
         let isChosen = chosenModel == option.id && chosenProvider == provider.id
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                chosenProvider = provider.id
-                chosenModel = option.id
-                chosenEffort = option.defaultEffort
+                withMizarAnimation(.mizarSmooth) {
+                    chosenProvider = provider.id
+                    chosenModel = option.id
+                    chosenEffort = option.defaultEffort
+                }
                 // A model with no effort levels commits immediately: there is
                 // nothing else to choose, and an extra tap would be a formality.
                 if option.efforts.isEmpty {
@@ -182,6 +185,7 @@ struct ModelPickerView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(option.name)
+                            .fontWeight(isChosen ? .semibold : .regular)
                         if let description = option.description {
                             Text(description)
                                 .font(.caption)
@@ -189,14 +193,22 @@ struct ModelPickerView: View {
                         }
                     }
                     Spacer()
-                    if isChosen { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+                    if isChosen {
+                        Image(systemName: "checkmark")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .matchedGeometryEffect(id: "tick", in: tick)
+                            .transition(.pop)
+                    }
                 }
             }
             .buttonStyle(.plain)
+            .contentShape(.rect)
             .accessibilityIdentifier("model.row.\(option.id)")
 
             if isChosen && !option.efforts.isEmpty {
                 effortPicker(provider: provider.id, option: option)
+                    .transition(.rise(distance: -6, blur: 4))
             }
         }
     }
@@ -254,10 +266,15 @@ struct ModelPickerView: View {
 /// Permission presets.
 struct PermissionPickerView: View {
     let sessionId: String
+    /// The preset in force, when the screen behind knows it.
+    var current: String?
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var confirming: PermissionOption?
+    /// What was just chosen here, ahead of the host's next report.
+    @State private var applied: String?
+    @Namespace private var tick
 
     var body: some View {
         NavigationStack {
@@ -309,7 +326,7 @@ struct PermissionPickerView: View {
     }
 
     private func optionRow(_ option: PermissionOption) -> some View {
-        HStack {
+        HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(option.name)
@@ -326,11 +343,22 @@ struct PermissionPickerView: View {
                 }
             }
             Spacer()
+            // The one in force, ticked -- it was the only picker here without.
+            if option.value == (applied ?? current) {
+                Image(systemName: "checkmark")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .matchedGeometryEffect(id: "tick", in: tick)
+                    .transition(.pop)
+            }
         }
+        .contentShape(.rect)
     }
 
     private func apply(_ option: PermissionOption) async {
+        withMizarAnimation(.mizarSnappy) { applied = option.value }
         _ = await model.setPermission(option.value, sessionId: sessionId)
+        try? await Task.sleep(for: .milliseconds(220))
         dismiss()
     }
 }

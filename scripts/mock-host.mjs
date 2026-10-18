@@ -371,6 +371,14 @@ const MAIN_ANSWER = SECOND_IDENTITY
  * until the operator pulled to refresh.
  */
 const sentPrompts = []
+/**
+ * Sessions the phone started with `session.create`, and what was said in each.
+ *
+ * Kept apart from the fixture's own session so a test that starts one sees a
+ * conversation of its own -- its first prompt and nothing else -- and so
+ * `/reset` can put the list back as it was.
+ */
+const createdSessions = []
 
 /** Answer one client frame. */
 function answer(frame) {
@@ -413,7 +421,15 @@ function answer(frame) {
         id,
         result: {
           items: [
-            { workspaceId: 'ws-demo', path: SESSION.cwd, title: 'demo', sessionIds: [SESSION.sessionId] },
+            {
+              workspaceId: 'ws-demo',
+              path: SESSION.cwd,
+              title: 'demo',
+              sessionIds: [
+                SESSION.sessionId,
+                ...createdSessions.filter((c) => c.cwd === SESSION.cwd).map((c) => c.sessionId),
+              ],
+            },
             { workspaceId: 'ws-fresh', path: '/Users/you/projects/fresh', title: 'fresh', sessionIds: [] },
           ],
           complete: true,
@@ -427,7 +443,13 @@ function answer(frame) {
         v: 1,
         type: 'ok',
         id,
-        result: { items: [{ ...SESSION, running: sessionRunning }, ORPHANED_SESSION] },
+        result: {
+          items: [
+            ...createdSessions.map(({ prompts, ...row }) => row),
+            { ...SESSION, running: sessionRunning },
+            ORPHANED_SESSION,
+          ],
+        },
       }
     case 'interactions.pending':
       return {
@@ -440,6 +462,28 @@ function answer(frame) {
       // A frame per session, because the app draws one session at a time out of
       // one view: a title that is the same for both cannot show whether the
       // figures on screen belong to the session they were read for.
+      // A session the phone started has no figures yet: a frame with nothing
+      // in it, which is what a real host answers for a session that has not run.
+      if (createdSessions.some((c) => c.sessionId === frame.payload?.sessionId)) {
+        return {
+          v: 1,
+          type: 'ok',
+          id,
+          result: {
+            sessionId: frame.payload.sessionId,
+            asOfSeq: 1,
+            stats: {
+              title: 'Started from the phone',
+              tokenUsage: null,
+              cacheHit: null,
+              context: null,
+              stats: null,
+              model: null,
+              permissionPreset: null,
+            },
+          },
+        }
+      }
       if (frame.payload?.sessionId === ORPHANED_SESSION.sessionId) {
         return {
           v: 1,
@@ -645,8 +689,34 @@ function answer(frame) {
         result: { sessionId: frame.payload?.sessionId ?? SESSION.sessionId, selected },
       }
     }
+    case 'session.create': {
+      const cwd = typeof frame.payload?.cwd === 'string' ? frame.payload.cwd : SESSION.cwd
+      const created = {
+        ...SESSION,
+        sessionId: `session-mock-created-${createdSessions.length + 1}`,
+        cwd,
+        updatedAt: Date.now(),
+        running: false,
+        prompts: [],
+      }
+      createdSessions.push(created)
+      console.log('mock: session created ->', created.sessionId, cwd)
+      return { v: 1, type: 'ok', id, result: { sessionId: created.sessionId } }
+    }
     case 'session.prompt': {
       const text = typeof frame.payload?.text === 'string' ? frame.payload.text : ''
+      const created = createdSessions.find((s) => s.sessionId === frame.payload?.sessionId)
+      if (created !== undefined) {
+        if (text !== '') created.prompts.push(text)
+        created.updatedAt = Date.now()
+        console.log('mock: prompt for', created.sessionId, '->', JSON.stringify(text))
+        return {
+          v: 1,
+          type: 'ok',
+          id,
+          result: { accepted: true, requestId: frame.payload?.requestId ?? 'mock-request' },
+        }
+      }
       if (text !== '') sentPrompts.push(text)
       console.log('mock: prompt received ->', JSON.stringify(text), '| log now', sentPrompts.length)
       return {
@@ -669,6 +739,36 @@ function answer(frame) {
           message: `the answer to ${id} is 1400KB, too large to deliver`,
           retryable: false,
           id,
+        }
+      }
+      const created = createdSessions.find((s) => s.sessionId === frame.payload?.sessionId)
+      if (created !== undefined) {
+        console.log('mock: messages for', created.sessionId, JSON.stringify(frame.payload))
+        let seq = 0
+        const now = Date.now()
+        const record = (type, data) => {
+          seq += 1
+          return { type: 'event', event: { type, seq, time: now - (100 - seq) * 1000, data } }
+        }
+        return {
+          v: 1,
+          type: 'ok',
+          id,
+          result: {
+            sessionId: created.sessionId,
+            asOfSeq: created.prompts.length * 3,
+            hasMore: false,
+            records: created.prompts.flatMap((text, index) => [
+              record('turn/start', { turn: index + 1 }),
+              record('step/start', { turn: index + 1, step: 1 }),
+              record('user/message', {
+                content: [{ type: 'text', text }],
+                source: { kind: 'user' },
+                role: 'user',
+                id: `${created.sessionId}-m${index + 1}`,
+              }),
+            ]),
+          },
         }
       }
       if (frame.payload?.sessionId === ORPHANED_SESSION.sessionId) {
@@ -1007,6 +1107,7 @@ const server = createServer((request, response) => {
     // depending on which tests had run first. That is a suite whose failures
     // depend on test order, which is a suite nobody can trust.
     sentPrompts.length = 0
+    createdSessions.length = 0
     failMethod = null
     statsVariant = 'full'
     // `?skew=NNN` moves the host's clock ahead of the phone's, which is what a

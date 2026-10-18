@@ -15,13 +15,13 @@ struct RootView: View {
         Group {
             switch model.phase {
             case .launching:
-                ProgressView("Connecting…")
+                LaunchingView()
             case .unpaired:
                 // Nothing paired at all: the only useful thing on screen is the
                 // way to fix that.
                 UnpairedView()
             case .connecting where model.host == nil:
-                ProgressView("Connecting…")
+                LaunchingView()
             case .ready, .connecting:
                 // The one-time download covers the app rather than sitting in a
                 // sheet. It runs straight after pairing, when every screen
@@ -30,7 +30,7 @@ struct RootView: View {
                 if model.firstLoad {
                     FirstLoadView(progress: model.syncProgress)
                 } else {
-                    MainTabs()
+                    MizarShell()
                 }
             case .failed(let message):
                 // A phone with something stored shows it, with the failure as a
@@ -44,12 +44,13 @@ struct RootView: View {
                 // the operator already has -- and the phone is opened on trains,
                 // in lifts, and on the far side of a relay having a bad day.
                 if model.hasStoredIndex {
-                    MainTabs()
+                    MizarShell()
                 } else {
                     UnreachableView(message: message)
                 }
             }
         }
+        .animation(.mizarSmooth, value: phaseKey)
         .task { await model.start() }
         .task { await model.requestFirstRunPermissions() }
         .task { await model.ensurePushRegistration() }
@@ -106,6 +107,33 @@ struct RootView: View {
     }
 }
 
+/// Which of the root's screens is up, as something an animation can watch.
+private extension RootView {
+    var phaseKey: Int {
+        switch model.phase {
+        case .launching: 0
+        case .unpaired: 1
+        case .connecting where model.host == nil: 2
+        case .ready, .connecting: model.firstLoad ? 3 : 4
+        case .failed: model.hasStoredIndex ? 4 : 5
+        }
+    }
+}
+
+/// The moment between opening the app and knowing which Mac it is for.
+private struct LaunchingView: View {
+    var body: some View {
+        VStack(spacing: 20) {
+            MizarMarkSearching()
+                .frame(width: 64)
+            Text("Connecting…")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 /// The dead end, for a phone that has never synced anything.
 ///
 /// There is nothing behind it to show: no sessions, no titles, no figures. A
@@ -117,6 +145,8 @@ private struct UnreachableView: View {
     let message: String
 
     @Environment(AppModel.self) private var model
+    @State private var showingHosts = false
+    @State private var showingPairing = false
 
     var body: some View {
         ContentUnavailableView {
@@ -157,102 +187,19 @@ private struct UnreachableView: View {
             .buttonStyle(.borderedProminent)
             .disabled(model.reconnecting)
             .accessibilityIdentifier("failure.retry")
+            // Sheets, not links: this screen has no navigation stack, so the
+            // links it used to carry went nowhere.
             if !model.hosts.isEmpty {
-                NavigationLink("Choose another Mac") {
-                    HostListView()
-                }
+                Button("Choose another Mac") { showingHosts = true }
             } else {
-                NavigationLink("Scan a code") {
-                    PairingView()
-                }
+                Button("Scan a code") { showingPairing = true }
             }
         }
-    }
-}
-
-/// The two halves of the app, once a Mac is paired.
-///
-/// A tab bar rather than a menu because there are exactly two places to be, and
-/// because it is the shape every phone app has: the operator already knows what
-/// it means, so it costs nothing to learn and nothing to explain.
-///
-/// The selection bar is the system's. On iOS 26 that is the platform's Liquid
-/// Glass tab bar, drawn and animated by SwiftUI; on anything older it is the
-/// standard bar. Neither is imitated -- a hand-built approximation of a system
-/// control is a control that will look wrong on the next release, which is the
-/// one thing about this app that would date fastest.
-///
-/// What *is* this app's is when that bar comes and goes. It is put away inside a
-/// conversation in compact widths (see `SessionDetailView`), and the system
-/// applies that in one frame. `TabBarTransition` watches the same state and gives
-/// the bar a transition to arrive and leave by; it sits here, above the tab view,
-/// because it has to be in the hierarchy before and after the change rather than
-/// only on one side of it.
-struct MainTabs: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.horizontalSizeClass) private var sizeClass
-    /// Which of the two places is on screen.
-    ///
-    /// Owned rather than left inside `TabView`, because the bar's journey depends
-    /// on it and so does the cached still the journey is made of. Two cases that
-    /// were wrong without it: a notification opening a session while Settings is
-    /// on screen hid a bar nothing was pushing, and the still taken on the
-    /// Settings tab -- with its tab selected -- was what the Conversation tab's
-    /// first exit travelled with. Reading the selection makes both an update the
-    /// transition sees.
-    @State private var tab: TabSelection = .conversation
-
-    /// Which tab, by a name both the tab view and the bar's decision can use.
-    private enum TabSelection: Hashable {
-        case conversation
-        case settings
-    }
-
-    /// Whether the selection bar belongs on screen.
-    ///
-    /// The same rule `SessionDetailView` applies to the real bar, kept in one
-    /// place: put away only in a compact width, and only while a conversation is
-    /// open in this tab. On an iPad the listing is still on screen beside the
-    /// conversation, and a session selected by a notification while Settings is
-    /// showing is not a page being pushed from this tab.
-    private var barIsVisible: Bool {
-        guard tab == .conversation else { return true }
-        guard sizeClass == .compact else { return true }
-        return model.selectedSessionId == nil
-    }
-
-    var body: some View {
-        if #available(iOS 26.0, *) {
-            // Reading forward through a long list is what this screen is for, so
-            // the bar steps out of the way and comes back on the way up. It is
-            // the listing behaviour only: a conversation hides the bar outright
-            // (see `SessionDetailView`), because the selector chooses between
-            // the two *places*, and a conversation is a place inside the first
-            // one.
-            tabs.tabBarMinimizeBehavior(.onScrollDown)
-        } else {
-            tabs
+        .sheet(isPresented: $showingHosts) {
+            NavigationStack { HostListView() }
         }
-    }
-
-    private var tabs: some View {
-        TabView(selection: $tab) {
-            Tab("Conversation", systemImage: "bubble.left.and.bubble.right", value: TabSelection.conversation) {
-                MainView()
-            }
-            Tab("Settings", systemImage: "gearshape", value: TabSelection.settings) {
-                SettingsView()
-            }
-        }
-        // Nothing drawn and nothing to touch: it exists to catch the moment the
-        // bar's place in the layout changes, while the bar is still on screen,
-        // and move the bar through it. Drawn over the tab view so the picture of
-        // the bar can be laid in the bar's own place.
-        .overlay {
-            TabBarTransition(barIsVisible: barIsVisible)
-                .frame(width: 0, height: 0)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+        .sheet(isPresented: $showingPairing) {
+            PairingView()
         }
     }
 }

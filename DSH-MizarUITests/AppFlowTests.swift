@@ -534,17 +534,76 @@ final class AppFlowTests: XCTestCase {
         return arguments
     }
 
-    /// Open the settings tab.
+    /// Open the settings, from the gear at the foot of the sidebar.
     ///
-    /// The tab is found by position and never by its label: the label is 设置 in
+    /// Found by identifier and never by its label: the label is 设置 in
     /// Chinese, and a query for "Settings" passes only in one language.
     ///
     /// - Parameter app: the running app.
     private func openSettings(_ app: XCUIApplication) {
-        let tab = app.tabBars.buttons.element(boundBy: 1)
-        let opener = tab.exists ? tab : app.buttons.element(boundBy: 1)
-        expect(opener, "there is no settings tab")
-        opener.tap()
+        openSidebar(app)
+        let gear = app.buttons["sidebar.settings"]
+        expect(gear, "there is no way to the settings")
+        gear.tap()
+    }
+
+    /// Bring the sidebar out, if it is not out already.
+    ///
+    /// Idempotent, because whether it is out depends on how the test launched:
+    /// a launch with nothing selected opens it, and opening a session closes it.
+    /// The new-session row being hittable is the sidebar being in front -- it is
+    /// hidden from the accessibility tree while the conversation covers it.
+    ///
+    /// - Parameter app: the running app.
+    private func openSidebar(_ app: XCUIApplication) {
+        let marker = app.buttons["sessions.new"]
+        if marker.exists, marker.isHittable { return }
+        let toggle = app.buttons["shell.sidebarToggle"]
+        expect(toggle, "there is no way to open the sidebar")
+        toggle.tap()
+        let shown = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND hittable == true"),
+            object: marker,
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [shown], timeout: Self.patience), .completed, "the sidebar did not open")
+    }
+
+    /// Put the list of Macs away.
+    ///
+    /// The sheet closes by itself once a switch has landed, so this only taps
+    /// Done when it is still there.
+    ///
+    /// - Parameter app: the running app.
+    private func closeHosts(_ app: XCUIApplication) {
+        let done = app.buttons["hosts.done"]
+        if done.waitForExistence(timeout: 2) { done.tap() }
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: done)
+        _ = XCTWaiter().wait(for: [gone], timeout: Self.patience)
+    }
+
+    /// Bring one card of the waiting deck to the front.
+    ///
+    /// The dock above the composer shows one request at a time with the others
+    /// stacked behind it; "Next" moves through them.
+    ///
+    /// - Parameters:
+    ///   - element: something only that card holds.
+    ///   - app: the running app.
+    /// - Returns: whether it came forward.
+    @discardableResult
+    private func bringCardForward(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
+        // Existence is the front: the cards behind are drawn as edges only, so
+        // what one holds is not in the tree until it comes forward. Not
+        // hittability -- a long question batch scrolls inside its card, and its
+        // last control can be in front and still below the card's fold.
+        if element.waitForExistence(timeout: 5) { return true }
+        let next = app.buttons["interactions.next"]
+        for _ in 0..<4 {
+            guard next.exists else { break }
+            next.tap()
+            if element.waitForExistence(timeout: 2) { return true }
+        }
+        return element.exists
     }
 
     /// The control for one switch on the settings screen.
@@ -748,13 +807,13 @@ final class AppFlowTests: XCTestCase {
         XCTAssertTrue(appeared, "the app reached neither the pairing screen nor the session list")
     }
 
-    /// The second tab: the four sections, each with something in it.
+    /// The settings: the four sections, each with something in it.
     ///
-    /// Asked for as a bar with "对话" on the left and "设置" on the right, and as
-    /// a settings screen rather than a placeholder. What is asserted is that each
+    /// Opened from the gear at the foot of the sidebar, and asked for as a
+    /// settings screen rather than a placeholder. What is asserted is that each
     /// of the four sections has its control -- the switches, the export button
     /// and the source link -- because a screen can be present and empty.
-    func testTheSecondTabOpensSettings() {
+    func testTheSidebarOpensSettings() {
         let app = launch(session: nil)
         openSettings(app)
         // 通知: the four switches, and the system permission they sit under.
@@ -777,15 +836,12 @@ final class AppFlowTests: XCTestCase {
             revealInSettings(app.descendants(matching: .any)["settings.about.version"], in: app),
             "the about section is missing",
         )
-        // Both tabs, so a bar that switched to a screen it cannot leave would
-        // not pass. Scrolled back to the top first: on iOS 26 the tab bar steps
-        // out of the way while a list is scrolled down, and a tap on a minimised
-        // bar does not switch tabs -- which is correct behaviour, and meant this
-        // test was tapping a bar that had put itself away.
-        for _ in 0..<4 { app.swipeDown() }
-        let conversation = app.tabBars.buttons.element(boundBy: 0)
-        conversation.tap()
-        expect(app.buttons["sessions.new"], "the conversation tab does not come back")
+        // And it can be left, so a sheet that opened over a screen it cannot
+        // close would not pass.
+        let done = app.buttons["settings.done"]
+        expect(done, "the settings cannot be closed")
+        done.tap()
+        expect(app.buttons["sessions.new"], "closing the settings did not go back to the sessions")
     }
 
     /// A switch is a setting, not a picture of one.
@@ -1907,7 +1963,8 @@ final class AppFlowTests: XCTestCase {
     func testAQuestionBatchIsRefusedUntilItIsComplete() {
         let app = launch()
         let submit = app.buttons["question.submit"]
-        expect(submit, "the submit button is missing")
+        // The question sits behind the approval in the dock's deck.
+        XCTAssertTrue(bringCardForward(submit, in: app), "the question never came to the front of the deck")
         // The batch has a single-option question, which is pre-selected, and a
         // multi-option one, which is not. Submitting half a batch would leave
         // the agent waiting on the rest.
@@ -2268,11 +2325,11 @@ final class AppFlowTests: XCTestCase {
             "the first session never reported its history as paged to the end",
         )
 
-        // Back to the list. A phone pushes the conversation over it; an iPad
-        // keeps both columns, so there is nothing to come back from -- and both
-        // are the app's real layouts, and the subject of the state is the same.
-        let back = app.navigationBars.buttons["BackButton"]
-        if back.exists { back.tap() }
+        // Back to the list. On a phone it is under the conversation and comes
+        // out from the toggle; on an iPad it never left. The conversation view
+        // now survives the change of session on both -- only its identity
+        // changes -- which is what makes this a real test of that identity.
+        openSidebar(app)
         expect(demo, "the session list never came back")
 
         // The second session, which has a conversation of its own — different
@@ -2298,41 +2355,48 @@ final class AppFlowTests: XCTestCase {
         )
     }
 
-    /// The selection bar is put away inside a conversation, and comes back.
-    ///
-    /// It chooses between the two screens -- the conversations and the settings
-    /// -- and a conversation is not a third one: it is somewhere inside the
-    /// first. Leaving it up put a second row of controls under a composer that
-    /// already has two of its own.
+    /// The sidebar comes and goes: from the toggle, from a drag, from a tap on
+    /// the conversation pushed aside, and by itself when a session is chosen.
     ///
     /// Opened by tapping, not by `-mizarSelectSession`. The launch argument sets
     /// the selection directly, so a test that used it would be measuring a
     /// screen the operator cannot reach that way.
-    func testTheSelectionBarIsPutAwayInAConversation() {
+    func testTheSidebarOpensAndCloses() {
         let app = launch(session: nil)
-        expect(app.staticTexts["demo"], "the session list never arrived")
-        // There, where it belongs: this is the screen it chooses for.
-        XCTAssertEqual(app.tabBars.buttons.count, 2, "the selection bar is not on the session list")
+        // Nothing selected, so the list is out: it is the only useful thing.
+        let newSession = app.buttons["sessions.new"]
+        expect(newSession, "the sidebar is not out on a launch with nothing selected")
+        XCTAssertEqual(app.tabBars.count, 0, "a tab bar is still drawn")
 
-        app.staticTexts["demo"].tap()
-        let session = app.staticTexts["Mock session"]
-        expect(session, "the session row never appeared")
-        session.tap()
+        // Choosing a session puts the list away.
+        let demo = app.buttons["workspace./Users/you/projects/demo"]
+        let row = sessionRow(in: app, titled: "Mock session", in: "demo")
+        XCTAssertTrue(expand(demo, revealing: row), "the session never appeared under its workspace")
+        row.tap()
         expect(app.textFields["composer.field"], "the conversation never opened")
+        XCTAssertTrue(sidebar(newSession, isOut: false), "the sidebar stayed out over the conversation")
 
-        XCTAssertEqual(app.tabBars.buttons.count, 0, "the selection bar is still in the conversation")
+        // The toggle brings it back, and a tap on the conversation beside it
+        // puts it away again.
+        openSidebar(app)
+        let dismiss = app.buttons["shell.dismissSidebar"]
+        expect(dismiss, "the conversation pushed aside cannot be tapped to come back")
+        dismiss.tap()
+        XCTAssertTrue(sidebar(newSession, isOut: false), "tapping the conversation did not bring it back")
 
-        // And it comes back on the way out, rather than being gone for good.
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(
-            app.staticTexts["demo"].waitForExistence(timeout: Self.patience),
-            "the conversation did not close",
-        )
-        XCTAssertEqual(
-            app.tabBars.buttons.count,
-            2,
-            "the selection bar did not come back on the session list",
-        )
+        // A slow sideways drag across the conversation opens it too. Decided on
+        // distance, not speed: a drag in a test is slow.
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.45))
+        let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.47))
+        start.press(forDuration: 0.05, thenDragTo: finish)
+        XCTAssertTrue(sidebar(newSession, isOut: true), "a sideways drag did not open the sidebar")
+    }
+
+    /// Wait for the sidebar to be out, or away, judged by one of its controls.
+    private func sidebar(_ marker: XCUIElement, isOut: Bool) -> Bool {
+        let format = isOut ? "exists == true AND hittable == true" : "exists == false OR hittable == false"
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate(format: format), object: marker)
+        return XCTWaiter().wait(for: [settled], timeout: Self.patience) == .completed
     }
 
 
@@ -2535,20 +2599,15 @@ final class AppFlowTests: XCTestCase {
         expect(app.buttons["composer.model"], "the picker never closed")
 
         // Back to the list, and to the first Mac.
-        let back = app.navigationBars.buttons.element(boundBy: 0)
-        expect(back, "there is no way back to the session list")
-        back.tap()
+        openSidebar(app)
         expect(app.buttons["sessions.hosts"], "the session list never came back")
         app.buttons["sessions.hosts"].tap()
         let first = app.buttons["host.row.mock-host-0000-4000-8000-000000000000"]
         expect(first, "the first Mac is not in the list")
         first.tap()
-        // Choosing a machine opens it but leaves the list of machines on top:
-        // the row's job is to switch, and the back button is how the operator
-        // gets to the sessions they just switched to.
-        let backToSessions = app.navigationBars.buttons.element(boundBy: 0)
-        expect(backToSessions, "there is no way back from the host list")
-        backToSessions.tap()
+        // Choosing a machine opens it, and the list of machines puts itself
+        // away once the switch has landed.
+        closeHosts(app)
         expect(app.buttons["sessions.hosts"], "the first Mac's session list never arrived")
 
         // A conversation on the first Mac, so its picker -- and therefore its
@@ -2599,8 +2658,7 @@ final class AppFlowTests: XCTestCase {
         let first = app.buttons["host.row.mock-host-0000-4000-8000-000000000000"]
         expect(first, "the first Mac is not in the list")
         first.tap()
-        expect(app.navigationBars.buttons.element(boundBy: 0), "there is no way back from the host list")
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        closeHosts(app)
         XCTAssertTrue(
             app.staticTexts["Mock Mac (fixture)"].waitForExistence(timeout: Self.patience),
             "choosing the first Mac did not open it",
@@ -2737,4 +2795,68 @@ final class AppFlowTests: XCTestCase {
             "the command name is not English: \(englishGoal.label)",
         )
     }
+
+    // MARK: - Redesign
+
+    /// The requests dock above the composer and tuck into a pill while the
+    /// operator types, so the field has the room; the pill brings them back.
+    func testTheDockTucksAwayWhileTyping() {
+        let app = launch()
+        let allow = app.buttons["approval.allowOnce"]
+        expect(allow, "the pending approval is not docked above the composer")
+        let field = app.textFields["composer.field"]
+        expect(field, "the composer is missing")
+        // Docked means above the composer, on screen, without a scroll.
+        XCTAssertLessThan(allow.frame.maxY, field.frame.minY, "the approval is not above the composer")
+        XCTAssertTrue(allow.isHittable, "the docked approval is not on screen")
+
+        field.tap()
+        let tucked = app.buttons["interactions.tucked"]
+        expect(tucked, "typing did not tuck the requests away")
+        XCTAssertFalse(allow.exists && allow.isHittable, "the full card stayed up while typing")
+
+        tucked.tap()
+        expect(app.buttons["approval.allowOnce"], "the pill did not bring the requests back")
+    }
+
+    /// The workspace holding the session on screen opens by itself, so the
+    /// sidebar always says where the operator is.
+    func testTheOpenSessionsWorkspaceIsExpanded() {
+        let app = launch(pending: false)
+        expect(app.textFields["composer.field"], "the session never opened")
+        openSidebar(app)
+        let row = sessionRow(in: app, titled: "Mock session", in: "demo")
+        XCTAssertTrue(row.waitForExistence(timeout: Self.patience), "the open session's workspace stayed folded")
+        // And the others stay as they were: folded.
+        XCTAssertFalse(
+            sessionRow(in: app, titled: "Orphan session", in: "deleted-workspace").exists,
+            "a workspace that holds nothing open was unfolded too",
+        )
+    }
+
+    /// With nothing open, the pane is a place to start: type, send, and a
+    /// session opens with those words as its first prompt.
+    func testTheHomeScreenStartsASessionWithItsFirstPrompt() {
+        let app = launch(session: nil, pending: false, running: false)
+        expect(app.buttons["sessions.new"], "the sidebar never arrived")
+        // Put the list away to reach the pane under it.
+        let dismiss = app.buttons["shell.dismissSidebar"]
+        expect(dismiss, "the pane under the sidebar cannot be reached")
+        dismiss.tap()
+
+        let field = app.textFields["home.field"]
+        expect(field, "the home screen has no composer")
+        expect(app.buttons["home.workspace"], "the home screen does not say where the session will start")
+        field.tap()
+        field.typeText("start something from the phone")
+        let send = app.buttons["home.send"]
+        XCTAssertTrue(send.isEnabled, "send stayed disabled with text in the field")
+        send.tap()
+
+        // A conversation opens, and the prompt reaches it.
+        expect(app.textFields["composer.field"], "sending from home did not open a conversation")
+        let sent = app.staticTexts.matching(NSPredicate(format: "label == %@", "start something from the phone")).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: Self.patience * 2), "the first prompt never reached the new conversation\nHIERARCHY-START\n\(app.debugDescription)\nHIERARCHY-END")
+    }
+
 }

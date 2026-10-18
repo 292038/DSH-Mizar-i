@@ -175,24 +175,65 @@ extension PairedHost: @retroactive Identifiable {
 ///
 /// It says what to do rather than showing an empty list, and it is the whole of
 /// the first-run experience: there is nothing else this app can usefully do
-/// without a machine on the other end.
+/// without a machine on the other end. Drawn in the icon's own navy, with the
+/// mark sending its signal up and out -- looking for a Mac to answer it.
 struct UnpairedView: View {
+    @State private var showingPairing = false
+
     var body: some View {
-        NavigationStack {
-            ContentUnavailableView {
-                Label("No Mac paired yet", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
-            } description: {
+        ZStack {
+            LinearGradient(
+                colors: [Theme.navy, Theme.navyDeep],
+                startPoint: .top,
+                endPoint: .bottom,
+            )
+            .ignoresSafeArea()
+            RadialGradient(
+                colors: [Color.accentColor.opacity(0.22), .clear],
+                center: .init(x: 0.5, y: 0.34),
+                startRadius: 10,
+                endRadius: 320,
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                Spacer()
+                MizarMarkSearching(accent: Color(red: 0.235, green: 0.796, blue: 0.957), ink: .white)
+                    .frame(width: 112)
+                    .padding(.bottom, 36)
+                Text("No Mac paired yet")
+                    .font(.largeTitle.weight(.bold))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
                 Text("Open DSH on your Mac, find the DSH-Mizar panel in the sidebar, and scan the code it shows.")
-            } actions: {
-                NavigationLink {
-                    PairingView()
+                    .font(.body)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 12)
+                    .padding(.horizontal, 36)
+                Spacer()
+                Button {
+                    showingPairing = true
                 } label: {
-                    Text("Scan the code")
+                    Label("Scan the code", systemImage: "qrcode.viewfinder")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
+                .controlSize(.extraLarge)
+                .padding(.horizontal, 28)
                 .accessibilityIdentifier("unpaired.scan")
+                Text("There are no other steps.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.5))
+                    .padding(.top, 14)
+                    .padding(.bottom, 12)
             }
-            .navigationTitle("DSH-Mizar")
+        }
+        .environment(\.colorScheme, .dark)
+        .sheet(isPresented: $showingPairing) {
+            PairingView()
         }
     }
 }

@@ -57,6 +57,18 @@ public struct CachedConversation: Codable, Sendable, Equatable {
     ///
     /// Optional so a cache written before this existed still decodes.
     public let stats: SessionStatsFrame?
+    /// The highest log position this phone actually holds.
+    ///
+    /// Not the same as ``throughSeq``, which is the cut a page was taken at. The
+    /// host's byte budget can trim older records out of that window, so a cutoff
+    /// says what was asked for, while this says what arrived. It is what the
+    /// phone claims when it asks for only new records — claiming more than it
+    /// holds is how a conversation ends up with its middle missing.
+    ///
+    /// Optional so a cache written before it existed still decodes; a `nil` here
+    /// makes the next request say nothing at all rather than make a claim nobody
+    /// can stand behind.
+    public let deliveredSeq: Int?
 
     public init(
         sessionId: String,
@@ -67,10 +79,12 @@ public struct CachedConversation: Codable, Sendable, Equatable {
         turns: [ConversationTurn]? = nil,
         oldestSeq: Int? = nil,
         stats: SessionStatsFrame? = nil,
+        deliveredSeq: Int? = nil,
     ) {
         self.turns = turns
         self.oldestSeq = oldestSeq
         self.stats = stats
+        self.deliveredSeq = deliveredSeq
         self.sessionId = sessionId
         self.items = items
         self.throughSeq = throughSeq

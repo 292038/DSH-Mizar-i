@@ -42,60 +42,72 @@ struct FirstLoadView: View {
     let progress: AppModel.SyncProgress?
 
     var body: some View {
-        VStack(spacing: 22) {
-            Image(systemName: "arrow.down.circle")
-                .font(.system(size: 44, weight: .light))
-                .foregroundStyle(.tint)
+        VStack(spacing: 26) {
+            // The mark fills as the history arrives: an arc for each third, the
+            // signal getting stronger, rather than a bar that says nothing about
+            // what is arriving. Searching, before there is a count to fill by.
+            Group {
+                if let progress, progress.total > 0 {
+                    MizarMark(lit: 0.35 + 2.65 * progress.fraction)
+                        .animation(.mizarGentle, value: progress.fraction)
+                } else {
+                    MizarMarkSearching()
+                }
+            }
+            .frame(width: 96)
 
-            VStack(spacing: 6) {
+            VStack(spacing: 8) {
                 Text("Setting up")
-                    .font(.title2.weight(.semibold))
+                    .font(.title.weight(.bold))
                     .accessibilityIdentifier("firstload.title")
                 Text("Downloading this Mac's conversations, so they are here when the network is not.")
-                    .font(.subheadline)
+                    .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
 
             if let progress, progress.total > 0 {
-                ProgressView(value: progress.fraction)
-                    .progressViewStyle(.linear)
-                VStack(spacing: 4) {
+                VStack(spacing: 6) {
                     Text("Syncing \(progress.completed) of \(progress.total)")
-                        .font(.callout.weight(.medium))
+                        .font(.headline)
                         .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .animation(.mizarSnappy, value: progress.completed)
                         .accessibilityIdentifier("firstload.counter")
                     Text(progress.current.isEmpty ? "…" : progress.current)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    // Ticked rather than computed once. An estimate is
-                    // arithmetic on the clock, and a screen that only re-reads
-                    // it when the next session finishes sits on a number that is
-                    // wrong for as long as the slowest session takes -- which on
-                    // a relay is minutes, and is exactly when somebody is
-                    // watching it.
+                        .contentTransition(.opacity)
+                        .animation(.mizarSmooth, value: progress.current)
+                    // Ticked rather than computed once: an estimate is arithmetic
+                    // on the clock, and a screen that only re-reads it when the
+                    // next session finishes sits on a number that is wrong.
                     if progress.remaining != nil {
                         TimelineView(.periodic(from: .now, by: 1)) { _ in
                             Text("About \(spellDuration(progress.remaining ?? 0)) left")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .monospacedDigit()
+                                .contentTransition(.numericText(countsDown: true))
                                 .accessibilityIdentifier("firstload.eta")
                         }
+                        .transition(.rise)
                     }
                 }
+                .transition(.rise)
             } else {
-                // No count yet. A determinate bar at zero would be a claim that
-                // nothing has happened; this says only that something is.
-                ProgressView()
+                // No count yet. A count at zero would be a claim that nothing
+                // has happened; this says only that something is.
                 Text("Looking for sessions…")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .transition(.opacity)
             }
         }
         .padding(36)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.mizarSmooth, value: progress?.total ?? 0)
     }
 }
 
@@ -117,11 +129,14 @@ struct SyncProgressSheet: View {
         NavigationStack {
             VStack(spacing: 16) {
                 if let progress, progress.total > 0 {
-                    ProgressView(value: progress.fraction)
-                        .progressViewStyle(.linear)
+                    MizarMark(lit: 0.35 + 2.65 * progress.fraction)
+                        .frame(width: 56)
+                        .animation(.mizarGentle, value: progress.fraction)
                     Text("Syncing \(progress.completed) of \(progress.total)")
                         .font(.headline)
                         .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .animation(.mizarSnappy, value: progress.completed)
                         .accessibilityIdentifier("sync.counter")
                     Text(progress.current.isEmpty ? "…" : progress.current)
                         .font(.caption)
@@ -159,6 +174,7 @@ struct SyncProgressSheet: View {
                 } else {
                     Label("Up to date", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
+                        .symbolEffect(.bounce, options: .nonRepeating)
                     Text("Every conversation on this Mac is stored on this phone.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -189,6 +205,7 @@ struct SyncProgressSheet: View {
         // Tall enough for the figures first and the workspace count last: the
         // sheet grew a line when that count arrived, and a detent that clips the
         // last line is a line nobody reads.
-        .presentationDetents([.height(280)])
+        .presentationDetents([.height(300)])
+        .animation(.mizarSmooth, value: progress?.total ?? -1)
     }
 }

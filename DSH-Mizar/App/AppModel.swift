@@ -1364,19 +1364,51 @@ final class AppModel {
     ///
     /// - Parameter cwd: the directory to work in.
     /// - Returns: the new session's id, or `nil` when the host refused.
-    func createSession(cwd: String) async -> String? {
+    func createSession(cwd: String, select: Bool = true) async -> String? {
         guard let connection else { return nil }
         let payload = JSONValue.object(["cwd": .string(cwd)])
         do {
             let result = try await loggedCall("session.create", payload: payload, on: connection, as: CreateSessionResult.self)
             await refreshSessions()
-            selectedSessionId = result.sessionId
+            if select { selectedSessionId = result.sessionId }
             return result.sessionId
         } catch {
             phase = .failed(Self.describe(error, authority: host?.authority))
             return nil
         }
     }
+
+    /// Start a session in a directory and give it its first prompt, in that
+    /// order, before opening it.
+    ///
+    /// The order is the point. Selecting the session first -- which is what
+    /// `createSession` does -- swaps the screen the operator typed on for the
+    /// conversation while the send is still in flight, and the screen that was
+    /// going to watch for the prompt arriving is gone. Sent first, the prompt is
+    /// left in ``pendingFirstPrompt`` for the conversation to pick up and watch
+    /// for itself.
+    ///
+    /// - Parameters:
+    ///   - cwd: the directory to work in.
+    ///   - prompt: what to say first.
+    /// - Returns: the new session's id, or `nil` when the host refused either.
+    @discardableResult
+    func startSession(cwd: String, prompt: String) async -> String? {
+        guard let sessionId = await createSession(cwd: cwd, select: false) else { return nil }
+        guard await sendPrompt(prompt, to: sessionId) else {
+            // The session exists and is empty; open it so the operator can see
+            // it and try again from there, with their words still to hand.
+            selectedSessionId = sessionId
+            return nil
+        }
+        pendingFirstPrompt[sessionId] = prompt
+        selectedSessionId = sessionId
+        return sessionId
+    }
+
+    /// The first prompt of a session started from the home screen, waiting for
+    /// its conversation to open and watch for it. Taken once.
+    var pendingFirstPrompt: [String: String] = [:]
 
     /// Ask the host to stop the current turn.
     func cancelTurn(sessionId: String) async {
@@ -2043,6 +2075,9 @@ final class AppModel {
                     turns: mergeTurns(cached: known.turns ?? [], fresh: result.conversationTurns()),
                     oldestSeq: [before, reached].compactMap { $0 }.min(),
                     stats: known.stats,
+                    // Carried forward: paging backwards delivers older records,
+                    // which cannot raise the highest position the phone holds.
+                    deliveredSeq: known.deliveredSeq,
                 )
             }
             lastError = nil
@@ -2156,8 +2191,27 @@ final class AppModel {
     /// - Returns: the items now known, oldest first.
     @discardableResult
     func syncConversation(for sessionId: String) async -> [ConversationItem] {
+        // What this phone holds decides what the host sends. A refresh used to
+        // download the whole tail every time -- the phone already had every
+        // record and paid for them again on every pull, reconnect and poll.
+        let known = await conversations.load(sessionId: sessionId)
+        let cursor: SessionMessagesCursor
+        if let held = known?.deliveredSeq {
+            cursor = .after(held)
+        } else if known == nil {
+            // Nothing stored at all. Said explicitly rather than left to the
+            // host's memory: a reinstall keeps the device token -- the Keychain
+            // survives the app -- but not the cache, and the host would then
+            // answer a phone with nothing with only what it sent after the
+            // reinstall.
+            cursor = .empty
+        } else {
+            // A cache written before positions were stored: it holds records but
+            // cannot say through where. Neither claim is true, so make neither.
+            cursor = .unstated
+        }
         do {
-            let result = try await messages(sessionId: sessionId)
+            let result = try await messages(sessionId: sessionId, afterSeq: cursor)
             let fresh = result.conversationItems()
             let freshTurns = result.conversationTurns()
             let older = result.oldestSeq
@@ -2184,6 +2238,12 @@ final class AppModel {
                     // Carried forward: this write replaces the whole file, and
                     // dropping the frame here would undo the cache above.
                     stats: cached?.stats,
+                    // Advanced, never replaced: the page starts at a position
+                    // newer than what is stored, and the highest position this
+                    // phone has seen is the only thing it may claim next time.
+                    deliveredSeq: [cached?.deliveredSeq, result.newestDeliveredSeq]
+                        .compactMap { $0 }
+                        .max(),
                 )
             }
             lastError = nil
@@ -2249,6 +2309,7 @@ final class AppModel {
                 turns: existing?.turns,
                 oldestSeq: existing?.oldestSeq,
                 stats: frame,
+                deliveredSeq: existing?.deliveredSeq,
             )
         }
     }
@@ -2260,7 +2321,12 @@ final class AppModel {
     func conversation(for sessionId: String) async -> [ConversationItem] {
         guard connection != nil else { return [] }
         do {
-            let result = try await messages(sessionId: sessionId)
+            // A full tail on purpose: this returns items to draw without folding
+            // them into the cache, so it holds nothing to make an incremental
+            // claim from. `.empty` keeps it that way even when the host has
+            // already delivered a page to this device for a cache this path does
+            // not read.
+            let result = try await messages(sessionId: sessionId, afterSeq: .empty)
             lastError = nil
             return result.conversationItems()
         } catch {
@@ -2286,12 +2352,14 @@ final class AppModel {
     /// - Parameters:
     ///   - sessionId: the session to read.
     ///   - beforeSeq: the log position to page back from, when paging.
+    ///   - afterSeq: what this phone already holds; only newer records travel.
     ///   - maxMessages: how much to ask for first.
     /// - Returns: the page.
     /// - Throws: the host's failure, when asking for less did not help either.
     private func messages(
         sessionId: String,
         beforeSeq: Int? = nil,
+        afterSeq: SessionMessagesCursor = .unstated,
         maxMessages: Int = 200,
     ) async throws -> SessionMessagesResult {
         var ask = maxMessages
@@ -2303,6 +2371,9 @@ final class AppModel {
                 "maxMessages": .number(Double(ask)),
             ]
             if let beforeSeq { fields["beforeSeq"] = .number(Double(beforeSeq)) }
+            // `.unstated` leaves the key out on purpose: the host may then answer
+            // from what it has already delivered to this device.
+            if let cursor = afterSeq.fieldValue { fields["afterSeq"] = cursor }
             do {
                 return try await call(
                     "session.messages",

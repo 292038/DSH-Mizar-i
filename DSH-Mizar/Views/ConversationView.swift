@@ -4,12 +4,16 @@
 //
 //  What was said, and how long the agent took over it.
 //
-//  A turn is drawn, not folded. The host used to send a whole transcript --
-//  every step, every tool call, every streaming attempt -- and the screen folded
-//  it behind a summary bar. It now sends a *summary* instead: the prompt, the
-//  turn's markers, and the model's last message of the turn, with the per-step
-//  narration left out entirely. There is nothing left to expand, so the bar is a
-//  plain row and the answer sits under it.
+//  Two voices, drawn differently on purpose. The operator's words are a bubble
+//  in the accent, on the right: short, theirs, and easy to find when scrolling
+//  back for "what did I ask". The agent's answer is not a bubble at all -- it is
+//  the page, full width, set like text to be read, because that is what it is:
+//  long, structured, and the reason the screen exists.
+//
+//  A turn is drawn, not folded. The host sends a *summary* of each turn -- the
+//  prompt, the turn's markers, and the model's last message -- with the per-step
+//  narration left out entirely, so there is nothing to expand: the row says how
+//  it went and the answer sits under it.
 //
 //  A failed turn gets the most prominent treatment of anything here. It is the
 //  one state where the agent looks busy and is in fact doing nothing.
@@ -42,24 +46,15 @@ struct ConversationView: View {
     ///
     /// The sentinel sits at the very top of the log and older messages are
     /// inserted *below* it, so it never leaves the screen and never re-appears.
-    /// That is what made loading flaky: `onAppear` fires once for the life of
-    /// the view, so the second page was never asked for unless the operator
-    /// happened to tap. Re-driving on `items.count` fixes that, and the counter
-    /// is what stops it from draining a fifty-page history in one go while the
-    /// operator is looking at the top of it.
+    /// Re-driving on `items.count` keeps it asking, and the counter is what
+    /// stops it from draining a fifty-page history in one go while the operator
+    /// is looking at the top of it.
     @State private var automaticPages = 0
     private static let automaticPageLimit = 3
-    /// Below the sentinel, and where the view scrolls on open.
+    /// Below the last row, and where the view scrolls on open.
     static let bottomAnchor = "conversation.bottom"
 
     /// Ask for the page before this one, once.
-    ///
-    /// `loadingOlder` is a real gate, not a hint: the sentinel, the tap and the
-    /// appearance hook can all fire while one request is in flight.
-    ///
-    /// - Parameters:
-    ///   - fetch: the parent's loader.
-    ///   - automatic: whether this was the view asking on its own.
     private func fetchOlder(_ fetch: () async -> Int?, automatic: Bool = false) async {
         guard !loadingOlder else { return }
         if automatic, automaticPages >= Self.automaticPageLimit { return }
@@ -73,91 +68,92 @@ struct ConversationView: View {
     }
 
     var body: some View {
-        // Lazy, not eager. A conversation can hold hundreds of items and every
-        // one of them was being laid out whether or not it was on screen, which
-        // is what the dropped frames were.
-        LazyVStack(alignment: .leading, spacing: 10) {
-            // The top of the list is where older messages arrive.
-            //
-            // Always a visible row, never a bare spinner. The shipped version was
-            // a spinner whose *appearance* was the only trigger, and when it
-            // returned without fetching it stayed mounted -- so the trigger had
-            // already fired and never fired again. The feature went quiet for the
-            // rest of the view's life with nothing on screen to say so, which is
-            // why loading worked sometimes and not others. A row that can be
-            // tapped cannot fail that way.
+        // Lazy, not eager: a conversation can hold hundreds of items.
+        LazyVStack(alignment: .leading, spacing: 14) {
             if !exhausted, let onLoadOlder, !items.isEmpty {
-                Button {
-                    Task { await fetchOlder(onLoadOlder) }
-                } label: {
-                    HStack {
-                        Spacer()
-                        if loadingOlder {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text("Load earlier messages")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    .frame(minHeight: 28)
-                    .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("conversation.loadOlder")
-                // Keyed on the item count, not on appearance. Older messages
-                // arrive *below* this row, so the row never disappears and
-                // `onAppear` would fire exactly once -- which is the flakiness:
-                // one page loaded, the rest needed a tap nobody knew to make.
-                // Each page changes the count, so each page re-arms the ask.
-                .task(id: items.count) {
-                    await fetchOlder(onLoadOlder, automatic: true)
-                }
-                .onDisappear {
-                    // Scrolled away. Someone who comes back to the top is asking
-                    // again, and the automatic allowance should be theirs.
-                    automaticPages = 0
-                }
+                loadOlderRow(onLoadOlder)
             }
 
             if loading && items.isEmpty {
-                ProgressView().frame(maxWidth: .infinity)
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 80)
             } else if items.isEmpty, let failure {
-                // Not "this session has no messages". That is a statement about
-                // the operator's session, and it was being made out of a request
-                // that never came back -- suspension cancels whatever is in
-                // flight, so on a phone this is ordinary.
+                // Not "this session has no messages": that is a statement about
+                // the operator's session, made out of a request that never came
+                // back -- and on a phone that is ordinary.
                 ContentUnavailableView {
                     Label("Could not load the conversation", systemImage: "exclamationmark.triangle")
                 } description: {
                     Text(failure)
                 }
+                .transition(.rise)
             } else if items.isEmpty {
                 ContentUnavailableView(
                     "Nothing yet",
                     systemImage: "bubble.left.and.bubble.right",
                     description: Text("This session has no messages."),
                 )
+                .transition(.rise)
             } else if turns.isEmpty {
                 ForEach(items) { item in
-                    ConversationRow(item: item)
+                    ConversationRow(item: item, isLastPrompt: false)
+                        .transition(.rise)
                 }
             } else {
-                // One row per turn rather than one per message. A prompt that
-                // took eleven steps arrived as eleven bubbles and read as the
-                // model talking to itself; DSH groups them and so does this.
                 ForEach(turns) { turn in
                     TurnSection(turn: turn)
+                        .transition(.rise)
                 }
             }
 
-            // Where the view scrolls to on open. A conversation is read from the
-            // bottom, so anything else means opening a session lands you in the
-            // middle of an argument you then have to scroll out of.
+            // Where the view scrolls to on open.
             Color.clear
                 .frame(height: 1)
                 .id(Self.bottomAnchor)
+        }
+    }
+
+    /// The top of the list, where older messages arrive.
+    ///
+    /// Always a visible row, never a bare spinner: a spinner whose appearance
+    /// was the only trigger went quiet for good the first time it returned
+    /// without fetching. A row that can be tapped cannot fail that way.
+    private func loadOlderRow(_ onLoadOlder: @escaping () async -> Int?) -> some View {
+        Button {
+            Task { await fetchOlder(onLoadOlder) }
+        } label: {
+            HStack(spacing: 6) {
+                if loadingOlder {
+                    ProgressView().controlSize(.mini)
+                        .transition(.pop)
+                } else {
+                    Image(systemName: "arrow.up")
+                        .font(.caption2.weight(.bold))
+                        .transition(.pop)
+                }
+                Text("Load earlier messages")
+                    .font(.caption.weight(.medium))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .frame(height: 30)
+            .liquidCapsule(interactive: true)
+            .animation(.mizarSnappy, value: loadingOlder)
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .accessibilityIdentifier("conversation.loadOlder")
+        // Keyed on the item count, not on appearance: older messages arrive
+        // below this row, so it never disappears and `onAppear` would fire
+        // exactly once. Each page changes the count, so each page re-arms it.
+        .task(id: items.count) {
+            await fetchOlder(onLoadOlder, automatic: true)
+        }
+        .onDisappear {
+            // Scrolled away. Someone who comes back to the top is asking again,
+            // and the automatic allowance should be theirs.
+            automaticPages = 0
         }
     }
 }
@@ -168,116 +164,99 @@ private struct TurnSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(turn.prompts) { item in
-                ConversationRow(item: item)
+            ForEach(Array(turn.prompts.enumerated()), id: \.element.id) { index, item in
+                ConversationRow(item: item, isLastPrompt: index == turn.prompts.count - 1)
             }
 
-            // The order is prompt, row, answer, and the row does not move.
-            //
-            // This shape took three attempts to land on, and each wrong one is
-            // worth naming so it is not rebuilt:
-            //
-            //   first    the answer was drawn above the bar while the detail was
-            //            folded, so a tap removed a bubble from directly above
-            //            the bar and the bar jumped upward under the operator's
-            //            finger;
-            //   then     everything moved inside the disclosure, which kept the
-            //            bar still but hid the answer behind a tap -- the one
-            //            thing a monitoring app must not do;
-            //   now      the bar sits under the prompt and the answer sits under
-            //            the bar, always, for every turn. Nothing is behind a tap
-            //            because there is nothing left to put there.
-            //
-            // A running turn has no answer, and that is the transport's doing
-            // rather than this view's: the host sends the model's last message
-            // of a *finished* turn and nothing at all for one still going, so
-            // there is no half-streamed reply to mistake for a conclusion.
+            // Prompt, row, answer -- and the row does not move. The answer was
+            // once drawn above the row and once hidden inside it; both made the
+            // row jump or hid the one thing a monitoring app must show.
             TurnSummary(turn: turn)
-                // The row's identity on the row, not inside it. These are loose
-                // `Text`s in an `HStack`, so an identifier on one of them would
-                // make that one text the handle and leave the others unaddressable
-                // -- the state, the clock and the count are all the same row.
+                // The row's identity on the row, not inside it: the state, the
+                // clock and the count are all the same row.
                 .accessibilityIdentifier("turn.\(turn.id)")
 
-            // The answer, and for a failed turn the card that says there was
-            // none. Drawn from what the turn holds: the host sends one message
-            // per finished turn and nothing for a running one.
             ForEach(turn.steps) { item in
-                ConversationRow(item: item)
+                ConversationRow(item: item, isLastPrompt: false)
+                    .transition(.rise(distance: 14, blur: 6))
             }
         }
+        .animation(.mizarSmooth, value: turn.steps.count)
     }
 }
 
-/// "DeepSeeking for 2m 14s", "Completed in 2m 14s", or why it did not.
+/// "DeepSeeking for 2 min 14 s", "Completed in 2 min 14 s", or why it did not.
 private struct TurnSummary: View {
     let turn: ConversationTurn
 
     var body: some View {
-        HStack(spacing: 6) {
-            if turn.isRunning {
-                // A spinner rather than a glyph: this bar is the answer to "is
-                // it still working", and motion says that without being read.
-                ProgressView().controlSize(.mini)
-            } else {
-                Image(systemName: turn.failed ? "exclamationmark.triangle" : "checkmark.circle")
-                    .font(.caption)
-                    .foregroundStyle(turn.failed ? .orange : .secondary)
+        HStack(spacing: 7) {
+            // The state, as a glyph that changes rather than appears: the twin
+            // star while it works, settling into a tick when it is done.
+            ZStack {
+                if turn.isRunning {
+                    TwinStar(size: 13)
+                        .transition(.pop)
+                } else {
+                    Image(systemName: turn.failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(turn.failed ? Theme.waiting : Theme.running)
+                        .symbolRenderingMode(.hierarchical)
+                        .transition(.pop)
+                }
             }
+            .frame(width: 16, height: 16)
+
             headline
-            Spacer()
-            // Only when the log actually said. The host sends a `step/start`
-            // marker per step and those markers are tiny, so the count is
-            // normally there -- but a turn whose markers were trimmed away by
-            // the pager shows no number rather than the zero it would otherwise
-            // be counted as. "No steps" is a claim about the turn, and this row
-            // is not the place to make one out of a missing record.
+            Spacer(minLength: 8)
+            // Only when the log actually said. A turn whose markers were trimmed
+            // away by the pager shows no number rather than a zero it would be
+            // counted as -- "no steps" is a claim this row cannot make.
             if let stepCount = turn.stepCount, stepCount > 0 {
                 Text("\(stepCount) steps")
-                    .font(.caption2)
+                    .font(.caption2.monospacedDigit())
                     .foregroundStyle(.tertiary)
+                    .contentTransition(.numericText())
             }
         }
+        .padding(.vertical, 2)
+        .animation(.mizarBouncy, value: turn.isRunning)
+        .animation(.mizarSnappy, value: turn.stepCount)
+        // One small tap when a turn the operator is watching finishes. Only on
+        // the change, never on the first draw of a finished turn.
+        .mizarFeedback(.success, trigger: turn.isRunning) { old, new in old && !new && !turn.failed }
     }
 
     /// The state of the turn, and for a running one a clock that moves.
     ///
-    /// Ticked locally rather than by re-reading the session. The host's answer
-    /// already said when the turn started, and the difference between that and
-    /// now is arithmetic the phone can do for itself -- a screen that asked the
-    /// Mac for the time every second would be a screen that stopped telling the
-    /// time whenever the link hiccuped, which on a phone is constant.
+    /// One `Text` -- the headline is the row's whole statement, and it is read
+    /// as one sentence. Ticked locally rather than by asking the Mac: the host
+    /// already said when the turn started.
     @ViewBuilder private var headline: some View {
         if turn.isRunning, turn.beganAt != nil {
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                // Through `elapsed(asOf:)` rather than by subtracting two dates
-                // here. The turn's start came off the host's clock and
-                // `context.date` is the phone's, so a Mac running a few seconds
-                // ahead -- a clock that drifted, a phone that has not synced --
-                // put the start in the future and the row read "DeepSeeking for
-                // -3 s". The kit's rule for exactly this is to clamp at zero.
+                // Through `elapsed(asOf:)`, which clamps at zero: the start came
+                // off the host's clock and `context.date` is the phone's.
                 let running = turn.elapsed(asOf: context.date) ?? 0
-                Text(
-                    String(
-                        format: String(localized: "DeepSeeking for %@"),
-                        Self.spell(running),
-                    ),
-                )
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+                Text(String(format: String(localized: "DeepSeeking for %@"), Self.spell(running)))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.numericText(countsDown: false))
+                    .animation(.mizarSnappy, value: Int(running))
+                    .shimmering()
             }
         } else {
             Text(staticHeadline)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
+                .contentTransition(.interpolate)
         }
     }
 
     /// The headline for a turn whose text does not change.
     private var staticHeadline: String {
         // A turn with a number and no end is running; this case is reached when
-        // it also has no start to measure from, which is what a page cut across
-        // a turn looks like.
+        // it also has no start to measure from.
         if turn.isRunning { return String(localized: "DeepSeeking") }
         if turn.failed {
             return turn.duration.map {
@@ -290,55 +269,47 @@ private struct TurnSummary: View {
     }
 
     /// Minutes and seconds, because that is the unit a turn is measured in.
-    /// - Parameter seconds: the duration.
-    /// - Returns: the duration as words.
     static func spell(_ seconds: TimeInterval) -> String {
         let total = Int(seconds.rounded())
         if total < 60 { return String(format: String(localized: "%lld s"), total) }
-        return String(
-            format: String(localized: "%lld min %lld s"),
-            total / 60,
-            total % 60,
-        )
+        return String(format: String(localized: "%lld min %lld s"), total / 60, total % 60)
     }
 }
 
 /// One item, drawn by kind.
 private struct ConversationRow: View {
     let item: ConversationItem
+    /// Whether this is the last of the operator's messages before the agent
+    /// answers, which is the bubble that carries the tail.
+    let isLastPrompt: Bool
 
     var body: some View {
         switch item {
-        case .message(let id, let role, let text, _):
-            MessageBubble(id: id, role: role, text: text)
-        case .failure(_, let message, _):
-            FailureCard(message: message)
+        case .message(_, .user, let text, _):
+            UserBubble(text: text, tail: isLastPrompt)
+        case .message(_, .assistant, let text, _):
+            AgentText(text: text)
+        case .message(_, .system, let text, _):
+            SystemNote(text: text)
+        case .failure(_, let message, let at):
+            FailureCard(message: message, at: at)
         }
     }
 }
 
-/// One message.
-private struct MessageBubble: View {
+// MARK: - Messages
+
+/// Markdown, when the text has any.
+enum MessageMarkdown {
     /// The message as Markdown, falling back to plain text.
     ///
-    /// An agent answers in Markdown -- bold, lists, `code`, fenced blocks -- and
-    /// showing it raw puts asterisks and backticks on screen where formatting
-    /// belongs. Agents write in it constantly, so this is the common case rather
-    /// than a nicety.
-    ///
     /// Three attempts, narrowest last, because `AttributedString` refuses a
-    /// string it cannot parse and a half-streamed answer is exactly that: an
-    /// unterminated code fence fails `.full`, so it is retried as inline-only,
-    /// and plain text is the floor. Something readable beats nothing.
-    ///
-    /// - Parameter text: the message.
-    /// - Returns: the attributed string to draw.
-    static func markdown(_ text: String) -> AttributedString? {
-        guard Self.looksLikeMarkdown(text) else { return nil }
-        if let full = try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .full),
-        ) {
+    /// string it cannot parse and a half-finished answer is exactly that: an
+    /// unterminated code fence fails `.full`, so it is retried inline-only, and
+    /// plain text is the floor.
+    static func parse(_ text: String) -> AttributedString? {
+        guard looksLikeMarkdown(text) else { return nil }
+        if let full = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .full)) {
             return full
         }
         return try? AttributedString(
@@ -347,78 +318,186 @@ private struct MessageBubble: View {
         )
     }
 
-    /// Whether a string carries Markdown worth parsing.
-    ///
     /// Cheap and deliberately narrow: a false negative shows backticks, a false
-    /// positive costs a parse. Anything without one of these characters is a
-    /// sentence, and a sentence needs no parser.
-    ///
-    /// - Parameter text: the message.
-    /// - Returns: whether to parse it.
+    /// positive costs a parse.
     static func looksLikeMarkdown(_ text: String) -> Bool {
         text.contains("**") || text.contains("`") || text.contains("\n# ")
             || text.contains("\n- ") || text.contains("\n* ") || text.contains("\n1. ")
             || text.contains("](") || text.contains("\n> ") || text.contains("\n```")
     }
+}
 
-    let id: String
-    let role: ConversationItem.Role
+/// Selectable text, Markdown or plain.
+///
+/// The Markdown form carries the raw text as its accessibility label, so what
+/// VoiceOver reads -- and what a test finds -- is what was said, not the
+/// rendering of it.
+private struct MessageText: View {
     let text: String
 
     var body: some View {
-        HStack {
-            if role == .user { Spacer(minLength: 40) }
-            VStack(alignment: .leading, spacing: 4) {
-                if role == .system {
-                    Text("system")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                if let formatted = Self.markdown(text) {
-                    Text(formatted)
-                        .textSelection(.enabled)
-                        .accessibilityLabel(text)
-                } else {
-                    // Plain text stays plain. Running it through the Markdown
-                    // parser would produce an identical string and a different
-                    // view, and the common case deserves the cheaper one.
-                    Text(text)
-                        .textSelection(.enabled)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(background, in: RoundedRectangle(cornerRadius: 14))
-            .foregroundStyle(role == .user ? .white : .primary)
-            if role != .user { Spacer(minLength: 40) }
+        if let formatted = MessageMarkdown.parse(text) {
+            Text(formatted)
+                .textSelection(.enabled)
+                .accessibilityLabel(text)
+        } else {
+            Text(text)
+                .textSelection(.enabled)
         }
     }
+}
 
-    private var background: Color {
-        switch role {
-        case .user: .accentColor
-        case .assistant: Color(.secondarySystemBackground)
-        case .system: Color(.tertiarySystemBackground)
+/// The operator's words.
+private struct UserBubble: View {
+    let text: String
+    /// Whether the corner nearest the answer tightens, the quiet tail that says
+    /// "this is the message that was answered".
+    let tail: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 56)
+            MessageText(text: text)
+                .foregroundStyle(Theme.onAccent)
+                .tint(Theme.onAccent)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background {
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: Theme.Radius.lg,
+                        bottomLeadingRadius: Theme.Radius.lg,
+                        bottomTrailingRadius: tail ? 6 : Theme.Radius.lg,
+                        topTrailingRadius: Theme.Radius.lg,
+                        style: .continuous,
+                    )
+                    .fill(Color.accentColor.gradient)
+                }
         }
+    }
+}
+
+/// The agent's answer: the page, not a bubble.
+private struct AgentText: View {
+    let text: String
+
+    var body: some View {
+        MessageText(text: text)
+            .font(.body)
+            .lineSpacing(4)
+            .foregroundStyle(.primary)
+            // A readable measure on a wide screen; edge to edge on a phone.
+            .frame(maxWidth: 680, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 2)
+    }
+}
+
+/// What the system said, as an aside.
+private struct SystemNote: View {
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("system")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            MessageText(text: text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
     }
 }
 
 /// A turn that produced nothing.
 private struct FailureCard: View {
     let message: String
+    /// When the turn failed. Only a failure that just happened shakes: one
+    /// scrolled back into view is news nobody needs announced twice.
+    let at: Date
+    @State private var shakes = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("The turn ended without a response", systemImage: "exclamationmark.triangle.fill")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.red)
+                .foregroundStyle(Theme.failed)
             Text(message)
                 .font(.caption)
                 .textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-        .background(.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
-        .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.red.opacity(0.30)) }
+        .padding(14)
+        .background(Theme.failed.opacity(0.09), in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
+                .strokeBorder(Theme.failed.opacity(0.28), lineWidth: 1)
+        }
+        // A small shake when it first comes on screen: two swings of four points,
+        // the "no" of a head being shaken. Still under Reduce Motion.
+        .keyframeAnimator(initialValue: CGFloat(0), trigger: shakes) { content, x in
+            content.offset(x: x)
+        } keyframes: { _ in
+            KeyframeTrack {
+                CubicKeyframe(4, duration: 0.07)
+                CubicKeyframe(-4, duration: 0.1)
+                CubicKeyframe(3, duration: 0.1)
+                CubicKeyframe(-2, duration: 0.09)
+                CubicKeyframe(0, duration: 0.09)
+            }
+        }
+        .onAppear {
+            guard !Motion.reduced, Date().timeIntervalSince(at) < 20 else { return }
+            shakes += 1
+        }
+    }
+}
+
+// MARK: - Shimmer
+
+extension View {
+    /// A band of light sweeping across, for text that is still being worked on.
+    ///
+    /// Drawn over the content and masked by it, so the content itself -- and
+    /// what it says to VoiceOver -- is untouched.
+    func shimmering(active: Bool = true) -> some View {
+        modifier(Shimmer(active: active))
+    }
+}
+
+private struct Shimmer: ViewModifier {
+    let active: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        if active && !reduceMotion {
+            content
+                .overlay {
+                    GeometryReader { geometry in
+                        let width = geometry.size.width
+                        LinearGradient(
+                            colors: [.clear, Color.accentColor.opacity(0.95), .white.opacity(0.9), Color.accentColor.opacity(0.95), .clear],
+                            startPoint: .leading,
+                            endPoint: .trailing,
+                        )
+                        .frame(width: max(40, width * 0.45))
+                        .keyframeAnimator(initialValue: CGFloat(0), repeating: true) { band, phase in
+                            band.offset(x: -width * 0.45 + phase * width * 1.45)
+                        } keyframes: { _ in
+                            CubicKeyframe(1, duration: 1.6)
+                            LinearKeyframe(1, duration: 0.6)
+                        }
+                    }
+                    .mask(content)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                }
+        } else {
+            content
+        }
     }
 }

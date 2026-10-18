@@ -1,0 +1,154 @@
+//
+//  Motion.swift
+//  DSH-Mizar
+//
+//  How things move, in four springs.
+//
+//  Springs rather than curves because a spring can be interrupted: retargeted
+//  mid-flight it carries its velocity into the new destination instead of
+//  restarting, and that -- not speed -- is what makes a touch feel answered.
+//  The four are SwiftUI's own (duration, bounce) pairs, named for what they are
+//  used for rather than for their numbers:
+//
+//    snappy  controls answering a tap: chevrons, toggles, highlights
+//    smooth  things changing place: rows, sheets of content, the composer
+//    bouncy  something arriving that wants to be noticed: a send, a badge
+//    gentle  the slow settle of large surfaces and of numbers counting up
+//
+//  Reduce Motion is honoured the way the app always has: fewer transitions, not
+//  shorter ones. Nothing is skipped -- a state still changes, and changes
+//  visibly -- but nothing travels; it cross-fades in place.
+//
+
+import SwiftUI
+import UIKit
+
+extension Animation {
+    static let mizarSnappy = Animation.spring(duration: 0.3, bounce: 0)
+    static let mizarSmooth = Animation.spring(duration: 0.5, bounce: 0)
+    static let mizarBouncy = Animation.spring(duration: 0.45, bounce: 0.18)
+    static let mizarGentle = Animation.spring(duration: 0.8, bounce: 0.05)
+    /// What every one of them becomes under Reduce Motion.
+    static let mizarFade = Animation.easeInOut(duration: 0.22)
+}
+
+enum Motion {
+    /// Whether the operator asked for less movement.
+    ///
+    /// Read from UIKit rather than the environment because the callers that need
+    /// it are actions, not view bodies, and the environment is not there.
+    @MainActor static var reduced: Bool { UIAccessibility.isReduceMotionEnabled }
+
+    /// The animation to use, given the operator's setting.
+    @MainActor static func pick(_ animation: Animation) -> Animation {
+        reduced ? .mizarFade : animation
+    }
+}
+
+/// `withAnimation`, with Reduce Motion folded in.
+///
+/// - Parameters:
+///   - animation: the spring to use when movement is welcome.
+///   - body: the state change.
+@MainActor
+func withMizarAnimation<Result>(_ animation: Animation = .mizarSmooth, _ body: () throws -> Result) rethrows -> Result {
+    try withAnimation(Motion.pick(animation), body)
+}
+
+// MARK: - Transitions
+
+/// Rising into place: a few points of travel, a little blur, and the fade.
+///
+/// The blur is what makes it read as focus arriving rather than as a box
+/// sliding. Under Reduce Motion only the fade is left.
+struct RiseTransition: Transition {
+    var distance: CGFloat = 10
+    var blur: CGFloat = 5
+
+    func body(content: Content, phase: TransitionPhase) -> some View {
+        RiseEffect(identity: phase.isIdentity, distance: distance, blur: blur) { content }
+    }
+}
+
+private struct RiseEffect<Wrapped: View>: View {
+    let identity: Bool
+    let distance: CGFloat
+    let blur: CGFloat
+    @ViewBuilder var wrapped: Wrapped
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        wrapped
+            .opacity(identity ? 1 : 0)
+            .offset(y: identity || reduceMotion ? 0 : distance)
+            .blur(radius: identity || reduceMotion ? 0 : blur)
+    }
+}
+
+/// Settling out of a scale: for things that grow from a point, like a badge or
+/// a confirmation capsule.
+struct PopTransition: Transition {
+    var scale: CGFloat = 0.82
+
+    func body(content: Content, phase: TransitionPhase) -> some View {
+        PopEffect(identity: phase.isIdentity, scale: scale) { content }
+    }
+}
+
+private struct PopEffect<Wrapped: View>: View {
+    let identity: Bool
+    let scale: CGFloat
+    @ViewBuilder var wrapped: Wrapped
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        wrapped
+            .opacity(identity ? 1 : 0)
+            .scaleEffect(identity || reduceMotion ? 1 : scale)
+            .blur(radius: identity || reduceMotion ? 0 : 4)
+    }
+}
+
+extension Transition where Self == RiseTransition {
+    static var rise: RiseTransition { RiseTransition() }
+    static func rise(distance: CGFloat, blur: CGFloat = 5) -> RiseTransition {
+        RiseTransition(distance: distance, blur: blur)
+    }
+}
+
+extension Transition where Self == PopTransition {
+    static var pop: PopTransition { PopTransition() }
+}
+
+// MARK: - Haptics
+
+/// The switch every haptic in the app answers to.
+///
+/// Stored with `@AppStorage` under this key: on by default, and a feedback the
+/// operator switched off is not played anywhere -- one switch, read at the
+/// moment of the event, so it takes effect without a relaunch.
+enum Haptics {
+    static let storageKey = "mizar.haptics"
+
+    static var enabled: Bool {
+        UserDefaults.standard.object(forKey: storageKey) as? Bool ?? true
+    }
+}
+
+extension View {
+    /// `sensoryFeedback`, gated by the operator's haptics switch.
+    ///
+    /// - Parameters:
+    ///   - feedback: what to play.
+    ///   - trigger: the value whose change plays it.
+    ///   - when: an extra condition on the old and new values.
+    func mizarFeedback<T: Equatable>(
+        _ feedback: SensoryFeedback,
+        trigger: T,
+        when: @escaping (T, T) -> Bool = { _, _ in true },
+    ) -> some View {
+        sensoryFeedback(feedback, trigger: trigger) { old, new in
+            Haptics.enabled && when(old, new)
+        }
+    }
+}

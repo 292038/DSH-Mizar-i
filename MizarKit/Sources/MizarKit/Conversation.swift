@@ -44,6 +44,36 @@ public struct SessionMessagesResult: Decodable, Sendable, Equatable {
     public let hasMore: Bool
 }
 
+/// What the phone claims to hold when it asks for a page.
+///
+/// The three states are not interchangeable, and the host treats them
+/// differently: `unstated` lets it answer from what it remembers delivering to
+/// this device, `empty` says the phone lost its cache and needs a full page, and
+/// `after` says everything through that log position is already on disk.
+///
+/// This exists because a refresh used to re-download the whole tail every time —
+/// the phone already had every record and paid for them again on every pull,
+/// reconnect and poll. ``CachedConversation/deliveredSeq`` is what makes the
+/// claim, and a cache that is gone must not keep making it.
+public enum SessionMessagesCursor: Sendable, Equatable {
+    /// No claim: leave the field off the wire.
+    case unstated
+    /// The phone holds nothing: send `null`, which the host must not override
+    /// with its own idea of what was delivered.
+    case empty
+    /// The phone holds everything through this position.
+    case after(Int)
+
+    /// The `afterSeq` field's value, or `nil` when the key must be omitted.
+    public var fieldValue: JSONValue? {
+        switch self {
+        case .unstated: nil
+        case .empty: .null
+        case .after(let seq): .number(Double(seq))
+        }
+    }
+}
+
 /// One record in the log.
 ///
 /// `type` is `event` for a single event or `chunks` for a packed run of
@@ -64,6 +94,16 @@ public struct SessionRecord: Decodable, Sendable, Equatable {
     public let event: JSONValue?
     /// Everything the record held.
     private let raw: JSONValue
+
+    /// The record's position in the log, when it names one.
+    ///
+    /// Read through ``payload`` so both record shapes answer: the gateway wraps
+    /// events and puts `seq` inside, while a record read from the log carries it
+    /// at the top level. Records without one cannot be placed in the incremental
+    /// feed; the host sends them anyway and nothing here needs to guess.
+    public var seq: Int? {
+        payload["seq"]?.intValue
+    }
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -173,6 +213,17 @@ extension SessionRecord {
 }
 
 extension SessionMessagesResult {
+    /// The highest log position this page carried, or `nil` when nothing does.
+    ///
+    /// This is what the phone may claim to hold after folding the page in — the
+    /// highest position among the records that actually arrived. Deliberately
+    /// not `asOfSeq`: that is the cut the page was taken at, and the host's byte
+    /// budget can trim older records out of that window, so claiming the cut
+    /// would claim records that were never sent.
+    public var newestDeliveredSeq: Int? {
+        records.compactMap(\.seq).max()
+    }
+
     /// Flatten the log into something the conversation view can draw.
     ///
     /// One prompt arrives as *two* `user/message` events -- one carrying the RPC
