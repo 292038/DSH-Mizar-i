@@ -333,6 +333,15 @@ final class AppModel {
     /// is part of the decision: a list read that still says a session is running
     /// must not reset the ten-second clock.
     private var runningPollState = RunningPoll()
+    /// The rules that decide when a poll that cannot read should rebuild the
+    /// socket.
+    ///
+    /// The poll is the only reader on a screen nobody has touched. Without this,
+    /// a socket that died while the list says a turn is running left that row
+    /// saying "running" until the operator pulled to refresh -- the next tick
+    /// asked the same dead socket, and the one after that asked it again. See
+    /// ``PollRecovery`` for why it takes two failures and waits thirty seconds.
+    private var runningPollRecovery = PollRecovery()
     /// Whether the app is on screen, as far as the poll is concerned.
     ///
     /// False until the root view says otherwise, so a background launch -- a
@@ -1068,6 +1077,9 @@ final class AppModel {
         guard let runningPoll else { return }
         runningPoll.cancel()
         self.runningPoll = nil
+        // A stopped poll starts over: the next one begins from a clean count
+        // rather than inheriting failures from a turn that has since ended.
+        runningPollRecovery.reset()
         log.add(
             .sync,
             appIsActive
@@ -1100,6 +1112,21 @@ final class AppModel {
     /// by the observer above -- the counter is the last thing it does.
     private func runningPollTick() async {
         guard appIsActive, runningPollState.isPolling else { return }
+        // A tick that cannot read is not retried on the socket it just failed
+        // on. The poll is the only thing still asking on a screen nobody has
+        // touched, so a dead socket here is the difference between "the turn
+        // finished" and a list that says it is still running until somebody
+        // pulls to refresh. The policy is deliberately cheap: two failures earn
+        // one attempt, and attempts are half a minute apart.
+        if runningPollRecovery.reconnectIsDue(
+            connectionMissing: connection == nil,
+            now: ContinuousClock.now,
+        ) {
+            runningPollRecovery.noteAttempt(at: ContinuousClock.now)
+            if await reconnect() {
+                runningPollRecovery.recordSuccess()
+            }
+        }
         await refreshRunningSessionList()
         runningPollTicks &+= 1
     }
@@ -1111,13 +1138,22 @@ final class AppModel {
     /// they can act on -- and a poll that flashed an error every ten seconds
     /// while the Mac slept would be the app complaining about its own timer.
     private func refreshRunningSessionList() async {
-        guard let connection, let tag = currentTag else { return }
+        guard let tag = currentTag else { return }
+        guard let connection else {
+            // No socket at all: there is nothing to ask, and the operator's
+            // screen is the thing going stale. Counted so the next tick may
+            // rebuild it rather than asking nothing for ever.
+            runningPollRecovery.recordFailure()
+            return
+        }
         do {
             let result = try await loggedCall("session.list", on: connection, as: SessionListResult.self)
             guard tag == currentTag else {
                 log.add(.cache, "running poll: list for \(tag.hostId) dropped, the machine changed under it")
                 return
             }
+            // The socket answered: whatever failed before is not failing now.
+            runningPollRecovery.recordSuccess()
             sessions = result.items
             sessionsAreKnown = true
             lastError = nil
@@ -1131,8 +1167,16 @@ final class AppModel {
             // was backgrounded, or another read found nothing running. Leave the
             // screen alone and let the loop end.
             if Task.isCancelled { return }
-            // No banner, no retry. The failure is already in the request log by
+            // Only failures a fresh socket could fix count towards a reconnect.
+            // An answer the host chose to send would be the same answer over a
+            // new socket, and rebuilding the connection for it is real seconds
+            // on a phone spent on nothing.
+            //
+            // No banner either way: the failure is already in the request log by
             // `loggedCall`, which is where "did the poll keep asking" is asked.
+            if Self.isAboutTheConnection(error) {
+                runningPollRecovery.recordFailure()
+            }
         }
     }
 
