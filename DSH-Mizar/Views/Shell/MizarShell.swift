@@ -170,7 +170,13 @@ struct MizarShell: View {
     ) -> some View {
         let reveal = max(lead, trail)
         let towardsTrailing = trail > lead
-        let corner = compact ? Self.cardCorner * min(1, reveal * 3) : 0
+        // The corner is the screen's own or it is nothing. At rest it hides
+        // inside the display's mask, and the moment the card moves it wants
+        // the full radius -- a corner that grew with the drag only ever
+        // showed a square one in the first frames of the movement. Two
+        // values, so the mask is laid out at most once per gesture and the
+        // render server keeps it for the frames in between.
+        let corner = compact && reveal > 0.001 ? Self.cardCorner : 0
         let shape = RoundedRectangle(cornerRadius: corner, style: .continuous)
         let offset: CGFloat = compact
             ? (towardsTrailing ? -trailing * trail : leading * shell.progress)
@@ -210,19 +216,23 @@ struct MizarShell: View {
         .overlay {
             // A shade, and a faint rim of the accent on the edge that faces the
             // open drawer: the card catching the light of the list behind it.
+            // Both ride a single opacity rather than a colour that changes:
+            // a shape whose alpha changes is redrawn every frame, while one
+            // whose opacity changes is blended from the shape already drawn.
             shape
-                .fill(Color.black.opacity((colorScheme == .dark ? 0.32 : 0.05) * (compact ? reveal : 0)))
+                .fill(Color.black.opacity(colorScheme == .dark ? 0.32 : 0.05))
+                .opacity(compact ? reveal : 0)
                 .allowsHitTesting(false)
             shape
                 .strokeBorder(
                     LinearGradient(
-                        colors: [Color.accentColor.opacity(0.45 * reveal), .white.opacity(0.06 * reveal), .clear],
+                        colors: [Color.accentColor.opacity(0.45), .white.opacity(0.06), .clear],
                         startPoint: towardsTrailing ? .trailing : .leading,
                         endPoint: towardsTrailing ? .leading : .trailing,
                     ),
                     lineWidth: 1,
                 )
-                .opacity(compact ? 1 : 0)
+                .opacity(compact ? reveal : 0)
                 .allowsHitTesting(false)
         }
         // The shadow is the one effect here that must not follow the
@@ -235,7 +245,11 @@ struct MizarShell: View {
             radius: 30,
             x: towardsTrailing ? 8 : -8,
         )
-        .scaleEffect(compact ? 1 - 0.06 * reveal : 1, anchor: towardsTrailing ? .trailing : .leading)
+        // The shrink arrives early -- over the first third of the drawer's
+        // travel, the way the corner does -- and then holds. From there the
+        // card only translates, which the render server does to a cached
+        // layer instead of re-drawing one every frame.
+        .scaleEffect(compact ? 1 - Self.cardShrink * min(1, reveal * 3) : 1, anchor: towardsTrailing ? .trailing : .leading)
         .offset(x: offset)
         .gesture(SidebarPan(shell: shell, compact: compact))
         .accessibilityHidden(compact && reveal > 0.5)
@@ -248,6 +262,10 @@ struct MizarShell: View {
     /// display's mask on every device, and pushed aside it matches closely
     /// enough that the card reads as the screen itself.
     private static let cardCorner: CGFloat = 39
+
+    /// How far the card shrinks once pushed aside, over the first third of
+    /// the drawer's travel.
+    private static let cardShrink: CGFloat = 0.06
 
     private func sidebarWidth(in size: CGSize, compact: Bool) -> CGFloat {
         compact ? min(330, size.width * 0.84) : min(340, max(280, size.width * 0.3))
