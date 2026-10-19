@@ -60,7 +60,11 @@ struct SidebarView: View {
         }
         .scrollDismissesKeyboard(.immediately)
         .scrollIndicators(.hidden)
-        .refreshable { await model.refreshSessions() }
+        // A pull is the operator asking "is it still there", and the first half
+        // of that answer is which way there is: the model scans the local network
+        // once before it re-reads the list, so a phone that came home to the same
+        // network switches to the direct link instead of staying on the relay.
+        .refreshable { await model.manualRefresh() }
         // The computer, the refresh and the search stay put at the top; the
         // sessions slide underneath them, softened by the bar's edge as they go.
         .safeAreaBar(edge: .top, spacing: 0) {
@@ -496,7 +500,17 @@ private struct SidebarFooter: View {
                 .liquidCapsule(interactive: true)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(Text("Connection, \(status)"))
+            // One label for the whole capsule: a button is one accessibility
+            // element, so the route drawn under the status is not separately
+            // voiced and would otherwise be left out of it. The route goes into
+            // the catalogue's existing `Connection, %@` sentence rather than a
+            // second format argument -- both halves are already localised
+            // words, and a new key for the same sentence would be one more
+            // translation nobody needs.
+            .accessibilityLabel(Text(String(
+                format: String(localized: "Connection, %@"),
+                "\(status), \(route)",
+            )))
             .accessibilityIdentifier("sidebar.connection")
             .mizarPopover(isPresented: $showingConnection, arrowEdge: .bottom) {
                 ConnectionPanel()
@@ -549,6 +563,11 @@ private struct SidebarFooter: View {
         guard model.isConnected else {
             return model.hasStoredIndex ? String(localized: "Showing saved history") : String(localized: "Not reachable")
         }
+        // A direct link on the operator's own network is the one route worth a
+        // name of its own: it costs no relay bandwidth, and it is the reason the
+        // paid features are open. The model owns that classification so this
+        // line and everything gated on the same fact cannot drift apart.
+        if model.isLocalCommunication { return String(localized: "LAN communication") }
         switch model.activeEndpoint {
         case .relay: return String(localized: "Through the relay")
         case .direct(let authority): return authority

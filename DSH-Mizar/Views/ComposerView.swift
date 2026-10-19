@@ -18,10 +18,12 @@
 //  meaning keeps both one tap away; it changes shape as it changes meaning, so
 //  the meaning is never a surprise.
 //
-//  Attachments are paid-only. The buttons live in the command popover and draw
-//  their own lock when the account cannot use them; tapping a locked one opens
-//  the account screen, because a refusal that explains itself is a refusal the
-//  operator can act on.
+//  Attachments are part of the paid feature set, which a direct link on the
+//  operator's own network also unlocks: nothing there is carried by the relay,
+//  which is the commercial reason the two go together. The buttons live in the
+//  command popover and draw their own lock when the set is not available;
+//  tapping a locked one opens the account screen, because a refusal that
+//  explains itself is a refusal the operator can act on.
 //
 
 import MizarKit
@@ -264,9 +266,12 @@ struct ComposerView: View {
         let display = AttachmentDraft.promptText(outgoing, drafts: drafts)
         guard !display.isEmpty else { return }
         // The server's plan is the authority, but the phone can avoid a useless
-        // upload: a free account cannot attach anything, and the account screen
-        // is where that changes.
-        if !drafts.isEmpty, !model.account.isPaid {
+        // upload: without the advanced feature set nothing can be attached, and
+        // the account screen is where that changes. A LAN link unlocks the set
+        // as well, so this guard is only reachable off the operator's own
+        // network; the sentence still names the plan, because the screen it
+        // opens is where a plan is bought.
+        if !drafts.isEmpty, !model.advancedFeaturesUnlocked {
             attachmentError = String(localized: "Attachments need a paid account.")
             showingPaywall = true
             return

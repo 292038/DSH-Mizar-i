@@ -74,6 +74,16 @@ public struct RunningPoll: Sendable, Equatable {
     /// this covers the rest of the turn.
     public static let interval: Duration = .seconds(10)
 
+    /// How long between ticks on a local-network link.
+    ///
+    /// Three seconds, because the reason the interval is ten is the relay's
+    /// bandwidth and the phone's battery, and neither carries this case: a
+    /// direct link is the operator's own network, and the phone is on it. The
+    /// turn ending is then noticed while the operator is still watching it,
+    /// which is the whole point of a phone client sitting open next to the
+    /// computer.
+    public static let localInterval: Duration = .seconds(3)
+
     /// Whether a poll task is up. Kept in step with the caller's task through
     /// ``observe(anySessionRunning:appIsActive:)``.
     public private(set) var isPolling = false

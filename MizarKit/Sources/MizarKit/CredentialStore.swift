@@ -107,6 +107,21 @@ public struct PairedHost: Codable, Sendable, Equatable {
         case direct(authority: String)
         /// Through a reverse tunnel.
         case relay(baseURL: String)
+
+        /// Whether this route reaches the computer on the operator's own
+        /// network rather than through the relay.
+        ///
+        /// One rule, in ``LocalNetwork``, because the answer decides what the
+        /// screen may call the link *and* what the account is allowed to use:
+        /// a LAN link is not metered by the relay, so the features the relay's
+        /// bandwidth pays for are free on it. Loopback is the simulator talking
+        /// to the Mac itself and is deliberately not local.
+        public var isLocalNetwork: Bool {
+            switch self {
+            case .direct(let authority): LocalNetwork.isLocal(authority: authority)
+            case .relay: false
+            }
+        }
     }
 
     /// A copy pointing at a different authority, keeping the credential.

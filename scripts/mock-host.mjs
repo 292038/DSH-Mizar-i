@@ -133,6 +133,37 @@ let pageLimit = Infinity
 let sessionRunning = true
 
 /**
+ * The fixture session's permission preset, as the host last reported it.
+ *
+ * `session.permission.set` changes it, `session.stats` reports it, and `/reset`
+ * restores it. It has to be *state* rather than a fixed answer, because the
+ * defect 0.9.4 fixes is precisely that the phone drew the choice it had just
+ * made and then went back to the host's old report: a fixture that always says
+ * `workspace-write` cannot tell "the switch stuck" from "the switch was only
+ * drawn".
+ */
+let permissionPreset = 'workspace-write'
+
+/**
+ * The presets the fixture's catalogue offers, and the only ones it accepts.
+ *
+ * A real host refuses a value it does not have a preset for, and the phone has
+ * to say so rather than pretend. Validating here keeps a typo in a test honest
+ * instead of letting it become an accepted switch nobody can reproduce.
+ */
+const PERMISSION_PRESETS = ['read-only', 'workspace-write', 'danger-full-access']
+
+/**
+ * Sessions archived since the last reset.
+ *
+ * Archived is host-side state, not a deletion: the log stays on the computer,
+ * `session.list` and `workspace.list` stop mentioning the session, and `/reset`
+ * puts the fixture's list back. The phone's job is to make both of those true
+ * at once, so the mock has both lists to be wrong in.
+ */
+const archivedSessionIds = new Set()
+
+/**
  * How many WebSocket connections the mock has accepted since the last reset.
  *
  * A reconnect is invisible from the app's screen -- the data looks the same
@@ -430,6 +461,26 @@ function answer(frame) {
         home: '/Users/you',
         deviceId: DEVICE_ID,
       }
+    case 'host.info':
+      // The real shape, including `addresses` -- the later, optional field the
+      // host now sends so a relayed phone can find it directly. The mock is
+      // bound to loopback, and says so: that is the address a phone on this
+      // simulator could actually dial. `LocalNetwork` deliberately does not
+      // treat loopback as a LAN, so this fixture cannot turn every existing
+      // test into a LAN-unlocked account. The Debug-only `-mizarLocalNetwork`
+      // launch flag is how a UI test asks for that state explicitly.
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: {
+          hostId: HOST_ID,
+          hostName: HOST_NAME,
+          home: '/Users/you',
+          protocolVersion: 1,
+          addresses: [`127.0.0.1:${port}`],
+        },
+      }
     case 'workspace.list':
       // The host's own workspace registry, which is not the session list: a
       // session outlives the workspace it was created in, so a phone that
@@ -452,10 +503,14 @@ function answer(frame) {
               workspaceId: 'ws-demo',
               path: SESSION.cwd,
               title: 'demo',
+              // Archived sessions leave the workspace's membership as well as
+              // the session list. The host hides them from both, so a phone
+              // that trusted only one would draw a row under a workspace that
+              // says it holds nothing.
               sessionIds: [
                 SESSION.sessionId,
                 ...createdSessions.filter((c) => c.cwd === SESSION.cwd).map((c) => c.sessionId),
-              ],
+              ].filter((id) => !archivedSessionIds.has(id)),
             },
             { workspaceId: 'ws-fresh', path: '/Users/you/projects/fresh', title: 'fresh', sessionIds: [] },
           ],
@@ -472,9 +527,13 @@ function answer(frame) {
         id,
         result: {
           items: [
-            ...createdSessions.map(({ prompts, ...row }) => row),
-            { ...SESSION, running: sessionRunning },
-            ORPHANED_SESSION,
+            ...createdSessions
+              .filter((c) => !archivedSessionIds.has(c.sessionId))
+              .map(({ prompts, ...row }) => row),
+            // An archived session is gone from the list, exactly as an archived
+            // one is gone from the workspace that held it.
+            ...(archivedSessionIds.has(SESSION.sessionId) ? [] : [{ ...SESSION, running: sessionRunning }]),
+            ...(archivedSessionIds.has(ORPHANED_SESSION.sessionId) ? [] : [ORPHANED_SESSION]),
           ],
         },
       }
@@ -554,7 +613,10 @@ function answer(frame) {
               context: null,
               stats: null,
               model: null,
-              permissionPreset: null,
+              // Not a projection that needs a warm agent: the preset is the
+              // session's own, so even the cold answer keeps saying which one
+              // is in force after `session.permission.set` changed it.
+              permissionPreset,
             },
           },
         }
@@ -607,7 +669,7 @@ function answer(frame) {
               },
               next: null,
             },
-            permissionPreset: 'workspace-write',
+            permissionPreset,
           },
         },
       }
@@ -696,6 +758,54 @@ function answer(frame) {
           ],
         },
       }
+    case 'session.permission.set': {
+      // The switch the permission picker makes. The host is the authority, so
+      // the answer is a `commandResult` -- success or the host's refusal -- and
+      // the fixture remembers an accepted preset so the next `session.stats`
+      // reports it. A test then has something to observe beyond the tick the
+      // picker drew: what the host will go on saying.
+      const preset = frame.payload?.preset
+      const target = frame.payload?.sessionId
+      if (!PERMISSION_PRESETS.includes(preset)) {
+        return {
+          v: 1,
+          type: 'error',
+          id,
+          code: 'INVALID_INPUT',
+          message: `unknown permission preset ${JSON.stringify(preset)}`,
+        }
+      }
+      const created = createdSessions.find((session) => session.sessionId === target)
+      if (target !== SESSION.sessionId && created === undefined) {
+        return { v: 1, type: 'error', id, code: 'REMOTE_ERROR', message: `unknown session ${target}` }
+      }
+      if (created !== undefined) created.permissionPreset = preset
+      else permissionPreset = preset
+      console.log('mock: permission preset ->', preset, 'for', target)
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: { commandResult: { kind: 'success', text: `permission preset is now ${preset}` } },
+      }
+    }
+    case 'session.archive': {
+      // Archive is the host taking a session off its two lists without deleting
+      // the log. A running session is refused by the real host unless the caller
+      // asks it to be stopped as well; the fixture answers the call the phone
+      // makes in 0.9.4, which is the non-destructive one, so it accepts and the
+      // tests can observe both lists agreeing.
+      const sessionId = frame.payload?.sessionId
+      const known = sessionId === SESSION.sessionId
+        || sessionId === ORPHANED_SESSION.sessionId
+        || createdSessions.some((session) => session.sessionId === sessionId)
+      if (!known) {
+        return { v: 1, type: 'error', id, code: 'REMOTE_ERROR', message: `unknown session ${sessionId}` }
+      }
+      archivedSessionIds.add(sessionId)
+      console.log('mock: archived ->', sessionId, '| stopActivity', frame.payload?.stopActivity === true)
+      return { v: 1, type: 'ok', id, result: { archived: true } }
+    }
     case 'session.model.set': {
       // The host's real answer, which the mock did not send at all until a test
       // needed to tell a switch that worked from one that did not. `?fail=` is
@@ -1548,6 +1658,12 @@ const server = createServer((request, response) => {
     createdSessions.length = 0
     failMethod = null
     statsVariant = 'full'
+    // The permission preset and the archived set are fixture state like the
+    // rest: a test that switches the preset must not hand the next test a
+    // session already in read-only, and a test that archives must not hand it a
+    // list missing a row.
+    permissionPreset = 'workspace-write'
+    archivedSessionIds.clear()
     // The account fixture goes back with everything else: a test that signs in
     // must not inherit the previous test's paid plan or its session tokens.
     resetAccounts()

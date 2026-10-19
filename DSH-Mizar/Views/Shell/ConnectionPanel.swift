@@ -35,7 +35,12 @@ struct ConnectionPanel: View {
                 if !model.isConnected {
                     Button {
                         Task {
-                            if await model.reconnect(patient: true) { await model.refreshSessions() }
+                            // Manual refresh rather than a plain list read: a
+                            // reconnect that lands on the relay while the computer
+                            // is also audible on this network is a connection the
+                            // operator did not need to pay for, and the scan is
+                            // what picks the direct link up.
+                            if await model.reconnect(patient: true) { await model.manualRefresh() }
                         }
                     } label: {
                         HStack {
@@ -109,12 +114,19 @@ struct ConnectionPanel: View {
     /// A relay's own address is not something anybody can act on -- it is a
     /// string of a hostname -- so a relayed link says which tier of the relay is
     /// carrying it instead: the free one, or the high-bandwidth one a paid
-    /// account is entitled to. A direct link keeps its address, because there
-    /// the address *is* the answer: it is the computer on this network.
+    /// account is entitled to. A direct link on the operator's own network says
+    /// what it is rather than which address answered: there it is the *kind* of
+    /// link that matters, because that is what opened the paid features. A
+    /// loopback direct link keeps the address, as it always has -- that is the
+    /// simulator talking to the Mac, where "the local network" would be a claim
+    /// the route does not support.
     private var route: String {
         guard model.isConnected else {
             return model.hasStoredIndex ? String(localized: "Showing saved history") : String(localized: "Not reachable")
         }
+        // The same fact the sidebar's footer is drawn from; the model owns the
+        // classification so the two lines cannot disagree.
+        if model.isLocalCommunication { return String(localized: "On the local network") }
         switch model.activeEndpoint {
         case .relay:
             return model.account.isPaid

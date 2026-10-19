@@ -39,6 +39,8 @@
 "Stop" = "停止";
 "Nothing yet" = "暂无内容";
 "This session has no messages." = "这个会话还没有消息。";
+"Archive this session" = "归档该会话";
+"The session was not archived." = "会话未能归档。";
 "No usage yet" = "暂无用量";
 "This session has not sent a request." = "这个会话还没有发送过请求。";
 "The turn ended without a response" = "本轮没有产生回复";
@@ -53,6 +55,7 @@
 "Can change files inside the workspace." = "可以修改工作区内的文件。";
 "Can run commands and change files anywhere on this computer." = "可以在这台电脑的任何位置运行命令、修改文件。";
 "Reviews and approves its own steps, and asks only when a decision needs you." = "自行审查并批准执行步骤，只在需要你决定时才询问。";
+"The permission did not change. Try again." = "权限没有生效，请重试。";
 
 /* Usage */
 "Tokens" = "Token";
@@ -256,6 +259,8 @@
 "Direct · %@" = "直连 · %@";
 "Free-tier server" = "免费版服务器";
 "High-bandwidth server" = "高带宽服务器";
+"LAN communication" = "局域网通信";
+"On the local network" = "局域网通信中";
 "Each prompt you send starts one, and it is listed here." = "你发出的每条消息都会开始新的一轮，并列在这里。";
 "Every %lld s · first read soon" = "每 %lld 秒一次 · 马上开始第一次读取";
 "Every %lld s · next read in %lld s" = "每 %1$lld 秒一次 · %2$lld 秒后再读";

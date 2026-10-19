@@ -378,18 +378,21 @@ private struct TurnSummary: View {
     }
 }
 
-/// The running-turn row and, for a paid account, its expandable detail.
+/// The running-turn row and, when the advanced feature set is available, its
+/// expandable detail.
 ///
-/// This is the one place the paid full-detail feed meets the screen. It decides
-/// what the account may see, polls while the turn is running, and renders the
+/// This is the one place the full-detail feed meets the screen. It decides what
+/// the feature set may see, polls while the turn is running, and renders the
 /// detail below the summary row — never in place of it. The summary row is the
 /// only thing on this screen that must not move while a turn is in flight: it is
 /// where the operator reads "how long has this been going", and opening a detail
 /// under it is fine while moving or replacing it is not.
 ///
-/// Free accounts take the else branch and never start the poll: ``AppModel``
+/// Locked accounts take the else branch and never start the poll: ``AppModel``
 /// refuses the read too, so there are two independent guards against a paid-only
-/// method being called by a free account.
+/// method being called without the feature set. A direct link on the operator's
+/// own network unlocks the set without a plan: the relay is not carrying that
+/// traffic, and the full transfer is exactly the detail the plan is sold for.
 private struct TurnActivitySummary: View {
     let turn: ConversationTurn
     let sessionId: String
@@ -409,19 +412,21 @@ private struct TurnActivitySummary: View {
 
     /// Whether the chevron and the detail exist at all.
     ///
-    /// All three conditions are about the same idea: a paid account, a turn that
-    /// is running, and at least one detail worth opening. A chevron that opens an
-    /// empty area is worse than no chevron.
+    /// All three conditions are about the same idea: the advanced feature set, a
+    /// turn that is running, and at least one detail worth opening. A chevron
+    /// that opens an empty area is worse than no chevron.
     private var canExpand: Bool {
-        turn.isRunning && model.account.isPaid && !entries.isEmpty
+        turn.isRunning && model.advancedFeaturesUnlocked && !entries.isEmpty
     }
 
     /// What the poll is keyed on: it runs while this turn is running and the
-    /// account is paid, and stops — clearing what it found — the moment either
-    /// stops being true. `.task(id:)` cancels and restarts on a change, which is
-    /// exactly the lifecycle wanted here.
+    /// advanced feature set is available, and stops — clearing what it found —
+    /// the moment either stops being true. `.task(id:)` cancels and restarts on
+    /// a change, which is exactly the lifecycle wanted here. The set is lost on a
+    /// route change away from the LAN just as it is on a plan ending, and the
+    /// same change stops the poll in both cases.
     private var pollKey: String? {
-        guard turn.isRunning, model.account.isPaid else { return nil }
+        guard turn.isRunning, model.advancedFeaturesUnlocked else { return nil }
         return "\(turn.turn ?? -1)"
     }
 
@@ -444,17 +449,17 @@ private struct TurnActivitySummary: View {
         .task(id: pollKey) { await poll() }
         .onChange(of: pollKey) { oldKey, newKey in
             // This turn was the one polling, and it is not any more: it ended,
-            // the account stopped being paid, or the view went away. Only this
-            // view clears the cache -- a finished turn must not, because the
-            // list builds old rows as it scrolls and each of them would wipe the
-            // running turn's detail under the operator.
+            // the advanced feature set stopped being available, or the view went
+            // away. Only this view clears the cache -- a finished turn must not,
+            // because the list builds old rows as it scrolls and each of them
+            // would wipe the running turn's detail under the operator.
             if oldKey != nil, newKey == nil {
                 model.clearActivity(for: sessionId)
             }
         }
         .onChange(of: canExpand) { _, canExpand in
-            // The turn ended, or the plan did. Collapse, so a shut turn cannot
-            // leave a detail area floating under a finished row.
+            // The turn ended, or the feature set did. Collapse, so a shut turn
+            // cannot leave a detail area floating under a finished row.
             if !canExpand, expanded {
                 withAnimation(.mizarSmooth) { expanded = false }
             }
@@ -471,7 +476,7 @@ private struct TurnActivitySummary: View {
 
     /// The row itself: a button when there is something to open, plain otherwise.
     ///
-    /// A button only for a paid running turn with detail. The row's own content
+    /// A button only for an unlocked running turn with detail. The row's own content
     /// is unchanged in both branches — same glyph, same clock, same count — so a
     /// turn does not look different merely because somebody subscribed.
     @ViewBuilder private var row: some View {
@@ -496,8 +501,8 @@ private struct TurnActivitySummary: View {
     /// Read the details while the turn runs.
     ///
     /// Every second while the running row is on screen. The detail feed is the
-    /// paid full-transfer view and a command's output needs to land while it is
-    /// still the thing being talked about; one second is the cadence the host's
+    /// full-transfer view (paid, or open on a LAN link) and a command's output
+    /// needs to land while it is still the thing being talked about; one second is the cadence the host's
     /// 256 KiB capped answer was sized for. A failed read changes nothing —
     /// ``AppModel/refreshActivity(for:)`` keeps the last answer on screen.
     private func poll() async {

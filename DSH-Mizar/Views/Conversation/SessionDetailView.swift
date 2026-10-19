@@ -357,7 +357,11 @@ struct SessionDetailView: View {
                 }
                 .accessibilityIdentifier("session.permissions")
                 .mizarPopover(isPresented: $showingPermissionPicker, arrowEdge: .top) {
-                    PermissionPickerView(sessionId: sessionId, current: shownStats?.permissionPreset)
+                    PermissionPickerView(
+                        sessionId: sessionId,
+                        current: resolvedPermission,
+                        onApplied: { await refreshStatsFromCache() },
+                    )
                 }
             }
         }
@@ -395,6 +399,15 @@ struct SessionDetailView: View {
             // was in flight, and this screen had no way to notice.
             guard phase == .active, !reloading else { return }
             Task { await reload() }
+        }
+        .onChange(of: showingPermissionPicker) { _, showing in
+            // The window closes on a switch the host took and on one it refused
+            // alike, and after either the bar should be drawn from the newest
+            // frame the app has rather than from the one read before the window
+            // opened. A refusal keeps the window up, so this is the operator's
+            // own dismissal; it changes nothing when nothing changed.
+            guard !showing else { return }
+            Task { await refreshStatsFromCache() }
         }
     }
 
@@ -855,6 +868,17 @@ struct SessionDetailView: View {
         return true
     }
 
+    /// The permission preset in force, as the app and the host agree on it.
+    ///
+    /// The stats frame is what the host last *reported*, and after a switch this
+    /// phone has made it is older than the app's own record of what the host
+    /// accepted. `AppModel` resolves the two, so the shield in the bar and the
+    /// picker behind it cannot disagree -- and a refused switch leaves the old
+    /// preset in force on both.
+    private var resolvedPermission: String? {
+        model.permissionPreset(for: sessionId, reported: shownStats?.permissionPreset)
+    }
+
     /// The permission preset, as a word rather than a raw value.
     ///
     /// Through the catalogue's own rows when the host has listed this preset,
@@ -863,7 +887,7 @@ struct SessionDetailView: View {
     /// case on the first frame of a session. A preset nobody has a name for
     /// reads as its value, which is what the host called it.
     private var permissionLabel: String {
-        guard let preset = shownStats?.permissionPreset else { return String(localized: "Permissions") }
+        guard let preset = resolvedPermission else { return String(localized: "Permissions") }
         if let option = model.permissionCatalog?.options.first(where: { $0.value == preset }) {
             return option.title
         }
@@ -872,7 +896,7 @@ struct SessionDetailView: View {
 
     /// The shield, shaped by how much the session may do.
     private var permissionSymbol: String {
-        switch shownStats?.permissionPreset {
+        switch resolvedPermission {
         case "read-only": "lock.shield"
         case "danger-full-access": "exclamationmark.shield.fill"
         default: "checkmark.shield"
@@ -882,11 +906,25 @@ struct SessionDetailView: View {
     /// Neutral for read-only, the accent for workspace writes, amber for full
     /// access: the one place a dangerous setting stays visible.
     private var permissionTint: Color {
-        switch shownStats?.permissionPreset {
+        switch resolvedPermission {
         case "workspace-write": .accentColor
         case "danger-full-access": Theme.waiting
         default: .primary
         }
+    }
+
+    /// Re-read the figures the toolbar is drawn from, after the permission
+    /// picker has been used.
+    ///
+    /// The switch itself is local by the time the call returns -- the app keeps
+    /// the accepted preset and the cache holds the newer frame -- but the frame
+    /// on screen is the one read before the popover opened. Reading the cache
+    /// again is one local read with no request behind it, so the shield is right
+    /// without the screen fetching the whole session over again.
+    private func refreshStatsFromCache() async {
+        guard let known = await model.cachedStats(for: sessionId) else { return }
+        stats = known
+        statsSessionId = sessionId
     }
 
     /// Refresh everything the screen shows.

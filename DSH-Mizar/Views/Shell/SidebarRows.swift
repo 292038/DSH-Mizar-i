@@ -213,6 +213,18 @@ struct SessionRowButton: View {
             } label: {
                 Label("Copy session ID", systemImage: "doc.on.doc")
             }
+            // No confirmation alert, deliberately. Archiving does not delete
+            // anything on the computer and does not stop a running turn -- the
+            // host refuses to archive one that is running -- so the destructive
+            // double-check a confirmation implies would be asking about a
+            // deletion that cannot happen. The row leaves when the host has
+            // taken the archive; a refusal is said in the list's error line,
+            // which is already where a failed refresh is reported.
+            Button {
+                Task { await model.archiveSession(session.sessionId) }
+            } label: {
+                Label("Archive this session", systemImage: "archivebox")
+            }
         }
     }
 

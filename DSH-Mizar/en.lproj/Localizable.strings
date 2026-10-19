@@ -38,6 +38,8 @@
 "Stop" = "Stop";
 "Nothing yet" = "Nothing yet";
 "This session has no messages." = "This session has no messages.";
+"Archive this session" = "Archive this session";
+"The session was not archived." = "The session was not archived.";
 "No usage yet" = "No usage yet";
 "This session has not sent a request." = "This session has not sent a request.";
 "The turn ended without a response" = "The turn ended without a response";
@@ -52,6 +54,7 @@
 "Can change files inside the workspace." = "Can change files inside the workspace.";
 "Can run commands and change files anywhere on this computer." = "Can run commands and change files anywhere on this computer.";
 "Reviews and approves its own steps, and asks only when a decision needs you." = "Reviews and approves its own steps, and asks only when a decision needs you.";
+"The permission did not change. Try again." = "The permission did not change. Try again.";
 
 /* Usage */
 "Tokens" = "Tokens";
@@ -256,6 +259,8 @@
 "Direct · %@" = "Direct · %@";
 "Free-tier server" = "Free-tier server";
 "High-bandwidth server" = "High-bandwidth server";
+"LAN communication" = "LAN communication";
+"On the local network" = "On the local network";
 "Each prompt you send starts one, and it is listed here." = "Each prompt you send starts one, and it is listed here.";
 "Every %lld s · first read soon" = "Every %lld s · first read soon";
 "Every %lld s · next read in %lld s" = "Every %1$lld s · next read in %2$lld s";

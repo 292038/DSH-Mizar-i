@@ -23,6 +23,31 @@ public struct HostInfo: Decodable, Sendable, Equatable {
     /// The host's DSH home directory.
     public let home: String
     public let protocolVersion: Int
+    /// Every `host:port` the host's own listener is bound to, when the host
+    /// says. Optional because it is a later addition to the frame: a host from
+    /// before it answers the rest of `host.info` and no `addresses` at all, and
+    /// a phone must fall back to the one address its pairing already knows
+    /// rather than reading "the host cannot say" as "the host has no LAN
+    /// address".
+    ///
+    /// This is what makes a LAN scan possible while the phone is connected
+    /// through the relay: the computer answers over the relay with the
+    /// addresses it is listening on, and the phone probes those directly.
+    public let addresses: [String]?
+
+    public init(
+        hostId: String,
+        hostName: String,
+        home: String,
+        protocolVersion: Int,
+        addresses: [String]? = nil,
+    ) {
+        self.hostId = hostId
+        self.hostName = hostName
+        self.home = home
+        self.protocolVersion = protocolVersion
+        self.addresses = addresses
+    }
 }
 
 // MARK: - Sessions

@@ -52,9 +52,9 @@ struct ComposerBar: View {
     @Binding var showingPhotoPicker: Bool
     /// Open the file importer.
     @Binding var showingFileImporter: Bool
-    /// Called when a free or signed-out account taps an attachment button: the
-    /// account screen, where the plan can be bought. Not a silent no-op -- a
-    /// locked button that does nothing is a bug report.
+    /// Called when the advanced feature set is locked and an attachment button
+    /// is tapped: the account screen, where the plan can be bought. Not a silent
+    /// no-op -- a locked button that does nothing is a bug report.
     var onLockedAttachment: () -> Void = {}
 
     /// DSH's own commands. The slash forms are what the host parses; the titles
@@ -181,12 +181,17 @@ struct ComposerBar: View {
         .buttonStyle(.pressable)
         .mizarPopover(isPresented: $showingCommands, arrowEdge: .bottom) {
             CommandList(
-                isPaid: model.account.isPaid,
+                canAttach: model.advancedFeaturesUnlocked,
                 onAttachment: { kind in
                     // Closed first: the picker is presented by the composer, and
                     // a popover that stays up over the photo sheet hides it.
                     showingCommands = false
-                    guard model.account.isPaid else {
+                    // The server's plan is the authority, but the phone avoids a
+                    // useless picker: without the advanced feature set there is
+                    // nothing to attach to, and the account screen is where that
+                    // changes. On a LAN link the set is open, so this guard is
+                    // reached only off the operator's own network.
+                    guard model.advancedFeaturesUnlocked else {
                         onLockedAttachment()
                         return
                     }
@@ -219,11 +224,14 @@ private enum AttachmentPickerKind {
 /// The attachments row is deliberately above the commands rather than beside the
 /// field: the field's leading edge is where the operator's thumb already is for
 /// text, and a row of two labelled buttons is discoverable in a way that two
-/// unlabelled glyphs are not. The paid gate is drawn, not just enforced: a lock
-/// and a footer that says why, so the refusal explains itself.
+/// unlabelled glyphs are not. The gate is drawn, not just enforced: a lock and a
+/// footer that says why, so the refusal explains itself. The footer's wording is
+/// the paid plan's, because that is the plan this feature is sold with, and the
+/// same buttons are open on a LAN link as well.
 private struct CommandList: View {
-    /// Whether the account may attach files.
-    let isPaid: Bool
+    /// Whether the advanced feature set is available, so attachments may be
+    /// added. True for a paid account and on a LAN link.
+    let canAttach: Bool
     /// Pick a photo or a file, or ask for the account screen when locked.
     let onAttachment: (AttachmentPickerKind) -> Void
     /// Fill the field with a command.
@@ -246,9 +254,9 @@ private struct CommandList: View {
                 ) { onAttachment(.file) }
             }
             .padding(.horizontal, 16)
-            .padding(.bottom, isPaid ? 10 : 4)
+            .padding(.bottom, canAttach ? 10 : 4)
 
-            if !isPaid {
+            if !canAttach {
                 HStack(spacing: 5) {
                     Image(systemName: "lock.fill")
                         .font(.system(size: 9, weight: .semibold))
@@ -319,16 +327,16 @@ private struct CommandList: View {
             VStack(spacing: 6) {
                 Image(systemName: symbol)
                     .font(.system(size: 19, weight: .medium))
-                    .foregroundStyle(isPaid ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(canAttach ? Color.accentColor : Color.secondary)
                 HStack(spacing: 3) {
-                    if !isPaid {
+                    if !canAttach {
                         Image(systemName: "lock.fill")
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(.secondary)
                     }
                     Text(title)
                         .font(.footnote.weight(.medium))
-                        .foregroundStyle(isPaid ? Color.primary : Color.secondary)
+                        .foregroundStyle(canAttach ? Color.primary : Color.secondary)
                 }
             }
             .frame(maxWidth: .infinity)

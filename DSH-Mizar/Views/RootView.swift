@@ -10,6 +10,15 @@ import MizarKit
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
+    /// Whether the app has been to the background since it was last active.
+    ///
+    /// Kept as a flag rather than read off the previous phase, because the way
+    /// back is background -> inactive -> active: by the time the app is active
+    /// again its previous phase is `.inactive`, which is also the phase of a
+    /// Control Centre pull-down that never left the foreground. This is the one
+    /// bit that tells those two apart, and a refresh on every inactive->active
+    /// would be a reconnect the operator did not ask for.
+    @State private var returningFromBackground = false
 
     var body: some View {
         Group {
@@ -79,9 +88,21 @@ struct RootView: View {
             // have suspended.
             switch phase {
             case .background:
+                returningFromBackground = true
                 BackgroundRefresh.shared.didEnterBackground()
             case .active:
                 BackgroundRefresh.shared.willEnterForeground()
+                // A return from the background is the one moment the app has to
+                // re-dial by itself: suspending drops the socket and nothing on
+                // any screen notices, so the phone sat on "Offline" until
+                // Reconnect was tapped. Once per return -- the flag is consumed
+                // here and set only on the way into the background -- and before
+                // the account read below rather than after it, because the
+                // connection is what every other call on this screen needs.
+                if returningFromBackground {
+                    returningFromBackground = false
+                    Task { await model.refreshAfterReturning() }
+                }
                 // A plan bought on another device, or a refunded subscription,
                 // is only true on the server: the cached profile is refreshed
                 // when the app comes back rather than when a screen opens.

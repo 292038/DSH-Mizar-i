@@ -10,8 +10,8 @@
 |---|---|
 | **Bundle ID** | `me.shirazu.dshmizar` |
 | **显示名** | `DSH-Mizar` |
-| **版本号** | `0.9.3` |
-| **构建号** | `25` |
+| **版本号** | `0.9.4` |
+| **构建号** | `26` |
 | **Team ID** | `5Q2A46685M` |
 | 团队名 | Vreeland Lee |
 | 签名身份 | `Apple Distribution: Vreeland Lee (5Q2A46685M)` |
@@ -55,9 +55,9 @@
 
 ```
 release/iOS/
-├─ DSH-Mizar-0.9.3.xcarchive   ← 双击打开 Organizer，用它上传
-├─ DSH-Mizar-0.9.3.ipa         ← 由 scripts/release.sh export 生成，可用 Transporter 上传
-└─ RELEASE_NOTES-0.9.3.md      ← 这一版改了什么、怎么验
+├─ DSH-Mizar-0.9.4.xcarchive   ← 双击打开 Organizer，用它上传
+├─ DSH-Mizar-0.9.4.ipa         ← 由 scripts/release.sh export 生成，可用 Transporter 上传
+└─ RELEASE_NOTES-0.9.4.md      ← 这一版改了什么、怎么验
 ```
 
 > **`.ipa` 为什么可能不在。** 导出 `.ipa` 要用 App Store 描述文件，而描述文件必须带上
@@ -100,12 +100,12 @@ release/iOS/
 **最省事的方式**（用你 Xcode 里已登录的账号，不需要额外配任何密钥）：
 
 ```bash
-open release/iOS/DSH-Mizar-0.9.3.xcarchive
+open release/iOS/DSH-Mizar-0.9.4.xcarchive
 ```
 
 Xcode 的 **Organizer** 会打开：
 
-1. 选中 **DSH-Mizar 0.9.3 (25)**
+1. 选中 **DSH-Mizar 0.9.4 (26)**
 2. 点右侧 **Distribute App**
 3. 选 **TestFlight & App Store** → **Distribute**
 4. 后面一路默认：
@@ -151,7 +151,7 @@ Xcode 的 **Organizer** 会打开：
    - **内部测试**：只能加你 App Store Connect 团队里的成员。
      一个个人开发者账号通常就是你自己，**用你的 Apple ID 邮箱**
    - **不需要 Apple 审核**，加完立刻能装 ← **自己测试走这条最快**
-3. 加完在构建那一栏点 **`+`** → 选 `0.9.3 (25)` → **Add**
+3. 加完在构建那一栏点 **`+`** → 选 `0.9.4 (26)` → **Add**
 
 > **外部测试**（External Testing）可以加最多 10000 人，但**第一次需要 Apple 审核**，
 > 通常 1–2 天。自己用不上走这条。
@@ -287,7 +287,25 @@ App 里订阅按钮的文案和价格都来自 `Product.displayPrice`，**没有
 
 ### 附件
 
-附件只对付费账户开放，且需要电脑端插件是支持 `upload.*` 的新版本（0.8.4+）。旧插件在发送
-附件时会明确提示"这台电脑上的 DSH 插件版本过旧，无法接收附件"，而不是发送失败。上限：
-图片 ≤ 10 MiB、文件 ≤ 32 MiB、一次 ≤ 8 个（图片 ≤ 4）、合计 ≤ 64 MiB；照片会先缩到长边
-2048 再压缩，正常手机照片远低于限制。
+附件对付费账户开放；**局域网通信时（直连电脑、不经过中继）对任何账户开放**，因为这部分
+带宽不由中继承担。需要在电脑端插件 0.8.4+（`upload.*`；0.9.4 起局域网解锁也是这个版本
+起就有）。旧插件在发送附件时会明确提示「这台电脑上的 DSH 插件版本过旧，无法接收附件」，
+而不是发送失败。上限：图片 ≤ 10 MiB、文件 ≤ 32 MiB、一次 ≤ 8 个（图片 ≤ 4）、合计
+≤ 64 MiB；照片会先缩到长边 2048 再压缩，正常手机照片远低于限制。
+
+### 电脑端插件版本（0.9.4 相关）
+
+| 功能 | 最低插件版本 |
+|---|---|
+| 附件上传、运行中轮次完整细节 | 0.8.4（附件）/ 0.9.0（`session.activity`） |
+| 局域网扫描时向电脑要当前监听地址（`host.info.addresses`） | 0.8.5 |
+| 侧边栏「归档该会话」（`session.archive`，并在列表里过滤已归档会话） | 0.8.5 |
+
+插件没更新时，旧插件会回「未实现」：归档菜单会显示失败原因；局域网扫描退回只试配对时
+记下的地址，其余功能不受影响。
+
+另外，**0.8.5 起插件默认在中继开着时也监听局域网地址**（旧的「有中继就只听 127.0.0.1」
+默认已经改掉），否则 App 没有直连地址可扫、局域网通信永远不会发生。如果某台机器的 profile
+里显式写过 `bind.mode: loopback` 或 `relay.preferLoopback: true`，它们仍然优先：删掉这两项
+（或改为 `mode: lan` / `preferLoopback: false`）再重启 DSH 才能局域网直连。127.0.0.1 会
+一直保留，中继请求是从本机回放到那个端口上的。

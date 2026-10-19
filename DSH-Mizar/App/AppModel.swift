@@ -71,6 +71,43 @@ final class AppModel {
     /// connection carries a round trip through another machine, and an operator
     /// wondering why everything feels slow deserves to see why.
     private(set) var activeEndpoint: PairedHost.Endpoint?
+
+    /// Whether the live route reaches the computer on the operator's own
+    /// network.
+    ///
+    /// True when the app is dialled directly at a non-loopback address: the
+    /// operator's Wi-Fi, a tailnet, an mDNS name. Not true through the relay,
+    /// and not true on loopback -- on a phone loopback never occurs, while on
+    /// the simulator it is the fixture running on the same Mac, which is the
+    /// one case where "local" would be an accident of the test rig rather than
+    /// a fact about the operator's network.
+    ///
+    /// ### Why this is a product fact rather than a networking detail
+    ///
+    /// The relay is metered and the LAN is not, and the paid plan is three
+    /// things the relay's bandwidth pays for: attachments, the running turn's
+    /// full process detail, and the high-bandwidth relay server. On a LAN link
+    /// the first two cost the project nothing, so they are unlocked for every
+    /// account; see ``advancedFeaturesUnlocked``.
+    var isLocalCommunication: Bool {
+        #if DEBUG
+        // A UI test drives the fixture over 127.0.0.1, which the rule above
+        // deliberately excludes. The flag is how the LAN-unlocked UI stays
+        // reachable from a test, and it exists only in Debug builds.
+        if Self.launchForcesLocalNetwork { return true }
+        #endif
+        return activeEndpoint?.isLocalNetwork ?? false
+    }
+
+    /// Whether the paid feature set is available: a paid account, or a link the
+    /// relay is not carrying.
+    ///
+    /// Gates exactly the two features unlocked on a LAN link -- composer
+    /// attachments and the running turn's full process detail. Everything else
+    /// the app does was already free.
+    var advancedFeaturesUnlocked: Bool {
+        account.isPaid || isLocalCommunication
+    }
     /// The sessions the host lists, newest activity first.
     private(set) var sessions: [SessionRow] = [] {
         didSet {
@@ -714,10 +751,17 @@ final class AppModel {
     /// How many round trips are kept for the connection window's trace.
     static let latencyHistory = 24
 
-    /// Whether the ten-second poll that follows a running turn is up.
+    /// Whether the poll that follows a running turn is up.
     var runningPollIsActive: Bool { runningPoll != nil }
     /// How often it asks.
-    var runningPollInterval: Duration { RunningPoll.interval }
+    ///
+    /// Ten seconds on a relayed link -- the interval exists because of the
+    /// relay's bandwidth -- and three on the operator's own network, where the
+    /// cost is nothing and a turn ending should be seen while the operator is
+    /// still watching. See ``RunningPoll/localInterval``.
+    var runningPollInterval: Duration {
+        isLocalCommunication ? RunningPoll.localInterval : RunningPoll.interval
+    }
     /// Ticks in a row that could not read; the poll rebuilds the socket after two.
     var runningPollFailures: Int { runningPollRecovery.failures }
     /// Whether the host's pushed events are being listened to.
@@ -1026,6 +1070,8 @@ final class AppModel {
         permissionCatalogState.clear()
         pendingState.clear()
         recentHostEventState.clear()
+        // A preset accepted here is a fact about a session on this computer.
+        appliedPermissions = [:]
         phase = .launching
     }
 
@@ -1064,6 +1110,16 @@ final class AppModel {
     /// nothing else.
     private static var launchResetsCache: Bool {
         ProcessInfo.processInfo.arguments.contains("-mizarFreshStart")
+    }
+
+    /// Whether to report a LAN link no matter what the live route is.
+    ///
+    /// Debug-only, and only for UI tests: the fixture is reached over loopback,
+    /// which the real rule excludes, so without this flag the LAN-unlocked UI
+    /// could not be driven by a test. The flag is read where the rule lives
+    /// (``isLocalCommunication``) so no other code branches on it.
+    private static var launchForcesLocalNetwork: Bool {
+        ProcessInfo.processInfo.arguments.contains("-mizarLocalNetwork")
     }
 
     /// Read a `-flag value` pair from the launch arguments.
@@ -1186,7 +1242,10 @@ final class AppModel {
         runningPoll = Task { [weak self] in
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: RunningPoll.interval)
+                    // Read each tick rather than captured once: the route can
+                    // change under a poll (a manual refresh that finds the LAN),
+                    // and the next sleep is the first place that can act on it.
+                    try await Task.sleep(for: self?.runningPollInterval ?? RunningPoll.interval)
                 } catch {
                     // Cancellation is the stop path; there is nothing to report.
                     return
@@ -1735,19 +1794,22 @@ final class AppModel {
     /// The last full-detail answer for a session, for the running-turn row.
     ///
     /// - Parameter sessionId: the session.
-    /// - Returns: the answer, or `nil` when there is none, or when the account is
-    ///   not paid. The paid check is repeated here so a caller cannot draw a
-    ///   detail area the account has no right to by reading a stale cache.
+    /// - Returns: the answer, or `nil` when there is none, or when the full
+    ///   detail is not unlocked. The check is repeated here so a caller cannot
+    ///   draw a detail area the account has no right to by reading a stale
+    ///   cache; ``advancedFeaturesUnlocked`` is what makes a LAN link entitled
+    ///   to it without a paid plan.
     func activity(for sessionId: String) -> SessionActivityResult? {
-        guard account.isPaid else { return nil }
+        guard advancedFeaturesUnlocked else { return nil }
         return sessionActivity[sessionId]
     }
 
     /// Read the running turn's compact process details.
     ///
-    /// Paid accounts only. Called on a two-second poll by the running-turn row
-    /// itself (see `TurnActivitySummary`), which is where "while it is running"
-    /// is decided; this method is the fetch, not the schedule.
+    /// Unlocked accounts only -- paid, or connected over a LAN link. Called on a
+    /// two-second poll by the running-turn row itself (see
+    /// `TurnActivitySummary`), which is where "while it is running" is decided;
+    /// this method is the fetch, not the schedule.
     ///
     /// Deliberately not through `loggedCall`: that writes a request entry into the
     /// log, and a log line every two seconds for the whole of a turn would bury
@@ -1759,7 +1821,7 @@ final class AppModel {
     ///
     /// - Parameter sessionId: the session to read.
     func refreshActivity(for sessionId: String) async {
-        guard account.isPaid, let connection, !activityReads.contains(sessionId) else { return }
+        guard advancedFeaturesUnlocked, let connection, !activityReads.contains(sessionId) else { return }
         activityReads.insert(sessionId)
         defer { activityReads.remove(sessionId) }
         do {
@@ -1878,7 +1940,34 @@ final class AppModel {
         }
     }
 
+    /// Presets the host accepted here, ahead of the projection that confirms
+    /// them.
+    ///
+    /// The host confirms a switch by its `permissions` projection changing, not
+    /// by the command's return value -- the bridge says so in as many words --
+    /// so between the call returning and the next `session.stats` the screen
+    /// holds the old preset. The picker is dismissed in that window, and
+    /// reopening it read the old frame: choose a preset, reopen, see the old one
+    /// ticked. This map is what the screen reads until the host's answer lands.
+    private var appliedPermissions: [String: String] = [:]
+
+    /// The preset to show for a session.
+    ///
+    /// - Parameters:
+    ///   - sessionId: the session.
+    ///   - reported: the last figure the host's stats frame carried.
+    /// - Returns: a preset the host accepted here and has not yet confirmed,
+    ///   else the host's own answer.
+    func permissionPreset(for sessionId: String, reported: String?) -> String? {
+        appliedPermissions[sessionId] ?? reported
+    }
+
     /// Switch the session's permission preset.
+    ///
+    /// A success is recorded locally before the host's projection is re-read:
+    /// see ``appliedPermissions``. A refusal comes back as `nil`, and the picker
+    /// shows it rather than closing on a switch that did not happen.
+    ///
     /// - Parameters:
     ///   - preset: the preset value.
     ///   - sessionId: the session to change.
@@ -1889,7 +1978,69 @@ final class AppModel {
             "sessionId": .string(sessionId),
             "preset": .string(preset),
         ])
-        return try? await loggedCall("session.permission.set", payload: payload, on: connection, as: SetPermissionResult.self)
+        guard let result = try? await loggedCall(
+            "session.permission.set",
+            payload: payload,
+            on: connection,
+            as: SetPermissionResult.self,
+        ), result.commandResult.succeeded else {
+            log.add(.request, "permission switch refused: \(preset)")
+            return nil
+        }
+        appliedPermissions[sessionId] = preset
+        // Ask for the frame that actually confirms the switch. Best effort: the
+        // override above already draws the right answer if this read fails.
+        _ = await stats(for: sessionId)
+        return result
+    }
+
+    /// The host's answer to `session.archive`.
+    private struct ArchiveSessionResult: Decodable, Sendable {
+        let archived: Bool
+    }
+
+    /// Archive a session on the computer, and take it off this phone's list.
+    ///
+    /// Non-destructive on the host: the plugin archives without stopping work,
+    /// so a session whose turn is running is refused and the refusal is shown.
+    /// A long-press is not the moment to silently kill an agent mid-turn.
+    ///
+    /// The row is removed locally before the list is re-read, so the menu action
+    /// has a visible effect immediately; the read is what makes the workspace
+    /// counts, the pending set and the stored index agree with the host. If the
+    /// host refuses, nothing is removed and ``lastError`` carries the reason to
+    /// the banner over the list.
+    ///
+    /// - Parameter sessionId: the session to archive.
+    /// - Returns: whether the host accepted it.
+    @discardableResult
+    func archiveSession(_ sessionId: String) async -> Bool {
+        guard let connection else {
+            lastError = "Not connected to the computer."
+            return false
+        }
+        let payload = JSONValue.object(["sessionId": .string(sessionId)])
+        do {
+            _ = try await loggedCall(
+                "session.archive",
+                payload: payload,
+                on: connection,
+                as: ArchiveSessionResult.self,
+            )
+        } catch {
+            let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
+            lastError = message.isEmpty ? String(localized: "The session was not archived.") : message
+            log.add(.request, "archive refused for \(sessionId)")
+            return false
+        }
+        // The host is the authority, and `refreshSessions` below is its answer.
+        // Removing first is what lets the row leave while that read is in flight.
+        if selectedSessionId == sessionId { selectedSessionId = nil }
+        titles.removeValue(forKey: sessionId)
+        sessions.removeAll { $0.sessionId == sessionId }
+        await persistIndex()
+        await refreshSessions()
+        return true
     }
 
     /// Forget every pairing and return to the pairing screen.
@@ -2054,6 +2205,160 @@ final class AppModel {
     /// Refresh the session list.
     func refreshSessions() async {
         await refreshSessions(reconnectingIfNeeded: true)
+    }
+
+    // MARK: - The operator's own network
+
+    /// How long a LAN probe waits for a host that may not be there.
+    ///
+    /// Short on purpose. The probe is one of several, it is only ever a guess
+    /// about a network, and every second it spends on an address that is not
+    /// the computer is a second the refresh it precedes has not started.
+    private static let lanProbeTimeout: TimeInterval = 2.5
+
+    /// The operator asked for a refresh.
+    ///
+    /// Every manual refresh asks the LAN question first. The relay is the route
+    /// that works from anywhere, which is exactly why a phone ends up on it and
+    /// stays there: a reconnect dials whichever route worked last, and coming
+    /// home does not change that by itself. The scan is best effort and silent
+    /// when it finds nothing -- the read it precedes is the answer the operator
+    /// actually asked for.
+    func manualRefresh() async {
+        await scanForLocalNetwork()
+        await refreshSessions()
+    }
+
+    /// The app came back from the background.
+    ///
+    /// iOS freezes the process, and a socket that was fine when the screen went
+    /// away can be dead by the time it comes back -- on a phone that changed
+    /// networks in a pocket it usually is. The app used to keep the dead object
+    /// and say "Offline" until somebody found the Reconnect button, which is the
+    /// reported bug: leave the app, come back, everything is offline.
+    ///
+    /// So returning is a redial, not a read on the old socket: reconnect once
+    /// trying every route the pairing knows, then ask the LAN question, then
+    /// read what the screens draw. The order matters. A pairing made while the
+    /// computer listened only on loopback stores the relay address and nothing
+    /// else; its LAN addresses exist only in the host's own answer, and the host
+    /// can only be asked over a live socket -- so the scan has to come after the
+    /// redial, not before it. A scan that finds the LAN has already dialled it,
+    /// and the read below waits only for that one shorter handshake.
+    func refreshAfterReturning() async {
+        _ = await reconnect(tryingEveryRoute: true)
+        await scanForLocalNetwork()
+        await refreshSessions(reconnectingIfNeeded: false)
+        await refreshInteractions()
+    }
+
+    /// Try the operator's own network before the relay.
+    ///
+    /// Candidates are the direct address the pairing carries plus, when the
+    /// host is reachable at all, every address its listener is bound to
+    /// (`host.info`'s `addresses`, a plugin 0.8.5+ field). Each is probed over
+    /// plain HTTP with the same unauthenticated `hello` the pairing screen uses,
+    /// and the host id in the answer must match this pairing's: an address that
+    /// answers as somebody else's computer is not this computer.
+    ///
+    /// The stored address is the one that may be stale -- it is a DHCP lease
+    /// from whenever the phone was paired -- which is why the live socket is
+    /// also asked what it is listening on now.
+    ///
+    /// - Returns: whether the scan dialled a local route and is now connected
+    ///   over it.
+    @discardableResult
+    func scanForLocalNetwork() async -> Bool {
+        guard let host else { return false }
+        if connection != nil, activeEndpoint?.isLocalNetwork == true {
+            log.add(.connection, "LAN scan: already on the local network")
+            return false
+        }
+        var candidates = host.endpoints.compactMap { endpoint -> String? in
+            guard case .direct(let authority) = endpoint else { return nil }
+            return authority
+        }
+        if let connection {
+            // Best effort: an older host answers without `addresses`, and the
+            // stored authority is still probed.
+            if let info = try? await connection.call("host.info", as: HostInfo.self) {
+                candidates.append(contentsOf: (info.addresses ?? []).filter { !$0.isEmpty })
+            }
+        }
+        var seen: Set<String> = []
+        let ordered = candidates.filter { !$0.isEmpty && seen.insert($0).inserted }
+        guard !ordered.isEmpty else {
+            log.add(.connection, "LAN scan: this pairing knows no direct address")
+            return false
+        }
+        // Probed together rather than one after another. The addresses are
+        // attempts at the same question, and on a phone that has walked out of
+        // range none of them is coming: waiting for the first timeout before
+        // starting the second would make a pull-to-refresh cost one timeout per
+        // address. The earliest candidate that answered as this computer still
+        // wins, so the order continues to decide between two working addresses.
+        let hostId = host.hostId
+        let probe = PairingClient(transport: URLSessionHTTPTransport(timeout: Self.lanProbeTimeout))
+        var answered: Set<String> = []
+        await withTaskGroup(of: (authority: String, matched: Bool).self) { group in
+            for authority in ordered {
+                group.addTask {
+                    guard let answer = try? await probe.hello(authority: authority) else {
+                        return (authority, false)
+                    }
+                    // An address that answers as somebody else's computer is
+                    // not this computer, however plausible it looks.
+                    return (authority, answer.hostId == hostId)
+                }
+            }
+            for await result in group where result.matched {
+                answered.insert(result.authority)
+            }
+        }
+        log.add(.connection, "LAN scan: \(answered.count) of \(ordered.count) address(es) answered as this computer")
+        guard let authority = ordered.first(where: answered.contains) else {
+            log.add(.connection, "LAN scan: no local address answered")
+            return false
+        }
+        if case .direct(let current) = activeEndpoint, current == authority {
+            // The route already in use is this address and it answered: the
+            // link is direct, but nothing moved. A foreground return still
+            // wants its redial, so this is not a switch.
+            return false
+        }
+        return await moveToLocalRoute(authority: authority)
+    }
+
+    /// Move the pairing to a direct address that has just answered.
+    ///
+    /// The credential is written first: if the dial below fails and the app is
+    /// killed, the next launch must try the address that answered rather than
+    /// the lease that expired. A dial that fails after a successful HTTP probe
+    /// puts the previous route back -- a link that half works is not worth
+    /// losing the working one for -- and the log says so.
+    ///
+    /// - Parameter authority: the `host:port` that answered as this computer.
+    /// - Returns: whether the app is now connected over it.
+    private func moveToLocalRoute(authority: String) async -> Bool {
+        guard let host else { return false }
+        let previousEndpoint = activeEndpoint
+        let moved = host.moved(to: authority)
+        self.host = moved
+        if let index = hosts.firstIndex(where: { $0.hostId == moved.hostId }) { hosts[index] = moved }
+        try? await credentials.save(moved)
+        activeEndpoint = .direct(authority: authority)
+        log.add(.connection, "LAN scan: dialling \(authority)")
+        if await reconnect() {
+            log.add(.connection, "LAN scan: switched to the local network at \(authority)")
+            return true
+        }
+        log.add(.connection, "LAN scan: \(authority) answered the probe but not the socket; keeping the previous route")
+        self.host = host
+        if let index = hosts.firstIndex(where: { $0.hostId == host.hostId }) { hosts[index] = host }
+        try? await credentials.save(host)
+        activeEndpoint = previousEndpoint
+        if previousEndpoint != nil { _ = await reconnect() }
+        return false
     }
 
     /// Refresh the session list, reconnecting first when the socket is gone.
@@ -2314,11 +2619,18 @@ final class AppModel {
     /// from the phone that prompted this reads `-1009`, "not connected to the
     /// internet" -- no number of sub-second retries outlasts that.
     ///
-    /// - Parameter patient: whether to keep trying long enough to outlast a
-    ///   phone that has lost its network.
+    /// - Parameters:
+    ///   - patient: whether to keep trying long enough to outlast a
+    ///     phone that has lost its network.
+    ///   - tryingEveryRoute: whether to try every route the pairing knows
+    ///     instead of only the one that worked last. A foreground return uses
+    ///     this: the route that worked before the app went to sleep may be the
+    ///     one the phone has since walked away from, and the relay is exactly
+    ///     the fallback for that. An ordinary request retry does not, because
+    ///     its whole purpose is to recover the socket it was using.
     /// - Returns: whether a connection is now open.
     @discardableResult
-    func reconnect(patient: Bool = false) async -> Bool {
+    func reconnect(patient: Bool = false, tryingEveryRoute: Bool = false) async -> Bool {
         guard let host else { return connection != nil }
         if reconnecting {
             // Someone else is already bringing the socket back; wait for them.
@@ -2360,23 +2672,56 @@ final class AppModel {
         }
         reconnecting = true
         defer { reconnecting = false }
-        log.add(.connection, "reconnecting\(patient ? " (patient)" : "")")
+        log.add(
+            .connection,
+            "reconnecting\(patient ? " (patient)" : "")\(tryingEveryRoute ? " (every route)" : "")",
+        )
 
         eventListener?.cancel()
         interactionPoll?.cancel()
         await connection?.disconnect()
         connection = nil
 
-        let attempts = patient ? 8 : 3
+        // Which routes to dial, in order. The ordinary path is one route: the
+        // one that was working, because that is the one a dropped request is
+        // asking to rebuild. The foreground path asks for all of them -- the
+        // address that worked an hour ago may be a network the phone has left.
+        let routes: [PairedHost.Endpoint]
+        if tryingEveryRoute, !host.endpoints.isEmpty {
+            routes = host.endpoints
+        } else if let activeEndpoint {
+            routes = [activeEndpoint]
+        } else {
+            routes = Array(host.endpoints.prefix(1))
+        }
+        guard !routes.isEmpty else {
+            log.add(.connection, "reconnect: this pairing has no route to dial")
+            return false
+        }
+        // A patient reconnect keeps trying for as long as the operator is
+        // watching; an ordinary one gets three attempts. Trying every route
+        // gets one attempt per route and, where there is only one route, one
+        // more -- the moment a backgrounded app becomes active is often before
+        // the network has finished coming back, and a single failed dial there
+        // leaves the phone on "Offline" for a return that had a real chance.
+        // Two failed routes are already two timeouts, so no route gets a third
+        // attempt.
+        let attempts = patient ? 8 : (tryingEveryRoute ? max(routes.count, 2) : 3)
         for attempt in 0..<attempts {
             if attempt > 0 {
                 let pause = patient ? min(4_000, 400 << attempt) : 400 * attempt
                 try? await Task.sleep(for: .milliseconds(pause))
             }
-            guard let next = makeConnection(for: host) else { continue }
+            let route = routes[attempt % routes.count]
+            let next = makeConnection(host: host, endpoint: route)
             do {
                 _ = try await next.connect()
                 connection = next
+                // The route that actually answered is the route the app is on:
+                // a scan or a foreground return may have chosen a different one
+                // from the last, and the footer, the entitlement and the next
+                // reconnect all read this.
+                activeEndpoint = route
                 // A reconnect is a new conversation with the same machine, and
                 // the epoch says so. Everything scoped to the old socket -- the
                 // catalogues, the pending set, an answer still on its way --
@@ -2549,7 +2894,11 @@ final class AppModel {
 
         // The refresh opens a socket when there is none -- that is where the
         // old Retry button's reconnect now lives -- so the connection is
-        // checked after it rather than before it.
+        // checked after it rather than before it. The LAN question comes first
+        // for the same reason a plain refresh asks it: this is a manual update,
+        // and a manual update is the operator saying "get current", which
+        // includes being on the right network.
+        await scanForLocalNetwork()
         await refreshSessions()
         guard connection != nil else {
             log.add(.sync, "history sync: skipped, not connected to the computer")
@@ -3016,6 +3365,13 @@ final class AppModel {
                 return known
             }
             let merged = frame.merging(known)
+            // A permission switch just accepted here is confirmed by the host's
+            // projection arriving in this frame. Once it has, the local override
+            // has nothing left to say -- and keeping it would let a session id
+            // reused by a later session read somebody else's answer as true.
+            if let override = appliedPermissions[sessionId], override == merged.permissionPreset {
+                appliedPermissions.removeValue(forKey: sessionId)
+            }
             // Written down as well as returned. The figures above the composer
             // are read from this, and a session screen that has to wait for the
             // network before it can say which model is answering says nothing at
@@ -3422,22 +3778,6 @@ final class AppModel {
             configuration: configuration,
             makeTransport: { URLSessionWebSocketTransport(timeout: timeout) },
         )
-    }
-
-    /// The route a reconnect should try first: whichever one worked.
-    ///
-    /// Falling back to the first candidate each time would make a relay-only
-    /// phone pay the direct timeout on every reconnect, and a phone that walks
-    /// out of Wi-Fi range reconnects often.
-    ///
-    /// - Parameter host: the pairing to connect with.
-    /// - Returns: the connection, or `nil` when there is no route to try.
-    private func makeConnection(for host: PairedHost) -> MizarConnection? {
-        if let activeEndpoint {
-            return makeConnection(host: host, endpoint: activeEndpoint)
-        }
-        guard let first = host.endpoints.first else { return nil }
-        return makeConnection(host: host, endpoint: first)
     }
 
     /// Open one connection over one route, and load the first screen's data.
