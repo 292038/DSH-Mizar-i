@@ -93,6 +93,14 @@ struct MizarShell: View {
         let p = compact ? shell.progress : 0
         let lead = compact ? max(0, min(1, p)) : (shell.pinnedVisible ? 1 : 0)
         let trail = compact ? max(0, min(1, -p)) : (indexColumnShown ? 1 : 0)
+        // Which drawer, if any, the phone is revealing: decided by the sign
+        // of the drag, so it changes once per gesture rather than once per
+        // frame. A drawer that is not the one being shown sits behind an
+        // opaque card, so its value never shows -- and a constant opacity
+        // lets the render server move a cached layer instead of compositing
+        // two full-screen blends on every frame of the drag.
+        let leadingShown = compact && trail < lead
+        let trailingShown = compact && lead < trail
         ZStack(alignment: .topLeading) {
             Theme.sidebarBackground.ignoresSafeArea()
 
@@ -103,7 +111,11 @@ struct MizarShell: View {
                 // and a little light, so the two read as layers rather than as
                 // one strip sliding sideways.
                 .offset(x: compact ? -(1 - lead) * 44 : -(1 - lead) * leading)
-                .opacity(compact ? (trail > 0.01 ? 0 : 0.35 + 0.65 * lead) : 1)
+                .opacity(compact ? (leadingShown ? 1 : 0) : 1)
+                // The edge of a gesture is a fade rather than a cut: this
+                // changes only when the drag crosses from one drawer to the
+                // other, never while the finger moves.
+                .animation(Motion.pick(.mizarSmooth), value: leadingShown)
                 .accessibilityHidden(lead < 0.5)
                 .allowsHitTesting(lead > 0.5)
                 .gesture(SidebarPan(shell: shell, compact: compact))
@@ -113,7 +125,8 @@ struct MizarShell: View {
                 .safeAreaPadding(EdgeInsets(top: insets.top, leading: 0, bottom: insets.bottom, trailing: insets.trailing))
                 .frame(width: trailing, height: size.height)
                 .offset(x: size.width - trailing + (compact ? (1 - trail) * 44 : (1 - trail) * trailing))
-                .opacity(compact ? (lead > 0.01 ? 0 : 0.35 + 0.65 * trail) : 1)
+                .opacity(compact ? (trailingShown ? 1 : 0) : 1)
+                .animation(Motion.pick(.mizarSmooth), value: trailingShown)
                 .accessibilityHidden(trail < 0.5)
                 .allowsHitTesting(trail > 0.5)
                 .gesture(SidebarPan(shell: shell, compact: compact))
@@ -212,10 +225,15 @@ struct MizarShell: View {
                 .opacity(compact ? 1 : 0)
                 .allowsHitTesting(false)
         }
+        // The shadow is the one effect here that must not follow the
+        // finger: a radius that changes every frame re-renders a
+        // full-screen blur on every frame of the drag. Fixed at its
+        // settled size, only its opacity moves -- a blend, not a blur --
+        // so the card still lifts as the drawer opens beside it.
         .shadow(
             color: .black.opacity((colorScheme == .dark ? 0.5 : 0.16) * (compact ? reveal : 0)),
-            radius: 30 * reveal,
-            x: (towardsTrailing ? 8 : -8) * reveal,
+            radius: 30,
+            x: towardsTrailing ? 8 : -8,
         )
         .scaleEffect(compact ? 1 - 0.06 * reveal : 1, anchor: towardsTrailing ? .trailing : .leading)
         .offset(x: offset)

@@ -359,6 +359,7 @@ private struct TurnIndexRow: View {
     let action: () -> Void
 
     @State private var grown = false
+    @Environment(ShellState.self) private var shell
 
     var body: some View {
         Button(action: action) {
@@ -388,10 +389,20 @@ private struct TurnIndexRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityHint(Text("Shows this turn in the conversation"))
         .accessibilityIdentifier("turnIndex.row.\(turn.id)")
-        .onAppear {
-            guard !grown else { return }
-            withAnimation(Motion.pick(.mizarGentle).delay(appearDelay)) { grown = true }
-        }
+        // A row built while a drawer is moving waits for it to settle
+        // before its bar grows. The stagger animates the bar's *width*,
+        // which lays out every growing row on every frame -- and those
+        // frames belong to the drawer dragging the conversation card.
+        // Once the drawers are still, the stagger plays on its own.
+        .onAppear { grow() }
+        .onChange(of: shell.isDragging) { _, _ in grow() }
+        .onChange(of: shell.isSettling) { _, _ in grow() }
+    }
+
+    /// Grow the bar, staggered, once the drawers are still.
+    private func grow() {
+        guard !grown, !shell.isDragging, !shell.isSettling else { return }
+        withAnimation(Motion.pick(.mizarGentle).delay(appearDelay)) { grown = true }
     }
 
     /// The timeline: a line through every row, a node per turn, and the line
