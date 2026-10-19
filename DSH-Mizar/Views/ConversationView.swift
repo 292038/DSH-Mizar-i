@@ -23,6 +23,10 @@ import SwiftUI
 import MizarKit
 
 struct ConversationView: View {
+    /// The session on screen. Needed by the running-turn row: the paid
+    /// full-detail feed is read per session, and a view that only held the
+    /// conversation could not ask for it.
+    let sessionId: String
     let items: [ConversationItem]
     /// The conversation grouped into turns. Empty when the host sent no turn
     /// numbers, in which case the flat list is drawn instead.
@@ -102,7 +106,7 @@ struct ConversationView: View {
                 }
             } else {
                 ForEach(turns) { turn in
-                    TurnSection(turn: turn)
+                    TurnSection(turn: turn, sessionId: sessionId)
                         .transition(.rise)
                 }
             }
@@ -161,6 +165,8 @@ struct ConversationView: View {
 /// One turn: the prompt, the row that says how it is going, and the answer.
 private struct TurnSection: View {
     let turn: ConversationTurn
+    /// The session this turn belongs to, for the paid activity feed.
+    let sessionId: String
     @Environment(TurnIndex.self) private var index
 
     var body: some View {
@@ -171,11 +177,10 @@ private struct TurnSection: View {
 
             // Prompt, row, answer -- and the row does not move. The answer was
             // once drawn above the row and once hidden inside it; both made the
-            // row jump or hid the one thing a monitoring app must show.
-            TurnSummary(turn: turn)
-                // The row's identity on the row, not inside it: the state, the
-                // clock and the count are all the same row.
-                .accessibilityIdentifier("turn.\(turn.id)")
+            // row jump or hid the one thing a monitoring app must show. The paid
+            // full-detail area is added *below* the row for the same reason:
+            // opening it must never move or replace the status row.
+            TurnActivitySummary(turn: turn, sessionId: sessionId)
 
             ForEach(turn.steps) { item in
                 ConversationRow(item: item, isLastPrompt: false)
@@ -206,6 +211,11 @@ private struct TurnSection: View {
 /// "DeepSeeking for 2 min 14 s", "Completed in 2 min 14 s", or why it did not.
 private struct TurnSummary: View {
     let turn: ConversationTurn
+    /// Whether the row offers the paid detail, so a chevron shows that there is
+    /// more behind it. Off for free accounts and for turns with no detail.
+    var showsChevron = false
+    /// Which way the chevron points, and where the detail is going.
+    var expanded = false
 
     var body: some View {
         HStack(spacing: 7) {
@@ -244,6 +254,17 @@ private struct TurnSummary: View {
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.tertiary)
                     .contentTransition(.numericText())
+            }
+            if showsChevron {
+                // A chevron that turns rather than swaps: the row is the same
+                // row open and shut, and the glyph saying so should be the same
+                // glyph. Rotated, not replaced, so no second element appears.
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .animation(.mizarSnappy, value: expanded)
+                    .accessibilityHidden(true)
             }
         }
         .padding(.vertical, 2)
@@ -307,6 +328,143 @@ private struct TurnSummary: View {
         let total = Int(seconds.rounded())
         if total < 60 { return String(format: String(localized: "%lld s"), total) }
         return String(format: String(localized: "%lld min %lld s"), total / 60, total % 60)
+    }
+}
+
+/// The running-turn row and, for a paid account, its expandable detail.
+///
+/// This is the one place the paid full-detail feed meets the screen. It decides
+/// what the account may see, polls while the turn is running, and renders the
+/// detail below the summary row — never in place of it. The summary row is the
+/// only thing on this screen that must not move while a turn is in flight: it is
+/// where the operator reads "how long has this been going", and opening a detail
+/// under it is fine while moving or replacing it is not.
+///
+/// Free accounts take the else branch and never start the poll: ``AppModel``
+/// refuses the read too, so there are two independent guards against a paid-only
+/// method being called by a free account.
+private struct TurnActivitySummary: View {
+    let turn: ConversationTurn
+    let sessionId: String
+
+    @Environment(AppModel.self) private var model
+    /// Whether the detail is out. Reset when the turn ends, because there is
+    /// nothing left for it to describe.
+    @State private var expanded = false
+
+    /// The details for this session, when there are any to show.
+    private var entries: [ActivityEntry] {
+        // Touch the observable revision before the method read, so the row
+        // re-evaluates when the first activity answer lands.
+        _ = model.activityRevision
+        return model.activity(for: sessionId)?.entries ?? []
+    }
+
+    /// Whether the chevron and the detail exist at all.
+    ///
+    /// All three conditions are about the same idea: a paid account, a turn that
+    /// is running, and at least one detail worth opening. A chevron that opens an
+    /// empty area is worse than no chevron.
+    private var canExpand: Bool {
+        turn.isRunning && model.account.isPaid && !entries.isEmpty
+    }
+
+    /// What the poll is keyed on: it runs while this turn is running and the
+    /// account is paid, and stops — clearing what it found — the moment either
+    /// stops being true. `.task(id:)` cancels and restarts on a change, which is
+    /// exactly the lifecycle wanted here.
+    private var pollKey: String? {
+        guard turn.isRunning, model.account.isPaid else { return nil }
+        return "\(turn.turn ?? -1)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            row
+            if expanded, canExpand {
+                TurnActivityDetail(entries: entries)
+                    .padding(.top, 8)
+                    // In from under the row and up under it again on the way
+                    // out: the detail belongs to the row, and leaving should
+                    // look like going back where it came from.
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .top)),
+                        removal: .opacity.combined(with: .move(edge: .top)),
+                    ))
+            }
+        }
+        .animation(.mizarSmooth, value: expanded)
+        .task(id: pollKey) { await poll() }
+        .onChange(of: pollKey) { oldKey, newKey in
+            // This turn was the one polling, and it is not any more: it ended,
+            // the account stopped being paid, or the view went away. Only this
+            // view clears the cache -- a finished turn must not, because the
+            // list builds old rows as it scrolls and each of them would wipe the
+            // running turn's detail under the operator.
+            if oldKey != nil, newKey == nil {
+                model.clearActivity(for: sessionId)
+            }
+        }
+        .onChange(of: canExpand) { _, canExpand in
+            // The turn ended, or the plan did. Collapse, so a shut turn cannot
+            // leave a detail area floating under a finished row.
+            if !canExpand, expanded {
+                withAnimation(.mizarSmooth) { expanded = false }
+            }
+        }
+        .onDisappear {
+            // Scrolled away or navigated away while it was the running turn: the
+            // next appearance starts from a fresh read rather than from a
+            // minute-old set of lines. A finished turn's row says nothing here.
+            if turn.isRunning {
+                model.clearActivity(for: sessionId)
+            }
+        }
+    }
+
+    /// The row itself: a button when there is something to open, plain otherwise.
+    ///
+    /// A button only for a paid running turn with detail. The row's own content
+    /// is unchanged in both branches — same glyph, same clock, same count — so a
+    /// turn does not look different merely because somebody subscribed.
+    @ViewBuilder private var row: some View {
+        if canExpand {
+            Button {
+                withAnimation(.mizarBouncy) { expanded.toggle() }
+            } label: {
+                TurnSummary(turn: turn, showsChevron: true, expanded: expanded)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("turn.\(turn.id)")
+            .accessibilityLabel(expanded
+                ? String(localized: "Hide turn details")
+                : String(localized: "Show turn details"))
+        } else {
+            TurnSummary(turn: turn)
+                .accessibilityIdentifier("turn.\(turn.id)")
+        }
+    }
+
+    /// Read the details while the turn runs.
+    ///
+    /// Every second while the running row is on screen. The detail feed is the
+    /// paid full-transfer view and a command's output needs to land while it is
+    /// still the thing being talked about; one second is the cadence the host's
+    /// 256 KiB capped answer was sized for. A failed read changes nothing —
+    /// ``AppModel/refreshActivity(for:)`` keeps the last answer on screen.
+    private func poll() async {
+        // A finished turn has nothing to read, and clearing is not this view's
+        // job when it never started: the change that stopped it clears.
+        guard pollKey != nil else { return }
+        while !Task.isCancelled {
+            await model.refreshActivity(for: sessionId)
+            do {
+                try await Task.sleep(for: .seconds(1))
+            } catch {
+                return
+            }
+        }
     }
 }
 

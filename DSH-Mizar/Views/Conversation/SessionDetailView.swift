@@ -125,6 +125,7 @@ struct SessionDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     ConversationView(
+                        sessionId: sessionId,
                         items: shownItems,
                         turns: shownTurns,
                         loading: loadingConversation,

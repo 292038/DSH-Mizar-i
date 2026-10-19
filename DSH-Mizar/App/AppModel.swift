@@ -1702,6 +1702,110 @@ final class AppModel {
         _ = try? await loggedCall("session.cancel", payload: payload, on: connection, as: AcceptanceResult.self)
     }
 
+    // MARK: - Full-detail activity (paid accounts)
+
+    /// The last full-detail read for a session, by session id.
+    ///
+    /// Only ever populated for a **paid** account, and only while a turn is
+    /// running. Free accounts never fill this, because they never ask: the
+    /// method below returns before touching the socket. That is a product
+    /// boundary, not a UI one -- a screen that hides the detail but still spends
+    /// the bandwidth would be the wrong half of the trade.
+    ///
+    /// Nothing here is persisted. The summary-only history is what the phone
+    /// keeps; this is a live view of a turn that is happening now, and when the
+    /// turn ends the detail goes with it.
+    private(set) var sessionActivity: [String: SessionActivityResult] = [:]
+
+    /// Bumped whenever the activity cache changes.
+    ///
+    /// The detail list is read through a method, and the running row needs a
+    /// direct observable dependency to redraw when the first answer lands. The
+    /// revision is that dependency; it is deliberately an integer, not a copy of
+    /// the feed.
+    private(set) var activityRevision = 0
+
+    /// Sessions with a full-detail read in flight.
+    ///
+    /// The poll runs every two seconds and the read is a round trip, so without
+    /// this a slow host would have two reads of the same session in flight and
+    /// the slower, older answer could land last.
+    private var activityReads: Set<String> = []
+
+    /// The last full-detail answer for a session, for the running-turn row.
+    ///
+    /// - Parameter sessionId: the session.
+    /// - Returns: the answer, or `nil` when there is none, or when the account is
+    ///   not paid. The paid check is repeated here so a caller cannot draw a
+    ///   detail area the account has no right to by reading a stale cache.
+    func activity(for sessionId: String) -> SessionActivityResult? {
+        guard account.isPaid else { return nil }
+        return sessionActivity[sessionId]
+    }
+
+    /// Read the running turn's compact process details.
+    ///
+    /// Paid accounts only. Called on a two-second poll by the running-turn row
+    /// itself (see `TurnActivitySummary`), which is where "while it is running"
+    /// is decided; this method is the fetch, not the schedule.
+    ///
+    /// Deliberately not through `loggedCall`: that writes a request entry into the
+    /// log, and a log line every two seconds for the whole of a turn would bury
+    /// the events the log export exists for.
+    ///
+    /// A failure is not shown and does not erase anything. The last answer stays
+    /// on screen: the detail is decoration on a row that already says how long
+    /// the turn has been going, and a dropped read is not news.
+    ///
+    /// - Parameter sessionId: the session to read.
+    func refreshActivity(for sessionId: String) async {
+        guard account.isPaid, let connection, !activityReads.contains(sessionId) else { return }
+        activityReads.insert(sessionId)
+        defer { activityReads.remove(sessionId) }
+        do {
+            let result = try await connection.sessionActivity(sessionId: sessionId)
+            // An answer about another session is not this session's detail. The
+            // host echoes the id; trusting it is one cheap check against a
+            // mis-routed answer landing under the wrong row.
+            guard result.sessionId.isEmpty || result.sessionId == sessionId else { return }
+            if result.hasRunningTurn {
+                // Assign a new dictionary rather than mutating in place:
+                // `sessionActivity` is an @Observable stored property, and an
+                // in-place subscript mutation does not reliably notify the
+                // running row that the detail it should draw has arrived.
+                var next = sessionActivity
+                next[sessionId] = result
+                sessionActivity = next
+                activityRevision &+= 1
+            } else {
+                // The turn ended (or was cancelled) between polls. The detail
+                // area has nothing left to describe, so it goes -- not faded,
+                // gone, because there is no turn for it to belong to.
+                var next = sessionActivity
+                next.removeValue(forKey: sessionId)
+                sessionActivity = next
+                activityRevision &+= 1
+            }
+        } catch {
+            // Keep what is on screen; see the doc comment.
+        }
+    }
+
+    /// Forget a session's full detail.
+    ///
+    /// Called when the running-turn row collapses, is scrolled away, or the
+    /// session turns out to have stopped. Keeps a paid feed from outliving the
+    /// turn it describes.
+    ///
+    /// - Parameter sessionId: the session to forget.
+    func clearActivity(for sessionId: String) {
+        guard sessionActivity[sessionId] != nil else { return }
+        var next = sessionActivity
+        next.removeValue(forKey: sessionId)
+        sessionActivity = next
+        activityRevision &+= 1
+    }
+
     /// Switch the session's model, and optionally its reasoning effort.
     ///
     /// The choice is shown before the host agrees, and taken back when it does

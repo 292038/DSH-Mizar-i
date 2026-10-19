@@ -380,6 +380,33 @@ const sentPrompts = []
  */
 const createdSessions = []
 
+/**
+ * How many `session.activity` polls the mock has answered since `/reset`.
+ *
+ * The paid detail feed is live: each poll returns one more line, up to the
+ * fixture's eight. That is what makes the app's "new rows descend as the turn
+ * progresses" behaviour observable instead of a static list that arrives whole.
+ */
+let activityPolls = 0
+
+/**
+ * The paid full-detail feed for the fixture's running turn.
+ *
+ * Shaped like the host's `session.activity` entries: compact one-liners the
+ * phone draws without further work. Deliberately one of each kind, so all four
+ * category labels can be seen on one screen.
+ */
+const ACTIVITY_ENTRIES = [
+  { id: 'seq-28', kind: 'thinking', title: '', text: 'Planning the parser refactor and the tests it needs' },
+  { id: 'seq-29-command', kind: 'command', title: 'Bash', text: 'rg -n "assistant/message" src/protocol' },
+  { id: 'seq-30-output', kind: 'output', title: 'Bash', text: 'src/protocol/frames.ts:88: assistant/message' },
+  { id: 'seq-31-tool', kind: 'tool', title: 'Read', text: 'src/protocol/frames.ts (1-240)' },
+  { id: 'seq-32-thinking', kind: 'thinking', title: '', text: 'The reader folds markers into turns; a summary row is enough' },
+  { id: 'seq-33-command', kind: 'command', title: 'Bash', text: 'npm test' },
+  { id: 'seq-34-output', kind: 'output', title: 'Bash', text: 'Tests: 184 passed, 184 total' },
+  { id: 'seq-35-tool', kind: 'tool', title: 'Write', text: 'src/protocol/summaries.ts' },
+]
+
 /** Answer one client frame. */
 function answer(frame) {
   const { id, type } = frame
@@ -724,6 +751,59 @@ function answer(frame) {
         type: 'ok',
         id,
         result: { accepted: true, requestId: frame.payload?.requestId ?? 'mock-request' },
+      }
+    }
+    case 'session.activity': {
+      // The paid full-detail feed: only the running turn's compact process
+      // details. Free accounts never ask, so this is only reachable from a paid
+      // launch -- but the mock answers it for anyone, like a real host would.
+      activityPolls += 1
+      const now = Date.now()
+      const requested = Number(frame.payload?.maxEntries)
+      const cap = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 300) : 200
+      const created = createdSessions.find((s) => s.sessionId === frame.payload?.sessionId)
+      const sessionId = created !== undefined
+        ? created.sessionId
+        : frame.payload?.sessionId ?? SESSION.sessionId
+      // The same running turn the conversation fixture draws: turn 4 while the
+      // session runs with nothing sent since, otherwise the newest prompt's
+      // turn. Nothing running -- `/session?running=0` -- is turn:null.
+      const runningTurn = created !== undefined
+        ? (sessionRunning && created.prompts.length > 0 ? created.prompts.length : null)
+        : (sessionRunning ? (sentPrompts.length === 0 ? 4 : 4 + sentPrompts.length) : null)
+      if (runningTurn === null) {
+        return {
+          v: 1,
+          type: 'ok',
+          id,
+          result: {
+            sessionId,
+            asOfSeq: 27 + sentPrompts.length,
+            turn: null,
+            entries: [],
+            hasMore: false,
+          },
+        }
+      }
+      const count = Math.min(ACTIVITY_ENTRIES.length, 3 + activityPolls)
+      let entries = ACTIVITY_ENTRIES.slice(0, count).map((entry, index) => ({
+        ...entry,
+        seq: (created !== undefined ? 0 : 27) + 28 + index,
+        at: now - (count - index) * 900,
+      }))
+      const hasMore = entries.length > cap
+      if (hasMore) entries = entries.slice(entries.length - cap)
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: {
+          sessionId,
+          asOfSeq: 27 + sentPrompts.length,
+          turn: runningTurn,
+          entries,
+          hasMore,
+        },
       }
     }
     case 'session.messages':
@@ -1471,6 +1551,9 @@ const server = createServer((request, response) => {
     // The account fixture goes back with everything else: a test that signs in
     // must not inherit the previous test's paid plan or its session tokens.
     resetAccounts()
+    // The detail feed grows per poll; a test that starts from the fixture must
+    // start from the beginning of it.
+    activityPolls = 0
     // `?skew=NNN` moves the host's clock ahead of the phone's, which is what a
     // running turn's negative duration came from. `?pageLimit=NNN` makes the
     // host refuse a page it cannot carry.

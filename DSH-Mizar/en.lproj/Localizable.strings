@@ -398,3 +398,11 @@
 "That file is empty." = "That file is empty.";
 "Change profile photo" = "Change profile photo";
 "Choose a photo from your library." = "Choose a photo from your library.";
+
+/* Running-turn full detail (paid accounts) */
+"Run command" = "Run command";
+"Read output" = "Read output";
+"Tool" = "Tool";
+"Working" = "Working";
+"Show turn details" = "Show turn details";
+"Hide turn details" = "Hide turn details";

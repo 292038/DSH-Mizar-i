@@ -398,3 +398,11 @@
 "That file is empty." = "该文件是空的。";
 "Change profile photo" = "更换头像";
 "Choose a photo from your library." = "从相册选择一张照片。";
+
+/* Running-turn full detail (paid accounts) */
+"Run command" = "运行命令";
+"Read output" = "读取任务输出";
+"Tool" = "工具";
+"Working" = "工作中";
+"Show turn details" = "展开轮次详情";
+"Hide turn details" = "收起轮次详情";

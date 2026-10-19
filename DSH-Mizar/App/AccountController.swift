@@ -102,7 +102,16 @@ final class AccountController {
     /// Whether there is a stored session.
     var isLoggedIn: Bool { session != nil }
     /// Whether the account is paid.
-    var isPaid: Bool { session?.profile.isPaid ?? false }
+    ///
+    /// The debug launch argument exists only for the ActivityUI test: it lets the
+    /// paid-only running-turn feed be exercised without walking the account and
+    /// invite screens first. Release builds never read it.
+    var isPaid: Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-mizarMockPaid") { return true }
+        #endif
+        return session?.profile.isPaid ?? false
+    }
     /// The bearer token, when signed in.
     var token: String? { session?.token }
 

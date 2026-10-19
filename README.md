@@ -146,6 +146,7 @@ MIZAR_TEST_DIAGNOSTICS=on-failure scripts/ios.sh test "iPhone 18 Pro"
 `swift.sh test` + 相关 `test-fast`，完整套件留给提交/发布前。
 
 假主机同时提供 `/account/v1`（注册、登录、`/me`、邀请码 `MOCK-INVITE`、App Store 交易与同步），
+以及 `session.activity`（一轮运行中的完整细节；每次轮询多返回一行，用来观察瀑布式插入），
 账户 UI 测试用 `-mizarAccountURL http://127.0.0.1:19395` 把它指过去；每次启动的
 `-mizarAccountFreshStart` 保证测试从「未登录」开始。
 
@@ -156,7 +157,8 @@ MIZAR_TEST_DIAGNOSTICS=on-failure scripts/ios.sh test "iPhone 18 Pro"
 `me.shirazu.dshmizar.paid.monthly`（¥6/月，见 `docs/testflight.md`）。
 
 `scripts/swift.sh test` 覆盖账户模型、账户客户端、Keychain 之外的存储、Relay 身份头、
-分块上传、以及中英文 `.strings` 的 key 对齐，共 411 个测试。
+分块上传、`session.activity` 的线上形状与请求形状，以及中英文 `.strings` 的 key 对齐，
+共 418 个测试。
 
 ## 五、打包
 
@@ -192,6 +194,22 @@ scripts/release.sh upload     # 直接传到 App Store Connect（TestFlight）
 TestFlight 分发本程序及其衍生作品，以化解 GPLv3 与商店条款、DRM 以及第 6 条
 「安装信息」要求之间的冲突；源码仍须按 GPLv3 提供。全文见
 [LICENSE-EXCEPTION](LICENSE-EXCEPTION)。
+
+### 运行中一轮的完整细节（付费账户）
+
+付费账户在看一轮正在跑的对话时，状态行（「深度求索中，用时 …」）右边会多一个 `>`：点开，
+状态行**下面**展开一块约 200 pt 高的详情区，按顺序滚动显示这一轮正在做什么——思考、运行的
+命令、命令输出、工具调用，一行一条（图标 + 中文类别 + 一行截断文本）。新行会像瀑布一样从状态
+行下方依次落下；再点一次收起，整块向上收回。状态行本身不动、不消失。
+
+- 详情区是**内部滚动**的，不会把整轮过程一次性摊开把对话挤走；上下边缘是渐隐的。
+- 详情行只是信息，不能点、不能展开——完整的进程负载不会传到手机上。
+- 免费账户和未登录账户**完全保持原样**：没有 `>`，也**不会**向电脑请求 `session.activity`
+  （不是隐藏，是根本不发请求）。付费账户自动拉取，没有开关。
+- 这是一路约 2 秒一次的轮询，只在这一轮运行期间；这一轮结束或页面离开就停止并清空。单次
+  读取失败不会清掉已经显示的内容。
+- 需要电脑端插件支持新的 `session.activity` 方法（0.9.0+）；老插件返回「未实现」，界面
+  就只是没有 `>`，不会报错。
 
 ### 账户、订阅与附件
 
