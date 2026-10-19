@@ -47,10 +47,23 @@ public struct URLSessionHTTPTransport: HTTPTransport {
 /// The pairing conversation.
 public struct PairingClient: Sendable {
     private let transport: any HTTPTransport
+    /// Identity headers for a relayed request.
+    ///
+    /// Pairing through a relay is the first request a fresh install makes and the
+    /// one that creates the device's traffic identity; sending the headers here
+    /// keeps a guest's pairing traffic attributed to the install rather than to
+    /// an anonymous hash of the room and user agent.
+    private let headers: [String: String]
 
-    /// - Parameter transport: how to reach the host; injectable for tests.
-    public init(transport: any HTTPTransport = URLSessionHTTPTransport()) {
+    /// - Parameters:
+    ///   - transport: how to reach the host; injectable for tests.
+    ///   - headers: relay identity headers to attach to every request.
+    public init(
+        transport: any HTTPTransport = URLSessionHTTPTransport(),
+        headers: [String: String] = [:],
+    ) {
         self.transport = transport
+        self.headers = headers
     }
 
     /// Ask an unauthenticated host who it is.
@@ -66,6 +79,7 @@ public struct PairingClient: Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "accept")
+        applyHeaders(to: &request)
 
         let (data, response) = try await transport.data(for: request)
         guard response.statusCode == 200 else {
@@ -106,6 +120,7 @@ public struct PairingClient: Sendable {
                 appVersion: Self.appVersion,
             ),
         )
+        applyHeaders(to: &request)
 
         let (data, response) = try await transport.data(for: request)
         guard response.statusCode == 200 else {
@@ -126,6 +141,15 @@ public struct PairingClient: Sendable {
     }
 
     // MARK: - Internals
+
+    /// Attach the relay identity headers to a request.
+    ///
+    /// - Parameter request: the request to modify.
+    private func applyHeaders(to request: inout URLRequest) {
+        for (name, value) in headers {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+    }
 
     /// The app's marketing version, sent for the host's roster.
     static var appVersion: String {

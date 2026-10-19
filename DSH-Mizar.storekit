@@ -1,0 +1,64 @@
+{
+  "identifier" : "4F3A2B10-7C6D-4E8F-9A0B-1C2D3E4F5A6B",
+  "nonRenewingSubscriptions" : [],
+  "products" : [],
+  "settings" : {
+    "_applicationInternalID" : "0000000000",
+    "_developerTeamID" : "",
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 0,
+    "_locale" : "zh_CN",
+    "_storefront" : "CHN",
+    "_storeKitErrors" : []
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "A1B2C3D4-0000-4000-8000-000000000001",
+      "localizations" : [
+        {
+          "description" : "Mizar Paid",
+          "displayName" : "Mizar Paid",
+          "locale" : "en_US"
+        },
+        {
+          "description" : "Mizar 付费版",
+          "displayName" : "Mizar 付费版",
+          "locale" : "zh_CN"
+        }
+      ],
+      "name" : "Mizar Paid",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "6.00",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "B2C3D4E5-0000-4000-8000-000000000002",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "A monthly subscription that supports the project and unlocks attachments.",
+              "displayName" : "Mizar Paid",
+              "locale" : "en_US"
+            },
+            {
+              "description" : "支持项目并解锁附件的月度订阅。",
+              "displayName" : "Mizar 付费版",
+              "locale" : "zh_CN"
+            }
+          ],
+          "productID" : "me.shirazu.dshmizar.paid.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Mizar Paid Monthly",
+          "subscriptionGroupID" : "A1B2C3D4-0000-4000-8000-000000000001",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

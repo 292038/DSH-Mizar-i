@@ -28,6 +28,8 @@ actor StubTransport: WebSocketTransport {
     private(set) var sent: [String] = []
     /// URLs this socket was asked to dial.
     private(set) var dialed: [URL] = []
+    /// Headers each dial carried, in the order the dials happened.
+    private(set) var dialedHeaders: [[String: String]] = []
     /// Whether ``close()`` was called.
     private(set) var didClose = false
 
@@ -55,8 +57,9 @@ actor StubTransport: WebSocketTransport {
         push(nil)
     }
 
-    func connect(url: URL) async throws {
+    func connect(url: URL, headers: [String: String]) async throws {
         dialed.append(url)
+        dialedHeaders.append(headers)
         if let connectFailure { throw connectFailure }
     }
 
@@ -86,6 +89,73 @@ actor StubTransport: WebSocketTransport {
             waiter.resume(returning: nil)
         }
         waiting.removeAll()
+    }
+}
+
+/// An HTTP transport that answers from a script, and remembers what it was asked.
+///
+/// The account client and the pairing client both speak HTTP to a server that
+/// does not exist in a unit test. This answers by path, in order, so a test can
+/// say "the next `/login` is a 200" and then assert on the request that produced
+/// it — which is where the interesting behaviour is: the bearer header, the JSON
+/// body, and which code a refusal maps to.
+actor ScriptedHTTPTransport: HTTPTransport {
+    /// One scripted answer.
+    struct Answer: Sendable {
+        /// The HTTP status.
+        var status: Int
+        /// The body.
+        var body: Data
+        /// When set, throw this instead of answering.
+        var failure: (any Error)?
+
+        init(status: Int, body: Data, failure: (any Error)? = nil) {
+            self.status = status
+            self.body = body
+            self.failure = failure
+        }
+    }
+
+    /// Queued answers, keyed by the trailing path they answer.
+    private var routes: [String: [Answer]] = [:]
+    /// Every request this transport was asked to send.
+    private(set) var requests: [URLRequest] = []
+
+    /// Queue one answer for a route.
+    ///
+    /// - Parameters:
+    ///   - path: the trailing path, e.g. `login` or `invite/redeem`.
+    ///   - status: the HTTP status.
+    ///   - body: the response body as text.
+    ///   - failure: an error to throw instead of answering.
+    func on(_ path: String, status: Int = 200, body: String = "{}", failure: (any Error)? = nil) {
+        routes[path, default: []].append(Answer(status: status, body: Data(body.utf8), failure: failure))
+    }
+
+    /// The requests recorded so far.
+    /// - Returns: every request, oldest first.
+    func recorded() -> [URLRequest] { requests }
+
+    public func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        requests.append(request)
+        let path = request.url?.path ?? ""
+        // Longest matching route: `appstore/sync` must win over `sync`.
+        let key = routes.keys
+            .filter { path.hasSuffix("/\($0)") }
+            .max { $0.count < $1.count }
+        guard let key, var queued = routes[key], !queued.isEmpty else {
+            throw MizarError(code: "NO_SCRIPTED_ANSWER", message: "no answer scripted for \(path)")
+        }
+        let answer = queued.removeFirst()
+        routes[key] = queued
+        if let failure = answer.failure { throw failure }
+        let response = HTTPURLResponse(
+            url: request.url ?? URL(string: "http://localhost")!,
+            statusCode: answer.status,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil,
+        )!
+        return (answer.body, response)
     }
 }
 

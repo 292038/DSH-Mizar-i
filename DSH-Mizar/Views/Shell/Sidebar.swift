@@ -505,19 +505,31 @@ private struct SidebarFooter: View {
             Button {
                 showingSettings = true
             } label: {
-                GlassCircleLabel(size: 54) {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 19, weight: .medium))
-                        .rotationEffect(.degrees(showingSettings ? 60 : 0))
-                        .animation(.mizarBouncy, value: showingSettings)
+                // Signed in, the button is the account's avatar: who is signed
+                // in is the first thing settings answers, and the gear can say
+                // it without opening anything. Signed out, it stays a gear.
+                if model.account.isLoggedIn {
+                    AccountAvatarView(user: model.account.user, image: model.account.customAvatar, size: 54)
+                } else {
+                    GlassCircleLabel(size: 54) {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 19, weight: .medium))
+                            .rotationEffect(.degrees(showingSettings ? 60 : 0))
+                            .animation(.mizarBouncy, value: showingSettings)
+                    }
                 }
             }
             .buttonStyle(.plain)
             .accessibilityLabel(Text("Settings"))
             .accessibilityIdentifier("sidebar.settings")
-            .mizarPopover(isPresented: $showingSettings, arrowEdge: .bottom) {
+            // The one window that is a sheet rather than a popover: settings is
+            // a place, not a note about the button, and the system's own pages
+            // of this kind pull up as a card that leaves the screen behind it
+            // visible along the top.
+            .sheet(isPresented: $showingSettings) {
                 SettingsView(onDone: { showingSettings = false })
-                    .frame(width: PopoverSize.tall.width, height: PopoverSize.tall.height)
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
             }
         }
         .padding(.horizontal, 12)

@@ -4,13 +4,13 @@
 //
 //  Sending a prompt, and stopping one.
 //
-//  One slab of glass: the field on top, growing with the text, and along its
-//  bottom edge the controls -- commands, the model, the context dial -- with the
-//  one round button at the end. The button carries both actions, and which one
-//  it carries is the whole state machine:
+//  One slab of glass: the field on top, growing with the text; the attachments,
+//  when there are any; and along the bottom edge the controls -- commands, the
+//  model, the context dial -- with the one round button at the end. The button
+//  carries both actions, and which one it carries is the whole state machine:
 //
-//    the session is running, and nothing has been typed   -> stop
-//    anything else                                        -> send
+//    the session is running, nothing typed, nothing attached     -> stop
+//    anything else                                               -> send
 //
 //  That is DSH's own rule, and it is right for the same reason it is right
 //  there: mid-turn the thing an operator most often wants is to interrupt, and
@@ -18,9 +18,16 @@
 //  meaning keeps both one tap away; it changes shape as it changes meaning, so
 //  the meaning is never a surprise.
 //
+//  Attachments are paid-only. The buttons live in the command popover and draw
+//  their own lock when the account cannot use them; tapping a locked one opens
+//  the account screen, because a refusal that explains itself is a refusal the
+//  operator can act on.
+//
 
-import SwiftUI
 import MizarKit
+import PhotosUI
+import SwiftUI
+import UniformTypeIdentifiers
 
 struct ComposerView: View {
     let sessionId: String
@@ -48,6 +55,23 @@ struct ComposerView: View {
     /// Bumped on every send, to bounce the arrow.
     @State private var sends = 0
 
+    // MARK: Attachments
+
+    /// What is attached to the next send.
+    @State private var attachments: [AttachmentDraft] = []
+    /// Where the upload writes its progress, out of the socket's executor.
+    @State private var uploadProgress = AttachmentProgress()
+    /// The items picked from the photo library, before they are normalised.
+    @State private var photoItems: [PhotosPickerItem] = []
+    @State private var showingPhotoPicker = false
+    @State private var showingFileImporter = false
+    /// The account screen, when a free account taps a locked attachment button.
+    @State private var showingPaywall = false
+    /// Why the last attachment attempt failed, or why the send did.
+    @State private var attachmentError: String?
+    /// Whether an upload is in flight, so the price of a second tap is clear.
+    @State private var uploading = false
+
     private static let buttonSize: CGFloat = 34
     private static let corner: CGFloat = Theme.Radius.xl
 
@@ -66,6 +90,22 @@ struct ComposerView: View {
                     ComposerGeometry.shared.field = frame
                 }
 
+            if !attachments.isEmpty {
+                AttachmentStrip(drafts: attachments, progress: uploadProgress) { id in
+                    remove(id)
+                }
+            }
+
+            if let attachmentError {
+                Label(attachmentError, systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.failed)
+                    .lineLimit(2)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 4)
+                    .accessibilityIdentifier("composer.attachment.error")
+            }
+
             HStack(spacing: 6) {
                 ComposerBar(
                     sessionId: sessionId,
@@ -75,6 +115,9 @@ struct ComposerView: View {
                     showingModel: $showingModel,
                     showingContext: $showingContext,
                     showingCommands: $showingCommands,
+                    showingPhotoPicker: $showingPhotoPicker,
+                    showingFileImporter: $showingFileImporter,
+                    onLockedAttachment: { showingPaywall = true },
                 )
                 Spacer(minLength: 4)
                 primaryButton
@@ -86,9 +129,42 @@ struct ComposerView: View {
         .onTapGesture { focused = true }
         .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: Self.corner, style: .continuous))
         .animation(.mizarSmooth, value: text.isEmpty)
+        .animation(.mizarSmooth, value: attachments.count)
         .padding(.horizontal, 10)
         .padding(.bottom, 6)
         .mizarFeedback(.impact(weight: .light), trigger: sends)
+        // A picker bound to this view rather than to a button: it has to survive
+        // the popover closing.
+        .photosPicker(
+            isPresented: $showingPhotoPicker,
+            selection: $photoItems,
+            maxSelectionCount: max(1, AttachmentLimits.maxImages - imageCount),
+            matching: .images,
+        )
+        .onChange(of: photoItems) { _, items in
+            guard !items.isEmpty else { return }
+            Task { await addPhotos(items) }
+        }
+        .fileImporter(
+            isPresented: $showingFileImporter,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true,
+        ) { result in
+            switch result {
+            case .success(let urls): addFiles(urls)
+            case .failure(let error): attachmentError = error.localizedDescription
+            }
+        }
+        .sheet(isPresented: $showingPaywall) {
+            NavigationStack {
+                AccountScreen()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingPaywall = false }
+                        }
+                    }
+            }
+        }
     }
 
     private enum Mode: Equatable { case idle, send, stop }
@@ -102,19 +178,27 @@ struct ComposerView: View {
         Button {
             Task { await primary() }
         } label: {
-            Image(systemName: mode == .stop ? "stop.fill" : "arrow.up")
-                .font(.system(size: mode == .stop ? 13 : 15, weight: .bold))
-                .foregroundStyle(foreground)
-                .contentTransition(.symbolEffect(.replace))
-                .symbolEffect(.bounce.up, value: sends)
-                .frame(width: Self.buttonSize, height: Self.buttonSize)
-                .background {
-                    Circle()
-                        .fill(fill)
-                        .shadow(color: mode == .idle ? .clear : fill.opacity(0.4), radius: 8, y: 3)
+            ZStack {
+                Image(systemName: mode == .stop ? "stop.fill" : "arrow.up")
+                    .font(.system(size: mode == .stop ? 13 : 15, weight: .bold))
+                    .foregroundStyle(foreground)
+                    .contentTransition(.symbolEffect(.replace))
+                    .symbolEffect(.bounce.up, value: sends)
+                    .opacity(sending || uploading ? 0 : 1)
+                if sending || uploading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(foreground)
                 }
-                .scaleEffect(mode == .idle ? 0.92 : 1)
-                .contentShape(.circle)
+            }
+            .frame(width: Self.buttonSize, height: Self.buttonSize)
+            .background {
+                Circle()
+                    .fill(fill)
+                    .shadow(color: mode == .idle ? .clear : fill.opacity(0.4), radius: 8, y: 3)
+            }
+            .scaleEffect(mode == .idle ? 0.92 : 1)
+            .contentShape(.circle)
         }
         .buttonStyle(.pressable(scale: 0.88))
         .disabled(mode == .idle)
@@ -146,11 +230,19 @@ struct ComposerView: View {
 
     /// Whether the one button is a stop button right now.
     private var showsStop: Bool {
-        running && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !stopping
+        running && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && attachments.isEmpty && !stopping
     }
 
     private var sendEnabled: Bool {
-        !sending && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard !sending, !uploading else { return false }
+        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        return !attachments.isEmpty
+    }
+
+    /// How many of the attached drafts are images.
+    private var imageCount: Int {
+        attachments.count(where: \.isImage)
     }
 
     /// Do whichever job the button is currently carrying.
@@ -164,23 +256,167 @@ struct ComposerView: View {
         }
     }
 
+    // MARK: - Sending
+
     private func send() async {
         let outgoing = text
+        let drafts = attachments
+        let display = AttachmentDraft.promptText(outgoing, drafts: drafts)
+        guard !display.isEmpty else { return }
+        // The server's plan is the authority, but the phone can avoid a useless
+        // upload: a free account cannot attach anything, and the account screen
+        // is where that changes.
+        if !drafts.isEmpty, !model.account.isPaid {
+            attachmentError = String(localized: "Attachments need a paid account.")
+            showingPaywall = true
+            return
+        }
+
         sending = true
         sends += 1
-        onWillSend(outgoing)
+        attachmentError = nil
+        onWillSend(display)
         // Clear optimistically so the field is ready for the next thought; put
-        // the text back if the host refused it, so nothing is silently lost.
+        // everything back if the host refused it, so nothing is silently lost.
+        // The attachments stay on screen while they upload, which is the one
+        // place the progress is drawn.
         withMizarAnimation(.mizarSmooth) { text = "" }
-        let accepted = await model.sendPrompt(outgoing, to: sessionId)
+
+        let accepted: Bool
+        if drafts.isEmpty {
+            accepted = await model.sendPrompt(outgoing, to: sessionId)
+        } else {
+            accepted = await uploadAndSend(drafts: drafts, text: outgoing)
+        }
+
         if accepted {
-            await onSent(outgoing)
+            withMizarAnimation(.mizarSmooth) { attachments = [] }
+            uploadProgress.clear()
+            await onSent(display)
         } else {
             text = outgoing
-            onSendFailed(outgoing)
+            attachments = drafts
+            uploadProgress.clear()
+            onSendFailed(display)
         }
         sending = false
         focused = true
+    }
+
+    /// Upload every attachment, then send the prompt that names them.
+    ///
+    /// - Parameters:
+    ///   - drafts: the attachments.
+    ///   - text: the prompt text, possibly empty.
+    /// - Returns: whether the host accepted the prompt.
+    private func uploadAndSend(drafts: [AttachmentDraft], text: String) async -> Bool {
+        uploading = true
+        defer { uploading = false }
+        var ids: [String] = []
+        do {
+            for draft in drafts {
+                let draftId = draft.id
+                let progress = uploadProgress
+                let ref = try await model.uploadAttachment(
+                    data: draft.data,
+                    kind: draft.kind,
+                    name: draft.name,
+                    mediaType: draft.mediaType,
+                    sessionId: sessionId,
+                    progress: { value in
+                        Task { @MainActor in
+                            progress.set(value, for: draftId)
+                        }
+                    },
+                )
+                ids.append(ref.attachmentId)
+            }
+            return await model.sendPrompt(text, attachmentIds: ids, to: sessionId)
+        } catch {
+            attachmentError = Self.describeAttachmentFailure(error)
+            return false
+        }
+    }
+
+    /// A failed upload as a sentence.
+    ///
+    /// `NOT_IMPLEMENTED` is the old-host-plugin case: the computer's DSH predates
+    /// the upload methods, and the fix is an update on the computer, not a
+    /// retry on the phone. Saying so is the difference between a bug report and
+    /// a support answer.
+    private static func describeAttachmentFailure(_ error: any Error) -> String {
+        if let mizar = error as? MizarError {
+            switch mizar.code {
+            case "NOT_IMPLEMENTED", "MALFORMED_FRAME", "UPLOAD_UNKNOWN":
+                return String(localized: "This computer's DSH plugin is too old to receive attachments. Update DSH on the computer, then try again.")
+            default:
+                return mizar.message
+            }
+        }
+        return error.localizedDescription
+    }
+
+    // MARK: - Attaching
+
+    /// Read picked photos into drafts.
+    ///
+    /// - Parameter items: the picked items; the picker binding is reset whatever
+    ///   happens so picking the same photo twice fires again.
+    private func addPhotos(_ items: [PhotosPickerItem]) async {
+        defer { photoItems = [] }
+        for item in items {
+            do {
+                guard let data = try await item.loadTransferable(type: Data.self) else {
+                    throw AttachmentProblem.unreadableImage
+                }
+                add(try AttachmentDraft.image(from: data))
+            } catch {
+                attachmentError = Self.describe(error)
+            }
+        }
+    }
+
+    /// Read imported files into drafts.
+    ///
+    /// - Parameter urls: the URLs from `fileImporter`.
+    private func addFiles(_ urls: [URL]) {
+        for url in urls {
+            do {
+                add(try AttachmentDraft.file(from: url))
+            } catch {
+                attachmentError = Self.describe(error)
+            }
+        }
+    }
+
+    /// Add one draft, subject to the limits.
+    ///
+    /// - Parameter draft: the draft to add.
+    private func add(_ draft: AttachmentDraft) {
+        var candidate = attachments
+        candidate.append(draft)
+        do {
+            try AttachmentDraft.validate(candidate)
+            withMizarAnimation(.mizarSmooth) { attachments = candidate }
+            attachmentError = nil
+        } catch {
+            attachmentError = Self.describe(error)
+        }
+    }
+
+    /// Remove one draft.
+    /// - Parameter id: the draft's identity.
+    private func remove(_ id: UUID) {
+        withMizarAnimation(.mizarSmooth) {
+            attachments.removeAll { $0.id == id }
+        }
+        uploadProgress.clear()
+        attachmentError = nil
+    }
+
+    /// A local validation failure as a sentence.
+    private static func describe(_ error: any Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 }
 

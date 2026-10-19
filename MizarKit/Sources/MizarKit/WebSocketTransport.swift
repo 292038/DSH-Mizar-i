@@ -15,9 +15,14 @@ import Foundation
 /// A minimal text WebSocket.
 public protocol WebSocketTransport: Sendable {
     /// Open the socket.
-    /// - Parameter url: the endpoint to dial.
+    ///
+    /// - Parameters:
+    ///   - url: the endpoint to dial.
+    ///   - headers: extra HTTP headers for the upgrade request. The relay reads
+    ///     its traffic identity from two of these before forwarding; a direct
+    ///     connection has nothing to read them and ignores them.
     /// - Throws: when the handshake fails.
-    func connect(url: URL) async throws
+    func connect(url: URL, headers: [String: String]) async throws
 
     /// Send one text frame.
     /// - Parameter text: the frame body.
@@ -49,8 +54,15 @@ public actor URLSessionWebSocketTransport: WebSocketTransport {
         self.session = URLSession(configuration: configuration)
     }
 
-    public func connect(url: URL) async throws {
-        let task = session.webSocketTask(with: url)
+    public func connect(url: URL, headers: [String: String]) async throws {
+        // A `URLRequest` rather than the bare URL: the upgrade headers can only
+        // be set on a task created from a request, and the relay's identity
+        // headers are only meaningful on the upgrade.
+        var request = URLRequest(url: url)
+        for (name, value) in headers {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        let task = session.webSocketTask(with: request)
         self.task = task
         task.resume()
     }

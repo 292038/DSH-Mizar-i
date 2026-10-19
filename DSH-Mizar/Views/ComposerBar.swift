@@ -46,6 +46,16 @@ struct ComposerBar: View {
     @Binding var showingModel: Bool
     @Binding var showingContext: Bool
     @Binding var showingCommands: Bool
+    /// Open the photo picker. `ComposerView` owns the picker modifier; this is
+    /// just the flag, because a `PhotosPicker` presented from inside a popover
+    /// closes with the popover.
+    @Binding var showingPhotoPicker: Bool
+    /// Open the file importer.
+    @Binding var showingFileImporter: Bool
+    /// Called when a free or signed-out account taps an attachment button: the
+    /// account screen, where the plan can be bought. Not a silent no-op -- a
+    /// locked button that does nothing is a bug report.
+    var onLockedAttachment: () -> Void = {}
 
     /// DSH's own commands. The slash forms are what the host parses; the titles
     /// are what the operator is choosing between, in their language.
@@ -170,7 +180,22 @@ struct ComposerBar: View {
         }
         .buttonStyle(.pressable)
         .mizarPopover(isPresented: $showingCommands, arrowEdge: .bottom) {
-            CommandList { command in
+            CommandList(
+                isPaid: model.account.isPaid,
+                onAttachment: { kind in
+                    // Closed first: the picker is presented by the composer, and
+                    // a popover that stays up over the photo sheet hides it.
+                    showingCommands = false
+                    guard model.account.isPaid else {
+                        onLockedAttachment()
+                        return
+                    }
+                    switch kind {
+                    case .photo: showingPhotoPicker = true
+                    case .file: showingFileImporter = true
+                    }
+                },
+            ) { command in
                 // Written first, then closed. The other order dismissed the
                 // window and the write went with it.
                 draft = command
@@ -183,13 +208,61 @@ struct ComposerBar: View {
     }
 }
 
-/// The host's commands, as a list to choose from.
+/// Which attachment picker a button wants.
+private enum AttachmentPickerKind {
+    case photo
+    case file
+}
+
+/// The host's commands, and the two attachment buttons above them.
+///
+/// The attachments row is deliberately above the commands rather than beside the
+/// field: the field's leading edge is where the operator's thumb already is for
+/// text, and a row of two labelled buttons is discoverable in a way that two
+/// unlabelled glyphs are not. The paid gate is drawn, not just enforced: a lock
+/// and a footer that says why, so the refusal explains itself.
 private struct CommandList: View {
+    /// Whether the account may attach files.
+    let isPaid: Bool
+    /// Pick a photo or a file, or ask for the account screen when locked.
+    let onAttachment: (AttachmentPickerKind) -> Void
+    /// Fill the field with a command.
     let onPick: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             PopoverHeader(title: "Commands", systemImage: "plus.circle")
+
+            HStack(spacing: 8) {
+                attachmentButton(
+                    title: "Add photo",
+                    symbol: "photo.on.rectangle",
+                    identifier: "composer.attach.photo",
+                ) { onAttachment(.photo) }
+                attachmentButton(
+                    title: "Add file",
+                    symbol: "doc.badge.plus",
+                    identifier: "composer.attach.file",
+                ) { onAttachment(.file) }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, isPaid ? 10 : 4)
+
+            if !isPaid {
+                HStack(spacing: 5) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text("Paid accounts only")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 18)
+                .padding(.bottom, 10)
+                .accessibilityIdentifier("composer.attach.locked")
+            }
+
+            Divider()
+                .padding(.bottom, 4)
             // A VStack, not a List.
             //
             // As List rows with `.buttonStyle(.plain)` the taps never reached
@@ -226,6 +299,46 @@ private struct CommandList: View {
             .padding(.bottom, 8)
         }
         .frame(width: 300)
+    }
+
+    /// One of the two attachment buttons.
+    ///
+    /// - Parameters:
+    ///   - title: the label.
+    ///   - symbol: the SF Symbol.
+    ///   - identifier: the accessibility identifier a UI test asks for.
+    ///   - action: what a tap does. A locked button still runs this: the
+    ///     composer opens the account screen rather than swallowing the tap.
+    private func attachmentButton(
+        title: LocalizedStringKey,
+        symbol: String,
+        identifier: String,
+        action: @escaping () -> Void,
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 19, weight: .medium))
+                    .foregroundStyle(isPaid ? Color.accentColor : Color.secondary)
+                HStack(spacing: 3) {
+                    if !isPaid {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(title)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(isPaid ? Color.primary : Color.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.pressable(scale: 0.97, dims: true))
+        .accessibilityIdentifier(identifier)
+        .accessibilityLabel(Text(title))
     }
 }
 

@@ -90,7 +90,7 @@ App 每秒去刷新。App 退到后台的那一刻，它还会自己再刷新一
 ## 四、开发
 
 ```sh
-scripts/swift.sh test         # MizarKit（协议层）全部测试，跑在 Mac 上，1 秒
+scripts/swift.sh test         # MizarKit（协议层）全部测试，跑在 Mac 上，几秒
 scripts/ios.sh build          # 编译 App
 ```
 
@@ -100,17 +100,63 @@ scripts/ios.sh build          # 编译 App
 TEST_RUNNER_MIZAR_SHOTS=/tmp/tour scripts/ios.sh test "iPhone 18 Pro" -only-testing:DSH-MizarUITests/ScreenshotTour
 ```
 
-UI 测试要一个假主机（不需要真的 DSH）。它需要 `ws` 来起 WebSocket 服务端，所以**先装一次依赖**：
+UI 测试需要一个假主机（不需要真的 DSH）。它用 `ws` 起 WebSocket 服务端，所以**先装一次依赖**：
 
 ```sh
 npm install                   # 只装 ws，给假主机用；App 本身没有依赖
+```
 
-node scripts/mock-host.mjs 19395 &
-scripts/ios.sh test           # 全部 UI 测试（约 6 分钟）
-scripts/ios.sh test "iPhone 18 Pro" -only-testing:DSH-MizarUITests/AppFlowTests/<名字>
+`test` / `test-fast` 会**自动在 19395、19396 端口起假主机**，退出时自动关掉；不需要再手动
+`node scripts/mock-host.mjs ... &`。如果已经手动起了假主机，脚本会直接复用，不会误杀。
+要自己管理假主机时加 `MIZAR_NO_MOCK=1`。
+
+**日常迭代用 `test-fast`**：先 `build-for-testing`，再 `test-without-building`，默认不收集
+失败诊断（`-collect-test-diagnostics never`）。不传 `-only-testing` 时默认跑 AccountUITests
+（账户/设置/订阅，约 5 分钟）；加过滤只跑相关测试：
+
+```sh
+# 默认：账户/设置/订阅整组
+scripts/ios.sh test-fast "iPhone 18 Pro"
+
+# 某个具体测试，通常几十秒
+scripts/ios.sh test-fast "iPhone 18 Pro" -only-testing:DSH-MizarUITests/AccountUITests/testSignedOutSettingsShowsBlankAccountRow
+
+# 设置相关的一小组 AppFlow 测试
+scripts/ios.sh test-fast "iPhone 18 Pro" \
+  -only-testing:DSH-MizarUITests/AppFlowTests/testTheSidebarOpensSettings \
+  -only-testing:DSH-MizarUITests/AppFlowTests/testTheSettingsScreenFollowsTheLanguage
+```
+
+**发布前才跑完整套件**：
+
+```sh
+scripts/ios.sh test "iPhone 18 Pro"   # 55 个 AppFlow + 9 个 Account，约 20–25 分钟
+```
+
+CI 里如果需要失败诊断，覆盖环境变量：
+
+```sh
+MIZAR_TEST_DIAGNOSTICS=on-failure scripts/ios.sh test "iPhone 18 Pro"
 ```
 
 **不要同时起两个 `xcodebuild test`**，会互相抢模拟器，结果是两边都不可信。
+
+**为什么完整套件慢**：每个 UI 测试都重新启动 App、重新配对 mock host；命名弹窗默认只等 3 秒，
+但每个断言仍有 20 秒容错，失败时 Xcode 的 `simctl diagnose` 可能再跑 10 分钟。日常只跑
+`swift.sh test` + 相关 `test-fast`，完整套件留给提交/发布前。
+
+假主机同时提供 `/account/v1`（注册、登录、`/me`、邀请码 `MOCK-INVITE`、App Store 交易与同步），
+账户 UI 测试用 `-mizarAccountURL http://127.0.0.1:19395` 把它指过去；每次启动的
+`-mizarAccountFreshStart` 保证测试从「未登录」开始。
+
+订阅的 Apple 付款面板在模拟器 UI 测试里没法真出现，所以 Debug 构建有一个只在测试里用的
+假商品：`-mizarMockSubscription`（价格默认 `¥6.00`，可用 `-mizarMockSubscriptionPrice` 改）。
+真实 StoreKit 链路在模拟器上手动验证：Xcode 打开工程 → Edit Scheme → Run → Options →
+**StoreKit Configuration** 选 `DSH-Mizar.storekit`，商品 id 是
+`me.shirazu.dshmizar.paid.monthly`（¥6/月，见 `docs/testflight.md`）。
+
+`scripts/swift.sh test` 覆盖账户模型、账户客户端、Keychain 之外的存储、Relay 身份头、
+分块上传、以及中英文 `.strings` 的 key 对齐，共 411 个测试。
 
 ## 五、打包
 
@@ -130,6 +176,7 @@ scripts/release.sh upload     # 直接传到 App Store Connect（TestFlight）
 | `MizarKit/` | 协议层（连接、帧、会话模型、缓存），`swift test` 跑的就是它 |
 | `DSH-Mizar-LiveActivity/` | Widget Extension：实时活动的灵动岛和锁定屏幕。图片只在它自己的资源目录里找得到 |
 | `DSH-MizarUITests/` | XCUITest，对着 `scripts/mock-host.mjs` 跑 |
+| `DSH-Mizar.storekit` | StoreKit 模拟器配置（订阅商品与价格），手动验证购买流程用 |
 | `protocol/fixtures/` | 从真主机录下来的帧（golden frames），两个语言共用 |
 | `scripts/` | 编译、测试、假主机、打包 |
 | `archive/` | 0.7.2 之前「全量传输」的渲染实现，不编译，留着备用 |
@@ -145,3 +192,30 @@ scripts/release.sh upload     # 直接传到 App Store Connect（TestFlight）
 TestFlight 分发本程序及其衍生作品，以化解 GPLv3 与商店条款、DRM 以及第 6 条
 「安装信息」要求之间的冲突；源码仍须按 GPLv3 提供。全文见
 [LICENSE-EXCEPTION](LICENSE-EXCEPTION)。
+
+### 账户、订阅与附件
+
+- **账户是可选的**。不登录时所有免费功能照常：配对、会话、对话、审批、实时活动、推送。启动不会弹登录框，账户只在「设置」里出现。
+- **设置 → 账户**：未登录时是一张空头像、未登录、免费账户；登录后是头像、用户名、免费账户 / 付费账户。点进去可以注册、登录、用 Apple 登录、看本账户登录的设备、退出登录、删除账户。
+- **头像**：Apple 登录不会返回 Apple ID 的照片（Apple 没有公开这个 API），所以 Apple 账户默认显示 Apple 风格的首字母头像。账户页点头像（相机角标）可以从相册选一张，选完后账户页、设置页、侧边栏都会显示它；目前保存在本机，不跨设备同步。
+- **付费账户**有两种来源：App Store 自动续期订阅（¥6/月，在 App Store Connect 里定价）和邀请码 / 管理员授予，付费状态取两者到期时间的较大值。订阅按钮会真的调起 Apple 的付款面板，价格显示的是 `product.displayPrice`（不写死 ¥6）；可以恢复购买、跳转管理订阅。自动续期条款和隐私 / 使用条款链接都在订阅区。
+- **邀请码**：账户页 → 兑换邀请码。邀请时长会在现有到期时间上叠加。
+- **附件只对付费账户开放**。输入框左边的「+」打开命令面板，最上面并排两个按钮：添加照片、添加文件。免费账户和未登录时按钮带锁并写着「付费账户专享」，点一下会打开账户页，而不是什么都不发生。
+- 照片走 `PhotosPicker`：只读取你选中的照片，**不需要相册权限**，Info.plist 里也**没有** `NSPhotoLibraryUsageDescription`——这不是漏了，是刻意不申请。文件走系统文件选择器。
+- 照片会先缩放（长边 ≤ 2048）并重新编码成 JPEG；限制是单张图片 ≤ 10 MiB、单个文件 ≤ 32 MiB、一次最多 8 个附件（其中最多 4 张图片）、合计 ≤ 64 MiB。超限会在本机就告诉你是哪一条，不会先上传再被拒绝。
+- 附件通过已连上的 Mizar WebSocket 分块上传（128 KiB 一块），发送时用 `attachmentIds` 引用；上传进度显示在缩略图下方。发送失败会把文字和附件放回输入框，不会静默丢内容。如果电脑上的 DSH 插件太旧、不认识上传方法，会明确提示去电脑上更新 DSH。
+- 账户服务器只是主力的 `/account/v1`。**它连不上时免费功能不受影响**：账户页保留缓存的资料并说明连不上，不会把已登录的人显示成未登录。
+
+## Privacy
+
+DSH-Mizar collects the minimum needed for an optional account:
+
+- **Account**: the email address, username and password hash (or the Sign in with Apple subject), stored on the account server at `dshmizar-1.shirazu-nagisa.com`. The password is never sent anywhere else, and is stored only as a scrypt hash.
+- **Avatar**: the email's MD5 hash may be sent to a Gravatar mirror to fetch a public avatar; the app falls back to generated initials.
+- **Devices**: the install id, device name/model and app version, so the account's device list can be shown and email accounts can be limited to two devices.
+- **Subscription**: the App Store transaction is verified by the relay to set the paid expiry; the app never sees a payment method and never stores a receipt.
+- **Traffic**: the relay counts bytes per account-token hash, per install, or per anonymous hash of room/user-agent for 90 days. It is used for quotas and the admin traffic table, not for profiling.
+- **Attachments and conversations never go to the account server.** They travel between the phone and the operator's computer over the paired connection; the relay forwards them as WebSocket frames and does not store them.
+- Signing out deletes the token from the phone's Keychain; deleting the account removes the server-side record. There is no analytics SDK, no advertising SDK and no third-party tracking in the app.
+
+The App Store listing uses https://dsh-mizar.shirazu-nagisa.com/privacy/ as its privacy-policy URL.

@@ -52,6 +52,18 @@ struct RootView: View {
         }
         .animation(.mizarSmooth, value: phaseKey)
         .task { await model.start() }
+        // The account is read beside the pairing, not before it and not
+        // instead of it: nothing here is required for the free app to work, and
+        // a slow or unreachable account server must not delay the screen that
+        // shows the conversations. Nothing is presented for an account either;
+        // signing in is something the operator chooses from Settings.
+        .task {
+            await model.account.start()
+            // A subscription bought on another device, or before a reinstall,
+            // exists only in Apple's records: the relay has to be told what the
+            // App Store holds, or the plan lapses at the end of the period.
+            await model.subscription.syncEntitlements()
+        }
         .task { await model.requestFirstRunPermissions() }
         .task { await model.ensurePushRegistration() }
         // Initial as well as changes: a launch starts active, and that is the
@@ -70,6 +82,10 @@ struct RootView: View {
                 BackgroundRefresh.shared.didEnterBackground()
             case .active:
                 BackgroundRefresh.shared.willEnterForeground()
+                // A plan bought on another device, or a refunded subscription,
+                // is only true on the server: the cached profile is refreshed
+                // when the app comes back rather than when a screen opens.
+                Task { await model.account.refreshOnForeground() }
             case .inactive:
                 break
             @unknown default:

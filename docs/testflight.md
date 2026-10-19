@@ -10,7 +10,7 @@
 |---|---|
 | **Bundle ID** | `me.shirazu.dshmizar` |
 | **显示名** | `DSH-Mizar` |
-| **版本号** | `0.9.1` |
+| **版本号** | `0.9.2` |
 | **构建号** | `23` |
 | **Team ID** | `5Q2A46685M` |
 | 团队名 | Vreeland Lee |
@@ -55,9 +55,9 @@
 
 ```
 release/iOS/
-├─ DSH-Mizar-0.9.1.xcarchive   ← 双击打开 Organizer，用它上传
-├─ DSH-Mizar-0.9.1.ipa         ← 已签名的构建，可以手动用 Transporter 上传
-└─ RELEASE_NOTES-0.9.1.md      ← 这一版改了什么、怎么验
+├─ DSH-Mizar-0.9.2.xcarchive   ← 双击打开 Organizer，用它上传
+├─ DSH-Mizar-0.9.2.ipa         ← 已签名的构建，可以手动用 Transporter 上传
+└─ RELEASE_NOTES-0.9.2.md      ← 这一版改了什么、怎么验
 ```
 
 ---
@@ -93,12 +93,12 @@ release/iOS/
 **最省事的方式**（用你 Xcode 里已登录的账号，不需要额外配任何密钥）：
 
 ```bash
-open release/iOS/DSH-Mizar-0.9.1.xcarchive
+open release/iOS/DSH-Mizar-0.9.2.xcarchive
 ```
 
 Xcode 的 **Organizer** 会打开：
 
-1. 选中 **DSH-Mizar 0.9.1 (23)**
+1. 选中 **DSH-Mizar 0.9.2 (24)**
 2. 点右侧 **Distribute App**
 3. 选 **TestFlight & App Store** → **Distribute**
 4. 后面一路默认：
@@ -144,7 +144,7 @@ Xcode 的 **Organizer** 会打开：
    - **内部测试**：只能加你 App Store Connect 团队里的成员。
      一个个人开发者账号通常就是你自己，**用你的 Apple ID 邮箱**
    - **不需要 Apple 审核**，加完立刻能装 ← **自己测试走这条最快**
-3. 加完在构建那一栏点 **`+`** → 选 `0.9.1 (23)` → **Add**
+3. 加完在构建那一栏点 **`+`** → 选 `0.9.2 (24)` → **Add**
 
 > **外部测试**（External Testing）可以加最多 10000 人，但**第一次需要 Apple 审核**，
 > 通常 1–2 天。自己用不上走这条。
@@ -202,3 +202,85 @@ Xcode 的 **Organizer** 会打开：
 
 要发布给不认识的人，缺的不是 TestFlight，而是：电脑端插件的公开分发方式 + 配对引导
 流程，或者一个中继服务。
+
+---
+
+## 账户、订阅与附件（上架前必须做的三件事）
+
+账户是**可选功能**：不登录也能配对、看会话、发消息。但下面三件事不做，账户页和订阅按钮就是坏的。
+
+### 1. App ID 开启「Sign in with Apple」
+
+`DSH-Mizar.entitlements` 里已经有：
+
+```xml
+<key>com.apple.developer.applesignin</key>
+<array><string>Default</string></array>
+```
+
+这只写了"要这个能力"。**还必须在这两处真的打开**，否则签名时能力被剥掉，点 Apple 登录
+会立刻失败（error 1000），而且界面上只有一个不动的按钮：
+
+1. https://developer.apple.com/account/resources/identifiers/list → `me.shirazu.dshmizar`
+   → Capabilities 勾选 **Sign in with Apple** → Save
+2. Xcode → DSH-Mizar target → Signing & Capabilities → **+ Capability** → Sign in with Apple
+   （自动签名会重新生成带这个能力的 profile；第 1 步没做的话这里加不上）
+
+不需要 `NSPhotoLibraryUsageDescription`：照片走 `PhotosPicker`，只拿选中的照片，不申请
+相册权限。**不要**为了"看起来完整"把它加回去，那会平白多一个权限弹窗。
+
+### 2. App Store Connect 里建订阅商品
+
+| 项 | 值 |
+|---|---|
+| 类型 | 自动续期订阅（Auto-Renewable Subscription） |
+| 订阅组 | `Mizar Paid` |
+| Product ID | **`me.shirazu.dshmizar.paid.monthly`**（必须一字不差） |
+| 价格 | ¥6.00 / 月（其他地区由 Apple 自动换算） |
+| 本地化 | `en`（Mizar Paid）、`zh-Hans`（Mizar 付费版） |
+| 审核截图 | 账户页订阅区那一屏 |
+
+App 里订阅按钮的文案和价格都来自 `Product.displayPrice`，**没有写死 ¥6**；商品没建好或
+还没生效时，订阅区会显示"暂时无法从 App Store 获取"，不会显示一个假价格。
+
+`-mizarMockSubscription` 只是 Debug 构建给 UI 测试用的假商品，Release 里编译不进去。
+
+### 3. 账户后端和中继
+
+- 账户 API 只跑在主力1（`accounts.enabled=true`）：
+  `https://dshmizar-1.shirazu-nagisa.com/account/v1`。这个地址写死在 `MizarKit` 的
+  `AccountClient.productionBaseURL`，改主机要改代码。
+- 中继要开 `role` + `accounts`，且 App Store 校验用到的 `bundleId` 必须是
+  `me.shirazu.dshmizar`、`productId` 必须是上面的商品 id（见 `relay-deployment.md`）。
+- **无法连接账户服务器时免费功能不受影响**，账户页显示缓存的资料 + 连不上。这是刻意设计，
+  不要改成"连不上就退出登录"。
+
+### 手动验证真实 StoreKit（模拟器，不需要开发者账号）
+
+1. Xcode 打开 `DSH-Mizar.xcodeproj`
+2. **Product → Scheme → Edit Scheme → Run → Options**
+3. **StoreKit Configuration** 选 `DSH-Mizar.storekit`（在 `iOS/` 根目录）
+4. 运行 App，登录任意账户 → 设置 → 账户 → 订阅 → 点订阅按钮
+5. 会弹出一个**模拟的** Apple 付款面板（不是真扣款），确认后账户应变成「付费账户」
+6. 验证恢复购买：删掉账户数据或换设备，再点「恢复购买」
+
+`.storekit` 文件里商品是 ¥6/月、中文 storefront；如果 Xcode 打开时提示迁移格式，让它迁
+并保存即可（不同 Xcode 版本 schema 有小差异，商品 id 和价格不变）。
+
+### 隐私政策与使用条款
+
+订阅区里有「隐私政策 / 使用条款」两个链接：
+
+- 隐私政策 → `https://dsh-mizar.shirazu-nagisa.com/privacy/`（主力0 上的静态页面）
+- 使用条款 → `https://dsh-mizar.shirazu-nagisa.com/terms/`（同上）
+
+两个页面必须真的可访问、内容与 App 实际行为一致；App Store Connect 的「隐私政策 URL」
+填上面第一个。页面内容以 `iOS/README.md` 的 Privacy 段落为准（同一条政策，两处措辞不要分叉）。
+**不要**把这两个链接指到 `dshmizar-1` 账户主机 —— 那是账户 API，不是网站。
+
+### 附件
+
+附件只对付费账户开放，且需要电脑端插件是支持 `upload.*` 的新版本（0.8.4+）。旧插件在发送
+附件时会明确提示"这台电脑上的 DSH 插件版本过旧，无法接收附件"，而不是发送失败。上限：
+图片 ≤ 10 MiB、文件 ≤ 32 MiB、一次 ≤ 8 个（图片 ≤ 4）、合计 ≤ 64 MiB；照片会先缩到长边
+2048 再压缩，正常手机照片远低于限制。

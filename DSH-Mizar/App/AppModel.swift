@@ -46,6 +46,17 @@ final class AppModel {
     /// the first version made and it is the wrong one: somebody with a laptop
     /// and a desktop should not have to unpair one to reach the other.
     private(set) var hosts: [PairedHost] = []
+
+    /// The optional account: who is signed in, and what they have paid for.
+    ///
+    /// Optional in the product sense, not the Swift sense: every free feature
+    /// works without it, and nothing here is consulted to decide whether the app
+    /// may connect, sync or send. It exists for the relay's traffic identity and
+    /// for the two screens that show it.
+    let account: AccountController
+    /// The Apple subscription, and the plan it changes on the server.
+    let subscription: SubscriptionController
+
     /// The machine whose pairing just completed and has not been named yet.
     ///
     /// Naming is offered once, right after pairing, when the operator knows
@@ -507,12 +518,19 @@ final class AppModel {
         index: any SessionIndexStore = FileSessionIndexStore(),
         settings: AppSettings = .shared,
         log: ActivityLog = .shared,
+        accountStore: any AccountStoring = KeychainAccountStore(),
+        accountClient: AccountClient? = nil,
+        subscriptionStore: (any SubscriptionStore)? = nil,
     ) {
         self.credentials = credentials
         self.conversations = conversations
         self.indexStore = index
         self.settings = settings
         self.log = log
+        let account = AccountController(store: accountStore, client: accountClient)
+        let subscription = SubscriptionController(store: subscriptionStore)
+        self.account = account
+        self.subscription = subscription
         self.liveActivity = LiveActivityController(settings: settings, log: log)
         // The Live Activity's token, as the controller obtains and forgets it.
         // `queue: .main` is the delivery this observer needs -- the notification is
@@ -524,6 +542,20 @@ final class AppModel {
             queue: .main,
         ) { [weak self] _ in
             Task { await self?.syncPushRegistration() }
+        }
+        // The account owns nothing about the connection, and the connection owns
+        // nothing about the account -- these two closures are the whole contract
+        // between them. Signing in or out changes the relay identity headers,
+        // and a header cannot be changed on a live socket, so that is a redial.
+        // A successful sign-in also asks the App Store what it already holds, so
+        // a subscription bought on another phone lands on this one.
+        subscription.attach(to: account)
+        account.onIdentityChange = { [weak self] in
+            self?.accountIdentityChanged()
+        }
+        account.onAuthenticated = { [weak self] in
+            await self?.subscription.syncEntitlements()
+            await self?.subscription.load()
         }
     }
 
@@ -1497,6 +1529,121 @@ final class AppModel {
             return false
         }
     }
+
+    /// Send a prompt that carries attachments.
+    ///
+    /// The attachments have already been uploaded; what travels here is their
+    /// host-issued ids. `text` may be empty — the host accepts a prompt that is
+    /// only attachments — but a device talking to an old host plugin is refused
+    /// (see ``uploadAttachment``), and the caller shows that as an update
+    /// message rather than a send failure.
+    ///
+    /// - Parameters:
+    ///   - text: what to say, possibly empty.
+    ///   - attachmentIds: the ids from ``uploadAttachment``; at most 8, of which
+    ///     at most 4 are images, as the host enforces.
+    ///   - sessionId: the session to send to.
+    /// - Returns: whether the host accepted it.
+    @discardableResult
+    func sendPrompt(_ text: String, attachmentIds: [String], to sessionId: String) async -> Bool {
+        guard !attachmentIds.isEmpty else { return await sendPrompt(text, to: sessionId) }
+        guard let connection else { return false }
+        guard attachmentIds.count <= 8 else {
+            lastError = String(localized: "At most 8 attachments can be sent at once.")
+            return false
+        }
+        let requestId = UUID().uuidString
+        var fields: [String: JSONValue] = [
+            "sessionId": .string(sessionId),
+            "requestId": .string(requestId),
+            "attachmentIds": .array(attachmentIds.map { .string($0) }),
+        ]
+        // Omitted rather than empty: the host documents `text` as optional when
+        // attachments exist, and an empty string is a different request from no
+        // text at all to a host that trims.
+        if !text.isEmpty { fields["text"] = .string(text) }
+        do {
+            let result = try await loggedCall(
+                "session.prompt",
+                payload: .object(fields),
+                on: connection,
+                as: PromptResult.self,
+            )
+            if result.accepted { notePromptAccepted(for: sessionId) }
+            return result.accepted
+        } catch {
+            lastError = Self.describe(error)
+            return false
+        }
+    }
+
+    /// Upload one attachment over the socket that is already open.
+    ///
+    /// Throws the host's own ``MizarError``; `NOT_IMPLEMENTED` is the one the
+    /// composer recognises as "this computer's plugin is too old". The request
+    /// bodies are deliberately not logged: a chunk is 128 KiB of base64, and a
+    /// log an operator exports is not the place for it.
+    ///
+    /// - Parameters:
+    ///   - data: the bytes.
+    ///   - kind: image or file.
+    ///   - name: the file name.
+    ///   - mediaType: the IANA media type.
+    ///   - sessionId: the session the attachment belongs to.
+    ///   - progress: called with the fraction sent, on an arbitrary executor.
+    /// - Returns: the host's record of the stored attachment.
+    func uploadAttachment(
+        data: Data,
+        kind: AttachmentKind,
+        name: String,
+        mediaType: String,
+        sessionId: String,
+        progress: (@Sendable (Double) -> Void)? = nil,
+    ) async throws -> AttachmentRef {
+        guard let connection else {
+            throw MizarError(
+                code: "SOCKET_CLOSED",
+                message: "the computer is not connected",
+                retryable: true,
+            )
+        }
+        let uploader = AttachmentUploader { method, payload in
+            try await connection.request(method, payload: payload)
+        }
+        let ref = try await uploader.upload(
+            sessionId: sessionId,
+            kind: kind,
+            name: name,
+            mediaType: mediaType,
+            data: data,
+            progress: progress,
+        )
+        log.add(.request, "uploaded \(name) (\(data.count) bytes) -> \(ref.attachmentId)")
+        return ref
+    }
+
+    /// The account's token changed, so the socket's identity headers are stale.
+    ///
+    /// A relay reads its traffic identity from the WebSocket upgrade request and
+    /// strips it before forwarding, so the only way to change it is a new socket.
+    /// This is a reconnect, not a disconnect-and-wait: the session list is bigger
+    /// than a dropped socket should cost either way, but a phone that has just
+    /// signed in should show as signed in on the relay within a round trip.
+    private func accountIdentityChanged() {
+        guard host != nil else { return }
+        accountReconnectTask?.cancel()
+        accountReconnectTask = Task { [weak self] in
+            guard let self else { return }
+            // A sign-in while the app is on the failure screen still counts: the
+            // reconnect is what moves it back to ready.
+            guard await self.reconnect(patient: false) else { return }
+            await self.refreshSessions()
+        }
+    }
+
+    /// The reconnect a sign-in or sign-out asked for, kept so a second change
+    /// cannot stack two redials on one socket.
+    private var accountReconnectTask: Task<Void, Never>?
 
     /// Start a session in a directory.
     ///
@@ -2981,7 +3128,14 @@ final class AppModel {
         pendingNameHostId = nil
         log.add(.connection, "pairing with \(target.authority ?? target.baseURL ?? "unknown address") as \(deviceName)")
         do {
-            let client = PairingClient()
+            // The identity headers, so a pair through a relay is attributed to
+            // this install rather than to an anonymous hash of the room. Signed
+            // out this is only the client id, which is exactly right: the
+            // pairing request creates the device, there is no account behind it
+            // yet. A direct pairing carries none: those headers are relay
+            // bookkeeping, and the computer has no use for them.
+            let relayOnly = target.authority == nil || (target.authority ?? "").isEmpty
+            let client = PairingClient(headers: relayOnly ? account.identity.headers : [:])
             let paired = try await client.pair(
                 authority: target.authority,
                 code: target.code,
@@ -3122,6 +3276,17 @@ final class AppModel {
         case .relay: timeout = 20
         }
 
+        // The relay meters traffic by the two identity headers on the upgrade.
+        // A direct connection goes to the operator's own computer over their own
+        // network and is metered by nobody, so it carries none: sending an
+        // account hash to a host that does not need it would be a credential
+        // derivative leaving the phone for no reason.
+        let relayHeaders: [String: String]
+        switch endpoint {
+        case .direct: relayHeaders = [:]
+        case .relay: relayHeaders = account.identity.headers
+        }
+
         let configuration: MizarConnection.Configuration
         switch endpoint {
         case .direct(let authority):
@@ -3135,6 +3300,7 @@ final class AppModel {
                 // on "Connecting…" for as long as the process lives, and this
                 // route has already been given its chance by then.
                 handshakeTimeout: .seconds(timeout),
+                relayHeaders: relayHeaders,
             )
         case .relay(let baseURL):
             configuration = .init(
@@ -3144,6 +3310,7 @@ final class AppModel {
                 deviceModel: Self.deviceModel,
                 baseURL: baseURL,
                 handshakeTimeout: .seconds(timeout),
+                relayHeaders: relayHeaders,
             )
         }
 

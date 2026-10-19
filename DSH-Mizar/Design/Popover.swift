@@ -62,8 +62,6 @@ enum PopoverSize {
     static let compact = CGSize(width: 320, height: 380)
     /// A list worth scrolling: the model picker, the computers.
     static let list = CGSize(width: 340, height: 480)
-    /// The settings.
-    static let tall = CGSize(width: 360, height: 620)
 }
 
 /// A small window's own header: a title and, when the window has something

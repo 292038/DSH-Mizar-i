@@ -46,6 +46,7 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 header
+                accountSection
                 notificationsSection
                 liveActivitySection
                 feelSection
@@ -100,6 +101,47 @@ struct SettingsView: View {
             }
             .padding(.vertical, 6)
             .listRowBackground(Color.clear)
+        }
+    }
+
+    // MARK: - 账户
+
+    /// The account row: who is signed in, or that nobody is.
+    ///
+    /// Placed between the header and notifications because it is the second
+    /// thing a person looks for in settings, and because it has to be reachable
+    /// without signing in — the row is how anybody discovers an account exists.
+    /// A blank avatar and 未登录 is not an error state; it is the truth about an
+    /// app that works without one.
+    private var accountSection: some View {
+        Section {
+            NavigationLink {
+                AccountScreen(onDone: onDone)
+            } label: {
+                HStack(spacing: 14) {
+                    AccountAvatarView(user: model.account.user, image: model.account.customAvatar, size: 44)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(model.account.isLoggedIn ? model.account.displayName : String(localized: "Not signed in"))
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(model.account.isLoggedIn ? Color.primary : Color.secondary)
+                            .accessibilityIdentifier("settings.account.name")
+                        Text(model.account.isPaid ? String(localized: "Paid account") : String(localized: "Free account"))
+                            .font(.caption)
+                            .foregroundStyle(model.account.isPaid ? Color.accentColor : Color.secondary)
+                            .accessibilityIdentifier("settings.account.plan")
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .accessibilityIdentifier("settings.account")
+        } header: {
+            Text("Account")
+        } footer: {
+            if !model.account.isLoggedIn {
+                Text("An account is optional. It is needed for attachments and the paid plan, and for keeping your plan on more than one device.")
+            } else if let notice = model.account.noticeMessage {
+                Text(notice)
+            }
         }
     }
 
@@ -314,6 +356,8 @@ struct SettingsView: View {
             }
             .accessibilityIdentifier("settings.about.source")
 
+            // 兑换邀请码 lives on the account screen, next to the plan it pays
+            // for: an invite is an account thing, and About is about the build.
             LabeledContent {
                 Text(AppModel.versionLine)
                     .monospacedDigit()

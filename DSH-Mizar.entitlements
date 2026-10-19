@@ -18,10 +18,23 @@
   Enabling the capability is also required on the App ID itself -- either in the
   developer portal, or by adding "Push Notifications" under Signing &
   Capabilities in Xcode with automatic signing on. See `docs/testflight.md`.
+
+  `com.apple.developer.applesignin` is the second capability, and it is the one
+  that makes the Apple button work at all. Without it `ASAuthorizationController`
+  fails immediately with `error 1000` (unknown), the sheet never appears, and the
+  account screen looks like it has a broken button rather than a missing
+  capability. `Default` is the only value a native app uses: it means the app is
+  both the relying party and the client. The same capability has to be enabled
+  on the App ID, or the profile that signs the build does not carry it and the
+  entitlement is stripped at signing time -- which fails the same way, silently.
 -->
 <plist version="1.0">
 <dict>
 	<key>aps-environment</key>
 	<string>development</string>
+	<key>com.apple.developer.applesignin</key>
+	<array>
+		<string>Default</string>
+	</array>
 </dict>
 </plist>

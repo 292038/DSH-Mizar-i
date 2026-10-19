@@ -47,6 +47,13 @@ public actor MizarConnection {
         /// app on "Connecting…" with nothing that can change it, so the wait for
         /// the welcome is bounded the same way a call is.
         public var handshakeTimeout: Duration
+        /// Extra headers for the socket upgrade, when the route is a relay.
+        ///
+        /// The relay reads its traffic identity from two of these
+        /// (``RelayIdentity/clientIdHeader`` and ``RelayIdentity/accountHeader``)
+        /// and strips them before forwarding. They are empty for a direct
+        /// connection, where nobody meters anything.
+        public var relayHeaders: [String: String]
 
         public init(
             authority: String?,
@@ -57,6 +64,7 @@ public actor MizarConnection {
             requestTimeout: Duration = .seconds(60),
             baseURL: String? = nil,
             handshakeTimeout: Duration = .seconds(20),
+            relayHeaders: [String: String] = [:],
         ) {
             self.authority = authority
             self.token = token
@@ -66,6 +74,7 @@ public actor MizarConnection {
             self.requestTimeout = requestTimeout
             self.baseURL = baseURL
             self.handshakeTimeout = handshakeTimeout
+            self.relayHeaders = relayHeaders
         }
 
         /// Which of the two routes this configuration names.
@@ -198,7 +207,7 @@ public actor MizarConnection {
         transport = socket
 
         do {
-            try await socket.connect(url: url)
+            try await socket.connect(url: url, headers: configuration.relayHeaders)
         } catch {
             state = .failed(String(describing: error))
             throw error

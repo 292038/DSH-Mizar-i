@@ -418,7 +418,7 @@ actor FlakyTransport: WebSocketTransport {
         self.failuresBeforeSuccess = failuresBeforeSuccess
     }
 
-    func connect(url: URL) async throws {
+    func connect(url: URL, headers: [String: String]) async throws {
         attempts += 1
         if attempts <= failuresBeforeSuccess {
             throw MizarError(code: "SOCKET_CLOSED", message: "refused", retryable: true)

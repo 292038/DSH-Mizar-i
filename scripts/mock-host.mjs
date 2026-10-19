@@ -1015,7 +1015,364 @@ function answer(frame) {
   }
 }
 
+// MARK: - Account fixture
+//
+// The account API is served from this same process so a UI test can run the real
+// account client against a real HTTP server. Nothing here is a security
+// boundary: passwords are compared in the clear and tokens are strings in a Map.
+// The three behaviours the tests need are the three the app branches on -- a
+// sign-in that succeeds, an invite that makes an account paid, and an App Store
+// transaction that makes it paid another way.
+
+/** The account API root. */
+const ACCOUNT_PREFIX = '/account/v1'
+/** The code that turns an account paid, for the redeem test. */
+const INVITE_CODE = 'MOCK-INVITE'
+/** How much paid time redeeming the invite adds. */
+const INVITE_DAYS = 30
+/** The password of the fixture account, for the sign-in test. */
+const FIXTURE_PASSWORD = 'mizar-test-password'
+/** The product the App Store transaction route accepts. */
+const SUBSCRIPTION_PRODUCT = 'me.shirazu.dshmizar.paid.monthly'
+
+/**
+ * Accounts by user id, and sessions by bearer token.
+ *
+ * Recreated by `/reset`, so every test starts signed out and with one known
+ * account to sign in to. The fixture account is the one the login test uses; the
+ * register test creates its own so the two cannot pass by accident.
+ */
+let accounts = new Map()
+let accountSessions = new Map()
+let accountSerial = 0
+/** How many App Store transactions the fixture has been sent. */
+let appStoreTransactions = 0
+
+/** Put the account fixture back to its starting state. */
+function resetAccounts() {
+  const now = Date.now()
+  accounts = new Map()
+  accountSessions = new Map()
+  accountSerial = 0
+  appStoreTransactions = 0
+  const id = '11111111-2222-4333-8444-555555555555'
+  accounts.set(id, {
+    id,
+    username: 'shirazu',
+    email: 'shirazu@example.com',
+    password: FIXTURE_PASSWORD,
+    emailVerified: false,
+    grantedPaidUntil: null,
+    appStore: null,
+    createdAt: now,
+    devices: [],
+  })
+}
+resetAccounts()
+
+/**
+ * The public user shape, exactly as `dsh-relay`'s `PublicUser` writes it.
+ *
+ * @param user - the fixture account.
+ * @param deviceId - the install id the request came from, so `current` is true.
+ * @returns the profile the phone decodes.
+ */
+function publicUser(user, deviceId) {
+  const now = Date.now()
+  const appStorePaidUntil = user.appStore?.paidUntil ?? null
+  const paidUntil = Math.max(user.grantedPaidUntil ?? 0, appStorePaidUntil ?? 0) || null
+  const sources = []
+  if ((user.grantedPaidUntil ?? 0) > now) sources.push('invite')
+  if ((appStorePaidUntil ?? 0) > now) sources.push('appstore')
+  return {
+    id: user.id,
+    username: user.username,
+    email: user.email ?? null,
+    emailVerified: user.emailVerified,
+    plan: paidUntil !== null && paidUntil > now ? 'paid' : 'free',
+    paidUntil,
+    paidSources: sources,
+    grantedPaidUntil: user.grantedPaidUntil ?? null,
+    appStore: user.appStore
+      ? {
+          paidUntil: appStorePaidUntil,
+          productId: SUBSCRIPTION_PRODUCT,
+          environment: 'Sandbox',
+          autoRenew: true,
+          revokedAt: null,
+        }
+      : null,
+    avatar: {
+      kind: 'generated',
+      colors: ['#5b8def', '#8f6bff', '#2fc7a5'],
+      initials: (user.username[0] ?? '?').toUpperCase(),
+    },
+    apple: user.apple === true,
+    createdAt: user.createdAt,
+    lastSeenAt: now,
+    devices: user.devices.map((device) => ({
+      id: device.id,
+      name: device.name,
+      model: device.model,
+      platform: device.platform,
+      loginAt: device.loginAt,
+      lastSeenAt: device.lastSeenAt,
+      current: device.id === deviceId,
+    })),
+  }
+}
+
+/** A fresh bearer token. */
+function newAccountToken() {
+  accountSerial += 1
+  return `mza_mock_${accountSerial}`
+}
+
+/** The user behind a request, or `null`. */
+function accountFor(request) {
+  const header = request.headers['authorization'] ?? ''
+  const token = header.replace(/^Bearer\s+/i, '')
+  if (!token) return null
+  const userId = accountSessions.get(token)
+  return userId ? accounts.get(userId) ?? null : null
+}
+
+/** Record a device on sign-in, replacing the old record for this install. */
+function noteDevice(user, device, now) {
+  if (!device || typeof device.id !== 'string') return
+  const entry = {
+    id: device.id,
+    name: String(device.name ?? 'iPhone'),
+    model: String(device.model ?? ''),
+    platform: String(device.platform ?? 'ios'),
+    loginAt: now,
+    lastSeenAt: now,
+  }
+  user.devices = user.devices.filter((existing) => existing.id !== device.id)
+  user.devices.push(entry)
+}
+
+/** Answer one account route. Returns whether it handled the request. */
+function handleAccount(request, response, url) {
+  const path = url.pathname
+  if (!path.startsWith(ACCOUNT_PREFIX)) return false
+  const route = path.slice(ACCOUNT_PREFIX.length)
+  const method = request.method ?? 'GET'
+  const now = Date.now()
+
+  const answer = (status, body) => {
+    response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    response.end(JSON.stringify(body))
+  }
+  const refusal = (status, code, message) => answer(status, { error: code, message })
+  const withBody = (handler) => {
+    let body = ''
+    request.on('data', (chunk) => { body += chunk })
+    request.on('end', () => {
+      let parsed
+      try { parsed = JSON.parse(body || '{}') } catch { parsed = null }
+      if (parsed === null) return refusal(400, 'INVALID_INPUT', 'body was not JSON')
+      handler(parsed)
+    })
+  }
+
+  if (method === 'POST' && route === '/register') {
+    withBody((parsed) => {
+      const username = String(parsed.username ?? '').trim()
+      const email = String(parsed.email ?? '').trim().toLowerCase()
+      const password = String(parsed.password ?? '')
+      if (username.length < 2 || !email.includes('@') || password.length < 8) {
+        return refusal(400, 'INVALID_INPUT', 'those details are not acceptable')
+      }
+      for (const existing of accounts.values()) {
+        if (existing.username.toLowerCase() === username.toLowerCase()) {
+          return refusal(409, 'USERNAME_TAKEN', 'that username is taken')
+        }
+        if ((existing.email ?? '').toLowerCase() === email) {
+          return refusal(409, 'EMAIL_TAKEN', 'that email already has an account')
+        }
+      }
+      const id = crypto.randomUUID()
+      const user = {
+        id,
+        username,
+        email,
+        password,
+        emailVerified: false,
+        grantedPaidUntil: null,
+        appStore: null,
+        createdAt: now,
+        devices: [],
+      }
+      accounts.set(id, user)
+      noteDevice(user, parsed.device, now)
+      const token = newAccountToken()
+      accountSessions.set(token, id)
+      answer(200, { token, user: publicUser(user, parsed.device?.id) })
+    })
+    return true
+  }
+
+  if (method === 'POST' && route === '/login') {
+    withBody((parsed) => {
+      const identifier = String(parsed.identifier ?? '').trim().toLowerCase()
+      for (const user of accounts.values()) {
+        const matches = user.username.toLowerCase() === identifier
+          || (user.email ?? '').toLowerCase() === identifier
+        if (matches && user.password === String(parsed.password ?? '')) {
+          noteDevice(user, parsed.device, now)
+          const token = newAccountToken()
+          accountSessions.set(token, user.id)
+          return answer(200, { token, user: publicUser(user, parsed.device?.id) })
+        }
+      }
+      refusal(401, 'UNAUTHENTICATED', 'wrong username or password')
+    })
+    return true
+  }
+
+  if (method === 'POST' && route === '/apple') {
+    withBody((parsed) => {
+      // Apple's JWT is not verified here; the fixture accepts anything shaped
+      // like one and signs in (or creates) the fixture Apple account. The app's
+      // job in the UI test is the nonce hand-off and the token exchange, which
+      // this still exercises.
+      if (typeof parsed.identityToken !== 'string' || typeof parsed.nonce !== 'string') {
+        return refusal(400, 'APPLE_TOKEN_INVALID', 'missing identity token or nonce')
+      }
+      let user = [...accounts.values()].find((candidate) => candidate.username === 'apple-user')
+      if (!user) {
+        user = {
+          id: crypto.randomUUID(),
+          username: 'apple-user',
+          email: 'apple@example.com',
+          password: null,
+          apple: true,
+          emailVerified: true,
+          grantedPaidUntil: null,
+          appStore: null,
+          createdAt: now,
+          devices: [],
+        }
+        accounts.set(user.id, user)
+      }
+      noteDevice(user, parsed.device, now)
+      const token = newAccountToken()
+      accountSessions.set(token, user.id)
+      answer(200, { token, user: publicUser(user, parsed.device?.id) })
+    })
+    return true
+  }
+
+  if (method === 'GET' && route === '/me') {
+    const user = accountFor(request)
+    if (!user) return refusal(401, 'SESSION_REVOKED', 'that session is gone'), true
+    accountSessions.forEach((userId, token) => {
+      if (userId === user.id) accountSessions.set(token, user.id)
+    })
+    return answer(200, { user: publicUser(user, user.devices.at(-1)?.id) }), true
+  }
+
+  if (method === 'POST' && route === '/logout') {
+    const header = request.headers['authorization'] ?? ''
+    accountSessions.delete(header.replace(/^Bearer\s+/i, ''))
+    return answer(200, { ok: true }), true
+  }
+
+  if (method === 'POST' && route === '/delete') {
+    const user = accountFor(request)
+    if (!user) return refusal(401, 'UNAUTHENTICATED', 'sign in required'), true
+    withBody((parsed) => {
+      if (parsed.confirmation !== 'DELETE') {
+        return refusal(400, 'INVALID_INPUT', 'confirmation must be DELETE')
+      }
+      accounts.delete(user.id)
+      accountSessions.forEach((userId, token) => {
+        if (userId === user.id) accountSessions.delete(token)
+      })
+      answer(200, { ok: true })
+    })
+    return true
+  }
+
+  if (method === 'POST' && route === '/invite/redeem') {
+    const user = accountFor(request)
+    if (!user) return refusal(401, 'UNAUTHENTICATED', 'sign in required'), true
+    withBody((parsed) => {
+      const code = String(parsed.code ?? '').trim()
+      if (code !== INVITE_CODE) {
+        return refusal(400, 'INVITE_INVALID', 'that invite code is not valid')
+      }
+      const base = Math.max(now, user.grantedPaidUntil ?? 0)
+      user.grantedPaidUntil = base + INVITE_DAYS * 24 * 60 * 60 * 1000
+      answer(200, { user: publicUser(user, user.devices.at(-1)?.id) })
+    })
+    return true
+  }
+
+  if (method === 'POST' && route === '/appstore/transaction') {
+    const user = accountFor(request)
+    if (!user) return refusal(401, 'UNAUTHENTICATED', 'sign in required'), true
+    withBody((parsed) => {
+      if (typeof parsed.signedTransaction !== 'string' || parsed.signedTransaction.length === 0) {
+        return refusal(400, 'APPSTORE_TOKEN_INVALID', 'missing signed transaction')
+      }
+      appStoreTransactions += 1
+      user.appStore = {
+        paidUntil: Math.max(now, user.appStore?.paidUntil ?? 0) + 31 * 24 * 60 * 60 * 1000,
+        productId: SUBSCRIPTION_PRODUCT,
+        environment: 'Sandbox',
+        autoRenew: true,
+        revokedAt: null,
+      }
+      answer(200, { user: publicUser(user, user.devices.at(-1)?.id) })
+    })
+    return true
+  }
+
+  if (method === 'POST' && route === '/appstore/sync') {
+    const user = accountFor(request)
+    if (!user) return refusal(401, 'UNAUTHENTICATED', 'sign in required'), true
+    withBody((parsed) => {
+      const transactions = Array.isArray(parsed.signedTransactions) ? parsed.signedTransactions : []
+      if (transactions.length === 0 || transactions.length > 100) {
+        return refusal(400, 'INVALID_INPUT', 'expected 1 to 100 transactions')
+      }
+      appStoreTransactions += transactions.length
+      user.appStore = {
+        paidUntil: Math.max(now, user.appStore?.paidUntil ?? 0) + 31 * 24 * 60 * 60 * 1000,
+        productId: SUBSCRIPTION_PRODUCT,
+        environment: 'Sandbox',
+        autoRenew: true,
+        revokedAt: null,
+      }
+      answer(200, { user: publicUser(user, user.devices.at(-1)?.id) })
+    })
+    return true
+  }
+
+  if (method === 'POST' && route === '/appstore/notifications') {
+    return answer(200, { ok: true }), true
+  }
+
+  if (method === 'GET' && route === '/debug') {
+    return answer(200, {
+      users: [...accounts.values()].map((user) => ({
+        username: user.username,
+        plan: publicUser(user).plan,
+        paidUntil: publicUser(user).paidUntil,
+      })),
+      sessions: accountSessions.size,
+      appStoreTransactions,
+    }), true
+  }
+
+  return refusal(404, 'INVALID_INPUT', `no account route ${method} ${route}`), true
+}
+
 const server = createServer((request, response) => {
+  const url = new URL(request.url ?? '/', `http://127.0.0.1:${port}`)
+  if (handleAccount(request, response, url)) return
   if (request.url?.startsWith('/connections')) {
     // How many sockets have been opened since the last reset. A reconnect is
     // invisible from the app's side -- the data looks the same afterwards -- so
@@ -1111,6 +1468,9 @@ const server = createServer((request, response) => {
     createdSessions.length = 0
     failMethod = null
     statsVariant = 'full'
+    // The account fixture goes back with everything else: a test that signs in
+    // must not inherit the previous test's paid plan or its session tokens.
+    resetAccounts()
     // `?skew=NNN` moves the host's clock ahead of the phone's, which is what a
     // running turn's negative duration came from. `?pageLimit=NNN` makes the
     // host refuse a page it cannot carry.

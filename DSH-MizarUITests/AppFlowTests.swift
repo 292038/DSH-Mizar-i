@@ -43,6 +43,9 @@ final class AppFlowTests: XCTestCase {
 
     /// How long to wait for the host to answer.
     private static let patience: TimeInterval = 20
+    /// A naming prompt appears only on the first pairing. Waiting the full
+    /// `patience` when it does not appear adds twenty seconds to every launch.
+    private static let namingPatience: TimeInterval = 3
 
     override func setUp() {
         continueAfterFailure = false
@@ -523,7 +526,10 @@ final class AppFlowTests: XCTestCase {
         // the pairing screen twice.
         if pairing { for uri in pairingURIs { arguments += ["-mizarPairURI", uri] } }
         if let session { arguments += ["-mizarSelectSession", session] }
-        if let language { arguments += ["-AppleLanguages", "(\(language))"] }
+        if let language {
+            arguments += ["-AppleLanguages", "(\(language))"]
+            if language == "en" { arguments += ["-AppleLocale", "en_US"] }
+        }
         // The stored conversations outlive a relaunch, which is the point of
         // them -- and means a test that did not ask for a clean one would be
         // measuring an earlier run's fixture merged with this one's.
@@ -531,6 +537,12 @@ final class AppFlowTests: XCTestCase {
         // The system prompts are real and belong to the app, not to a test:
         // answered by an alert, every assertion after them measures the alert.
         arguments += ["-mizarSkipPermissionPrompts"]
+        // No account in the protocol suite. A session left in the Keychain by
+        // the account suite would otherwise make every launch call the
+        // production `/me`, and the first screen would be measured through a
+        // 30-second timeout. The override also keeps a future signed-in test
+        // from reaching the real account server by accident.
+        arguments += ["-mizarAccountFreshStart", "-mizarAccountURL", "http://127.0.0.1:19395"]
         return arguments
     }
 
@@ -812,7 +824,7 @@ final class AppFlowTests: XCTestCase {
         // query that existed a moment ago is not a window that is there now.
         for _ in 0..<2 {
             let skip = app.buttons["rename.skip"]
-            guard skip.waitForExistence(timeout: Self.patience) else { return }
+            guard skip.waitForExistence(timeout: Self.namingPatience) else { return }
             guard skip.isHittable else {
                 Thread.sleep(forTimeInterval: 0.4)
                 continue
@@ -1030,6 +1042,14 @@ final class AppFlowTests: XCTestCase {
         openSettings(chinese)
         expect(settingControl("settings.notify.turn-finished", in: chinese), "there is no notifications section")
         expect(chinese.staticTexts["通知"], "通知 is not on the settings screen")
+        // The account row moved this section past the first screenful; swipe
+        // the settings list itself rather than relying on the generic reveal
+        // helper, whose drag starts over a row full of switches.
+        for _ in 0..<4 where !chinese.staticTexts["实时活动"].exists {
+            chinese.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.68))
+                .press(forDuration: 0.05, thenDragTo: chinese.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.40)))
+            Thread.sleep(forTimeInterval: 0.5)
+        }
         expect(chinese.staticTexts["实时活动"], "实时活动 is not on the settings screen")
         XCTAssertTrue(
             revealInSettings(chinese.staticTexts["开发者鸣谢"], in: chinese),
