@@ -130,6 +130,27 @@ final class ShellState {
 
     // MARK: Dragging
 
+    /// Whether a horizontal drag in this direction can change the drawers.
+    ///
+    /// One sign, one answer: a drawer that is already out can only be put
+    /// away, and a closed shell can open the sidebar to the right or the turn
+    /// index to the left. The pan asks this when the axis first becomes clear,
+    /// not once per touch, so a gesture can be reversed during an animation.
+    ///
+    /// - Parameter dx: positive towards the sidebar, negative towards the index.
+    /// - Returns: whether the shell should take the drag.
+    func canDrag(towards dx: CGFloat) -> Bool {
+        if progress > 0.01 {
+            // Sidebar out or arriving: only left puts it back.
+            return dx < 0
+        }
+        if progress < -0.01 {
+            // Index out or arriving: only right puts it back.
+            return dx > 0
+        }
+        return dx > 0 || trailingAvailable
+    }
+
     func beginDrag() {
         isDragging = true
         dragOrigin = progress

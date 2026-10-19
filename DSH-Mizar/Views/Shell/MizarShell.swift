@@ -106,7 +106,7 @@ struct MizarShell: View {
                 .opacity(compact ? (trail > 0.01 ? 0 : 0.35 + 0.65 * lead) : 1)
                 .accessibilityHidden(lead < 0.5)
                 .allowsHitTesting(lead > 0.5)
-                .gesture(SidebarPan(shell: shell, direction: .leftward, enabled: compact))
+                .gesture(SidebarPan(shell: shell, compact: compact))
 
             // The mirror image, on the right.
             TurnIndexPanel(onPick: {})
@@ -116,7 +116,7 @@ struct MizarShell: View {
                 .opacity(compact ? (lead > 0.01 ? 0 : 0.35 + 0.65 * trail) : 1)
                 .accessibilityHidden(trail < 0.5)
                 .allowsHitTesting(trail > 0.5)
-                .gesture(SidebarPan(shell: shell, direction: .rightward, enabled: compact))
+                .gesture(SidebarPan(shell: shell, compact: compact))
 
             pane(leading: leading, trailing: trailing, size: size, compact: compact, lead: lead, trail: trail)
 
@@ -131,7 +131,7 @@ struct MizarShell: View {
                 .buttonStyle(.plain)
                 .frame(width: max(0, size.width - abs(shift)), height: size.height)
                 .offset(x: max(0, shift))
-                .gesture(SidebarPan(shell: shell, direction: lead > 0.02 ? .leftward : .rightward))
+                .gesture(SidebarPan(shell: shell, compact: compact))
                 .accessibilityLabel(Text(lead > 0.02 ? "Close sidebar" : "Close turns"))
                 .accessibilityIdentifier("shell.dismissSidebar")
                 .allowsHitTesting(lead > 0.5 || trail > 0.5)
@@ -219,7 +219,7 @@ struct MizarShell: View {
         )
         .scaleEffect(compact ? 1 - 0.06 * reveal : 1, anchor: towardsTrailing ? .trailing : .leading)
         .offset(x: offset)
-        .gesture(SidebarPan(shell: shell, direction: .either, enabled: compact && (shell.settled == nil || shell.isDragging)))
+        .gesture(SidebarPan(shell: shell, compact: compact))
         .accessibilityHidden(compact && reveal > 0.5)
     }
 

@@ -2471,20 +2471,59 @@ final class AppFlowTests: XCTestCase {
         // A slow sideways drag across the conversation opens it too. Decided on
         // distance, not speed: a drag in a test is slow.
         //
-        // A beat first: the sidebar is judged away the moment its marker stops
-        // being hittable, which is mid-animation, and a synthetic drag delivered
-        // while the card is still moving is the one flake this test has had on a
-        // loaded machine. And if the first drag is swallowed anyway, one more is
-        // the difference between a flaky gesture and a missing one -- the path
-        // under test is the same one either way.
+        // One drag, not a retry. The retry this test used to have was hiding the
+        // exact bug the deferred axis lock in SidebarPan.swift fixes: a drag
+        // that started with a little vertical travel was failed for the whole
+        // touch, and the second attempt is what made the test green.
         Thread.sleep(forTimeInterval: 0.4)
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.45))
         let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.47))
         start.press(forDuration: 0.05, thenDragTo: finish)
-        if !sidebar(newSession, isOut: true) {
-            start.press(forDuration: 0.05, thenDragTo: finish)
-        }
         XCTAssertTrue(sidebar(newSession, isOut: true), "a sideways drag did not open the sidebar")
+    }
+
+    /// A drawer swipe still works when the finger travels diagonally, and the
+    /// open drawer can be put away by the reverse swipe.
+    ///
+    /// The first drag deliberately moves 260 pt down while it moves 320 pt
+    /// across. The old recognizer required the first movement to be horizontal
+    /// by 1.5:1 and failed the touch otherwise; this one waits for the axis to
+    /// become clear, so the diagonal still ends as a horizontal drawer drag.
+    func testTheDrawersTakeDiagonalAndReverseSwipes() {
+        // Select the fixture by tapping it, the way the other drawer test does:
+        // `-mizarSelectSession` races the first session-list read on a loaded
+        // simulator, and this test is about the drag, not about that race.
+        let app = launch(session: nil, pending: false)
+        let demo = app.buttons["workspace./Users/you/projects/demo"]
+        let row = sessionRow(in: app, titled: "Mock session", in: "demo")
+        XCTAssertTrue(expand(demo, revealing: row), "the session never appeared")
+        row.tap()
+        expect(app.textFields["composer.field"], "the conversation never opened")
+        Thread.sleep(forTimeInterval: 0.5)
+
+        let newSession = app.buttons["sessions.new"]
+        let right = (start: CGVector(dx: 0.10, dy: 0.30), finish: CGVector(dx: 0.90, dy: 0.60))
+        app.coordinate(withNormalizedOffset: right.start)
+            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: right.finish))
+        expect(newSession, "a diagonal rightward drag did not open the sidebar")
+
+        let left = (start: CGVector(dx: 0.90, dy: 0.55), finish: CGVector(dx: 0.10, dy: 0.35))
+        app.coordinate(withNormalizedOffset: left.start)
+            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: left.finish))
+        let gone = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false OR hittable == false"),
+            object: newSession,
+        )
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: Self.patience), .completed,
+                       "a diagonal leftward drag did not close the sidebar")
+
+        // The mirror. The index is only available in a conversation.
+        let indexStart = CGVector(dx: 0.90, dy: 0.30)
+        let indexFinish = CGVector(dx: 0.10, dy: 0.55)
+        app.coordinate(withNormalizedOffset: indexStart)
+            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: indexFinish))
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "turnIndex.row."))
+        expect(rows.firstMatch, "a diagonal leftward drag did not open the turn index")
     }
 
     /// Wait for the sidebar to be out, or away, judged by one of its controls.
