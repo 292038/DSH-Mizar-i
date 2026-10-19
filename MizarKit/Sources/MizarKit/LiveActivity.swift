@@ -173,7 +173,12 @@ extension RunningSession {
         var out: [RunningSession] = []
         for row in sessions where row.isLiveActivityCandidate {
             let cached = await conversations.load(sessionId: row.sessionId)
-            let turn = cached?.turns?.last { $0.isRunning }
+            // Settled first: a cache can hold a run a later turn has disproved,
+            // and a card started from that would name the wrong turn's prompt
+            // and count from the wrong start. The screen applies the same rule
+            // before drawing, so card and screen agree about what is running.
+            let turns = settlingStaleRuns(in: cached?.turns ?? [])
+            let turn = turns.last { $0.isRunning }
             out.append(
                 RunningSession(
                     id: row.sessionId,

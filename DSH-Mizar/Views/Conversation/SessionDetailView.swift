@@ -498,8 +498,18 @@ struct SessionDetailView: View {
     /// answer. Every assignment of `turns` goes through here, so no read path
     /// can put a running turn on screen without saying so.
     ///
-    /// - Parameter turns: the turns the screen is about to draw.
-    private func show(turns: [ConversationTurn]) {
+    /// The turns are settled here before they are drawn, and that is the last
+    /// line of a policy the model and the views share: the agent ends a turn
+    /// before starting the next, so a turn with a later turn after it cannot be
+    /// running. A page the phone skipped can leave the cache holding exactly
+    /// that shape, and a cache written before the model learned to repair it is
+    /// only ever this screen's to fix -- so the rule is applied at draw time as
+    /// well as at write time. It is the same pure function, so the two cannot
+    /// disagree.
+    ///
+    /// - Parameter incoming: the turns the screen is about to draw.
+    private func show(turns incoming: [ConversationTurn]) {
+        let turns = settlingStaleRuns(in: incoming)
         self.turns = turns
         conversationSessionId = sessionId
         model.noteConversationTurns(turns, for: sessionId)

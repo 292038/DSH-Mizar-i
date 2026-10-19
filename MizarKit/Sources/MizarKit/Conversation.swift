@@ -429,6 +429,21 @@ extension SessionRecord {
 public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     /// Which turn, or `nil` for anything outside one.
     public let turn: Int?
+    /// The number of the last turn folded into this one, when it is a chain.
+    ///
+    /// DSH ends a turn before starting the next, and an agent that keeps working
+    /// emits consecutive `turn/start`s with no prompt between them. Those are
+    /// folded into the turn they continued, and the chain keeps its **first**
+    /// number in ``turn`` as its identity. This is the number at the other end of
+    /// that chain, so a record that names the *last* continuation -- which is
+    /// what a `turn/end` does, and the ending is how the chain stops -- can still
+    /// be joined to the copy the phone holds instead of arriving under a number
+    /// no entry has. Equal to ``turn`` for a turn that is not a chain.
+    ///
+    /// Optional, because this is a cache format: a file written before it existed
+    /// decodes with `nil`, and the sign-off that would have matched it is dropped
+    /// as before.
+    public let lastTurn: Int?
     /// What the operator said, oldest first. Always shown.
     public let prompts: [ConversationItem]
     /// What the agent produced, oldest first. The last assistant message is the
@@ -466,6 +481,19 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     public let endedAt: Date?
     /// How it ended, when the host said.
     public let endedReason: String?
+    /// Whether ``endedAt`` was inferred rather than read.
+    ///
+    /// The log is the only authority on an end: a turn is over when a
+    /// `turn/end` for it arrives. This is `true` in the one case where the log
+    /// cannot answer and the agent's own turn model still can -- this phone's
+    /// copy never received the `turn/end`, but a later turn exists, and a turn
+    /// ends before the next one begins. ``settlingStaleRuns(in:)`` is what
+    /// writes it; every end read from the host leaves it `nil`.
+    ///
+    /// Optional, because this is a cache format: a file written before it
+    /// existed must still decode, and a missing key is not a claim that the end
+    /// was recorded.
+    public let endInferred: Bool?
     /// The earliest log position any of the turn's records held.
     ///
     /// The turn's *markers* count, not only the records the screen draws, and
@@ -536,6 +564,34 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             endedAt: endedAt,
             endedReason: endedReason,
             firstSeq: firstSeq,
+            endInferred: endInferred,
+            lastTurn: lastTurn,
+        )
+    }
+
+    /// This turn, ended at an instant the log did not write down.
+    ///
+    /// The one settler of an end that is not in the log. It exists for the
+    /// shape ``settlingStaleRuns(in:)`` describes: a turn this phone still holds
+    /// as running while a later turn -- which the agent cannot start before this
+    /// one ends -- has already arrived. The instant is an upper bound (the later
+    /// turn's start), and ``endInferred`` is set so no screen reports it as a
+    /// measured duration or a recorded outcome.
+    ///
+    /// - Parameter end: when the turn must have ended by.
+    /// - Returns: the turn, settled.
+    public func settling(at end: Date) -> ConversationTurn {
+        ConversationTurn(
+            turn: turn,
+            prompts: prompts,
+            steps: steps,
+            stepCount: stepCount,
+            startedAt: startedAt,
+            endedAt: end,
+            endedReason: endedReason,
+            firstSeq: firstSeq,
+            endInferred: true,
+            lastTurn: lastTurn,
         )
     }
 
@@ -583,6 +639,14 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             endedAt: continuation ? next.endedAt : endedAt,
             endedReason: unfinished ?? (continuation ? next.endedReason : endedReason),
             firstSeq: Self.earliest(firstSeq, next.firstSeq),
+            // The chain's end is the last continuation's, so whether that end
+            // was inferred is the last continuation's too. Folding a settled
+            // continuation in and keeping the predecessor's recorded end would
+            // report a duration the log never measured.
+            endInferred: continuation ? next.endInferred : endInferred,
+            // The other end of the chain's identity, so a later `turn/end`
+            // naming this continuation can find the folded copy it belongs to.
+            lastTurn: Self.most(lastTurn, next.lastTurn ?? next.turn),
         )
     }
 
@@ -605,7 +669,26 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     /// - Parameter other: the other copy.
     /// - Returns: the two, as one turn.
     public func merging(_ other: ConversationTurn) -> ConversationTurn {
-        ConversationTurn(
+        // The end is one fact, not three. Its instant, the reason it carried and
+        // whether it was inferred all belong to whichever copy has an end:
+        // reading them field by field let a fresh copy with no end clear the
+        // inferred mark off an end that came from the cached copy, which left a
+        // settled turn reporting an end the host never sent.
+        //
+        // A **recorded** end beats an inferred one, whichever copy it is on. An
+        // inferred end is a placeholder for exactly the record that just arrived;
+        // keeping the placeholder because this copy has one would leave the
+        // settled mark on a turn the host has since said how it ended.
+        let ended: ConversationTurn
+        if endedAt != nil, !isEndInferred {
+            ended = self
+        } else if other.endedAt != nil, !other.isEndInferred {
+            ended = other
+        } else {
+            ended = endedAt != nil ? self : other
+        }
+        let reason = ended.endedReason ?? (endedAt != nil ? other.endedReason : endedReason)
+        return ConversationTurn(
             turn: turn ?? other.turn,
             // `other` first, so this copy -- the one just fetched -- wins where
             // the two describe the same item.
@@ -617,9 +700,11 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             // cache overlap on every one of them.
             stepCount: Self.most(stepCount, other.stepCount),
             startedAt: [startedAt, other.startedAt].compactMap { $0 }.min(),
-            endedAt: endedAt ?? other.endedAt,
-            endedReason: endedReason ?? other.endedReason,
+            endedAt: ended.endedAt,
+            endedReason: reason,
             firstSeq: Self.earliest(firstSeq, other.firstSeq),
+            endInferred: ended.endInferred,
+            lastTurn: Self.most(lastTurn, other.lastTurn),
         )
     }
 
@@ -707,8 +792,11 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
         endedAt: Date?,
         endedReason: String?,
         firstSeq: Int? = nil,
+        endInferred: Bool? = nil,
+        lastTurn: Int? = nil,
     ) {
         self.turn = turn
+        self.lastTurn = lastTurn
         self.prompts = prompts
         self.steps = steps
         self.stepCount = stepCount
@@ -716,6 +804,7 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
         self.endedAt = endedAt
         self.endedReason = endedReason
         self.firstSeq = firstSeq
+        self.endInferred = endInferred
     }
 
     /// How long the turn took, when both ends are known.
@@ -747,6 +836,30 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     ///   as though it were the other way round is what left a running turn with
     ///   no prompt, and its row reporting "已完成" while the host was executing.
     public var isRunning: Bool { turn != nil && endedAt == nil }
+
+    /// Whether this turn's end was inferred rather than read. See ``endInferred``.
+    ///
+    /// A row that shows this one has to stop saying "deepseeking" -- the turn is
+    /// over, a later turn proves it -- but it must not say "completed" either:
+    /// the log never said how it ended.
+    public var isEndInferred: Bool { endInferred == true }
+
+    /// Whether this group holds nothing but a turn's ending.
+    ///
+    /// A page window is cut by log position, so it can begin between a turn's
+    /// last record and its `turn/end`; the ending then arrives on its own. That
+    /// is evidence about a turn, not a turn -- nothing this page can show
+    /// happened in it -- and merging treats it as such: joined to the phone's
+    /// copy it ends that copy, and on its own it is dropped rather than drawn as
+    /// an empty row with no prompt. The failure item is allowed here because it
+    /// is a detail *of* the ending, and merges into the held turn beside it.
+    var isEndOnly: Bool {
+        guard turn != nil, endedAt != nil, startedAt == nil, prompts.isEmpty else { return false }
+        return steps.allSatisfy { item in
+            if case .failure = item { return true }
+            return false
+        }
+    }
 
     /// When the turn began, as well as the log can say.
     ///
@@ -840,6 +953,13 @@ extension SessionMessagesResult {
     ///   read as a bar saying "未完成" over an empty screen. "The turn ended
     ///   without a response" is exactly what happened, and it is the one state a
     ///   monitoring app must not show as a hang.
+    /// - A `turn/end` whose turn has **no other record in this page** is a
+    ///   **sign-off**, not a turn: the window is cut at a log position, not at a
+    ///   turn boundary, so the ending can arrive alone. It is kept so
+    ///   ``mergeTurns(cached:fresh:)`` can end the copy the phone holds -- how a
+    ///   turn that was running when the phone last looked finishes without a
+    ///   page that repeats its `turn/start` -- and dropped when there is no copy
+    ///   to end.
     ///
     /// - Returns: the turns, oldest first.
     public func conversationTurns() -> [ConversationTurn] {
@@ -903,6 +1023,17 @@ extension SessionMessagesResult {
                 note(turn, seq: seq, at: at)
                 stepCounts[turn, default: 0] += 1
             case "turn/end":
+                // A page can begin between a turn's last record and this one --
+                // a window is cut at a log position, not at a turn boundary --
+                // and then the ending arrives on its own. It used to be skipped
+                // unless the turn's own `turn/start` happened to be in the same
+                // page, which is how a turn this phone held as running could
+                // finish without the phone ever hearing it: the next page held
+                // only the later turns. The group is a sign-off rather than a
+                // turn (see `ConversationTurn/isEndOnly`); ``mergeTurns`` joins
+                // it to the copy the phone holds, and drops it when there is no
+                // copy to join.
+                if let turn, !order.contains(turn) { order.append(turn) }
                 ended[turn] = at
                 note(turn, seq: seq, at: nil)
                 // Closed, so a prompt written after it belongs to a later turn
@@ -976,6 +1107,7 @@ extension SessionMessagesResult {
                 endedAt: ended[turn],
                 endedReason: reason[turn],
                 firstSeq: firstSeq[turn],
+                lastTurn: turn,
             )
         }
     }

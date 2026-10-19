@@ -143,6 +143,7 @@
 "Completed" = "已完成";
 "Unfinished after %@" = "未完成，用时 %@";
 "Unfinished" = "未完成";
+"Ended" = "已结束";
 "%lld s" = "%lld 秒";
 "%lld min %lld s" = "%lld 分 %lld 秒";
 "Setting up" = "正在初始化";

@@ -143,6 +143,7 @@
 "Completed" = "Completed";
 "Unfinished after %@" = "Unfinished after %@";
 "Unfinished" = "Unfinished";
+"Ended" = "Ended";
 "%lld s" = "%lld s";
 "%lld min %lld s" = "%lld min %lld s";
 "Setting up" = "Setting up";

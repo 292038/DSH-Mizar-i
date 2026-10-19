@@ -395,6 +395,63 @@ struct LiveActivityTests {
         #expect(rows.map(\.title) == ["Refactor the parser", nil])
     }
 
+    @Test("does not seed the card from a run a later turn disproved")
+    func staleRunDoesNotSeedTheCard() async throws {
+        // The session list says this session is running, and the cache holds a
+        // turn the phone left counting plus a later turn that finished. Seeding
+        // the card from the stale one would name the wrong instruction and count
+        // from the wrong start; with the turn settled, the card falls back to
+        // the last thing the operator said, exactly as it does for a session
+        // whose page has not been read since it started.
+        let older = ConversationItem.message(
+            id: "seq-10",
+            role: .user,
+            text: "stale question",
+            at: t0,
+        )
+        let later = ConversationItem.message(
+            id: "seq-40",
+            role: .user,
+            text: "later question",
+            at: t0,
+        )
+        let cache = InMemoryConversationCache()
+        await cache.save(CachedConversation(
+            sessionId: "s-1",
+            items: [older, later],
+            throughSeq: 50,
+            turns: [
+                ConversationTurn(
+                    turn: 1,
+                    prompts: [older],
+                    steps: [],
+                    startedAt: t0,
+                    endedAt: nil,
+                    endedReason: nil,
+                ),
+                ConversationTurn(
+                    turn: 2,
+                    prompts: [later],
+                    steps: [],
+                    startedAt: t0,
+                    endedAt: at(2),
+                    endedReason: "completed",
+                ),
+            ],
+        ))
+
+        let rows = await RunningSession.running(
+            in: [sessionRow("s-1")],
+            conversations: cache,
+            titles: [:],
+            now: at(5),
+        )
+
+        let row = try #require(rows.first)
+        #expect(row.prompt == "later question")
+        #expect(row.elapsedWhenSeeded == 0)
+    }
+
     @Test("tells the widget which instant each row's clock counts from")
     func rowCarriesItsInstant() throws {
         // The widget draws its own ticking text rather than being handed a new

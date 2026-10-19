@@ -546,6 +546,21 @@ final class AppModel {
 
     // MARK: - Off screen
 
+    /// When the background refresh now running runs out of time, if one is.
+    ///
+    /// Set by ``backgroundRefresh(expiresAt:reason:)`` and read by the repair a
+    /// sync may start after its page. That repair issues extra requests, and the
+    /// background contract is that **every** request is preceded by a
+    /// ``BackgroundSync/mayStartRequest(now:expiresAt:)`` check. A foreground
+    /// sync leaves this `nil` and asks no such question.
+    ///
+    /// The scope is the whole app rather than the one call: a foreground repair
+    /// that happens to interleave with the tail of a background refresh is
+    /// checked against that refresh's deadline too. That is conservative -- it
+    /// can settle a turn instead of fetching it, and never overruns the
+    /// assertion -- and the overlap is one request wide at most.
+    private var backgroundDeadline: Date?
+
     /// One short refresh, run while the app is not on screen.
     ///
     /// Called from the two things iOS lends an app for this: the assertion taken
@@ -586,6 +601,11 @@ final class AppModel {
     @discardableResult
     func backgroundRefresh(expiresAt: Date, reason: String) async -> String {
         let started = Date()
+        // Every request this refresh causes has to pass the budget check, and a
+        // repair inside `syncConversation` is a request too -- see
+        // ``repairStaleRunningTurns(for:)``.
+        backgroundDeadline = expiresAt
+        defer { backgroundDeadline = nil }
         guard host != nil else {
             return "background sync (\(reason)): nothing to do, this phone is not paired"
         }
@@ -2184,19 +2204,7 @@ final class AppModel {
                 // `current` rather than the `cached` read before the request:
                 // that one is several round trips old by now, and anything the
                 // time it took fetched would be thrown away.
-                let known = current ?? cached
-                return CachedConversation(
-                    sessionId: sessionId,
-                    items: mergeConversations(cached: known.items, fresh: fresh),
-                    throughSeq: known.throughSeq,
-                    hasMore: result.hasMore,
-                    turns: mergeTurns(cached: known.turns ?? [], fresh: result.conversationTurns()),
-                    oldestSeq: [before, reached].compactMap { $0 }.min(),
-                    stats: known.stats,
-                    // Carried forward: paging backwards delivers older records,
-                    // which cannot raise the highest position the phone holds.
-                    deliveredSeq: known.deliveredSeq,
-                )
+                Self.folding(older: result, into: current ?? cached, sessionId: sessionId)
             }
             lastError = nil
             log.add(
@@ -2209,6 +2217,42 @@ final class AppModel {
             if !message.isEmpty { lastError = message }
             return nil
         }
+    }
+
+    /// Fold a page fetched with `beforeSeq` into a stored conversation.
+    ///
+    /// Backwards pages are read by two callers that must agree on what they
+    /// mean: the operator scrolling up (``loadOlder(sessionId:)``) and the
+    /// repair that fills a window a forward read stepped over
+    /// (``repairStaleRunningTurns(for:)``). They differ only in where the page
+    /// starts, so the fold is one rule with one home.
+    ///
+    /// The delivery cursor is **carried forward untouched**: older records
+    /// cannot raise the highest position this phone has been given, and moving
+    /// it would make the next forward read skip whatever lies between. The
+    /// page's cut and `hasMore` describe the older end, which is this page's
+    /// whole subject.
+    ///
+    /// - Parameters:
+    ///   - page: one page the host returned for `beforeSeq`.
+    ///   - known: what the phone holds for the session.
+    ///   - sessionId: the session the page belongs to.
+    /// - Returns: the conversation with the page folded in.
+    private nonisolated static func folding(
+        older page: SessionMessagesResult,
+        into known: CachedConversation,
+        sessionId: String,
+    ) -> CachedConversation {
+        CachedConversation(
+            sessionId: sessionId,
+            items: mergeConversations(cached: known.items, fresh: page.conversationItems()),
+            throughSeq: known.throughSeq,
+            hasMore: page.hasMore,
+            turns: mergeTurns(cached: known.turns ?? [], fresh: page.conversationTurns()),
+            oldestSeq: [known.oldestSeq, page.oldestSeq].compactMap { $0 }.min(),
+            stats: known.stats,
+            deliveredSeq: known.deliveredSeq,
+        )
     }
 
     /// Read a session's conversation from the phone's own storage.
@@ -2367,13 +2411,24 @@ final class AppModel {
             lastError = nil
             conversationError = nil
             log.add(.cache, "session \(sessionId): stored \(stored.items.count) items")
+            // A page can begin after records this phone never received -- the
+            // host trims a page to its newest few hundred messages -- and a
+            // `turn/end` among the skipped ones leaves a turn the screen draws
+            // as still running above turns that finished. See
+            // ``repairStaleRunningTurns(for:)``.
+            let repaired = await repairStaleRunningTurns(for: sessionId)
             // The other half of what the island shows just arrived: the running
             // turn's own clock and the instruction it is working on. Refreshed
             // here rather than at the end of a full pass so that the first page
             // fetched -- normally the session the operator opened -- is enough to
             // put a real figure on the card instead of a clock started at zero.
             await refreshLiveActivity()
-            return stored.items
+            // A repair folded older records in, and the screen draws the cache:
+            // return what is on disk now rather than the page before the repair,
+            // so "what is on screen and what is stored" stay the same answer.
+            return repaired
+                ? await conversations.load(sessionId: sessionId)?.items ?? stored.items
+                : stored.items
         } catch {
             // A cancelled read is not a failure to report. It is a phone being
             // suspended -- or, now, a background sync that ran out of its
@@ -2396,6 +2451,179 @@ final class AppModel {
                 ? "The computer did not answer. Pull down to try again."
                 : message
             return await conversations.load(sessionId: sessionId)?.items ?? []
+        }
+    }
+
+    /// How many backward pages one repair will read for one missing end.
+    ///
+    /// A page holds the newest few hundred raw messages before the position it
+    /// was asked for, so one page covers a page-window's worth of gap and four
+    /// covers a phone that was away for several turns. The bound matters
+    /// because this runs inside a refresh: a repair that walked a whole history
+    /// back, over a relay, would be a refresh that never returns.
+    private static let staleRunRepairPages = 4
+
+    /// How many stale runs one refresh will try to repair.
+    ///
+    /// The shape is impossible for the agent, so in practice it is zero or one.
+    /// More than a couple means something other than a skipped window is wrong
+    /// with this phone's history; the rest are settled rather than repaired.
+    private static let staleRunRepairRounds = 2
+
+    /// Fetch the records an incremental page stepped over, when the merge proves
+    /// one of them held a `turn/end`.
+    ///
+    /// The report this answers: "后面的对话都成功执行完毕结束了，前面还有会话显示
+    /// 正在执行" -- every later turn finished, and a row above them still counted
+    /// "深度求索中". The agent ends a turn before starting the next, so the
+    /// agent's own log cannot show that; a copy of it can, when it is missing the
+    /// `turn/end` that ended the turn. This phone's copy is the one that loses
+    /// records, because its reads are incremental: a page is a window over the
+    /// log, trimmed to its newest few hundred messages, and the phone asks only
+    /// for records after the position it holds. When a whole window of activity
+    /// happens between two reads -- a long turn, or a phone away long enough for
+    /// several turns to pass -- the page begins after records that were never
+    /// delivered, and the highest position it then claims steps over them **for
+    /// good**: no later read asks for them again. A `turn/end` inside the skipped
+    /// range is how that becomes a row that never stops counting, while the turns
+    /// after it arrived finished.
+    ///
+    /// The repair is the read the operator's scroll-up already uses: a page of
+    /// older records, asked for by `beforeSeq`. It starts at the earliest
+    /// position of the first turn after the stale one -- the exclusive upper
+    /// bound of the range the missing end can be in -- and walks back until the
+    /// end arrives, the range is exhausted, or ``staleRunRepairPages`` is
+    /// reached. What it folds in is kept: those records were conversation the
+    /// operator owns, and the content around the missing end is worth having.
+    ///
+    /// If the record cannot be fetched -- the phone is offline, or the host's
+    /// page budget keeps cutting it away -- the stale turns are **settled** by
+    /// ``settlingStaleRuns(in:)`` and the settlement is written down, so the
+    /// screen says "已结束" rather than counting a turn that is over. Writing it
+    /// down also stops every later refresh from paying for this repair again;
+    /// a cache written before this policy existed is settled at draw time by the
+    /// same rule, so opening the conversation offline tells the same truth.
+    ///
+    /// - Parameter sessionId: the session whose merge produced the shape.
+    /// - Returns: whether the conversation on disk changed. The caller re-reads
+    ///   it then, because the page needed to repair an end is also older
+    ///   conversation the screen should now hold.
+    @discardableResult
+    private func repairStaleRunningTurns(for sessionId: String) async -> Bool {
+        var changed = false
+        for _ in 0..<Self.staleRunRepairRounds {
+            guard let cached = await conversations.load(sessionId: sessionId),
+                  let stale = staleRunningTurn(in: cached.turns ?? [])
+            else { return changed }
+            if let before = stale.beforeSeq {
+                var ceiling = before
+                var repaired = false
+                for _ in 0..<Self.staleRunRepairPages {
+                    // Without a socket the next round trip cannot land, and the
+                    // turns below are settled rather than left counting.
+                    guard connection != nil else { break }
+                    // A background refresh is spending an assertion it must not
+                    // outlive; the page below is a request like any other.
+                    if let deadline = backgroundDeadline,
+                       !BackgroundSync.mayStartRequest(now: Date(), expiresAt: deadline) {
+                        break
+                    }
+                    do {
+                        let page = try await messages(sessionId: sessionId, beforeSeq: ceiling)
+                        // A page with nothing in it, or one that did not move
+                        // back, is the host saying there is nothing older here;
+                        // asking again would loop.
+                        guard !page.records.isEmpty,
+                              let oldest = page.oldestSeq,
+                              oldest < ceiling
+                        else { break }
+                        let stored = await conversations.update(sessionId: sessionId) { existing in
+                            let known = existing ?? CachedConversation(
+                                sessionId: sessionId,
+                                items: [],
+                                throughSeq: nil,
+                                turns: [],
+                            )
+                            return Self.folding(older: page, into: known, sessionId: sessionId)
+                        }
+                        if staleRunningTurn(in: stored.turns ?? []) == nil {
+                            repaired = true
+                            break
+                        }
+                        // The missing end is above the stale turn's own start:
+                        // once a page reaches back past that, the whole range
+                        // has been read and the record is not in the log this
+                        // host serves.
+                        if let start = stale.turn.orderSeq, oldest <= start { break }
+                        ceiling = oldest
+                    } catch {
+                        if !Task.isCancelled {
+                            log.add(
+                                .cache,
+                                "session \(sessionId): could not repair a turn end a page stepped over",
+                            )
+                        }
+                        break
+                    }
+                }
+                if repaired {
+                    changed = true
+                    log.add(
+                        .cache,
+                        "session \(sessionId): recovered the end of turn \(stale.turn.turn.map(String.init) ?? "?")",
+                    )
+                    continue
+                }
+            }
+            // A cancelled task is a screen going away or a background assertion
+            // running out; it must not keep doing disk work, and a settlement
+            // logged as a decision nobody made would be the same mistake in the
+            // log. The draw-time rule still settles it on screen.
+            if Task.isCancelled { return changed }
+            await settleStaleRunningTurns(for: sessionId)
+            log.add(
+                .cache,
+                "session \(sessionId): settled a turn a later turn proved is over; its end record is missing",
+            )
+            return true
+        }
+        // The bound was reached with a stale run still held: one skipped window
+        // lost more endings than the rounds allow. Settle what is left rather
+        // than leave the screen counting it.
+        if !Task.isCancelled,
+           let cached = await conversations.load(sessionId: sessionId),
+           staleRunningTurn(in: cached.turns ?? []) != nil {
+            await settleStaleRunningTurns(for: sessionId)
+            log.add(
+                .cache,
+                "session \(sessionId): settled the turns a later turn proved are over; their end records are missing",
+            )
+            changed = true
+        }
+        return changed
+    }
+
+    /// Write the settled turns down, so no later screen counts a turn that is
+    /// over. See ``repairStaleRunningTurns(for:)``.
+    ///
+    /// - Parameter sessionId: the session to settle.
+    private func settleStaleRunningTurns(for sessionId: String) async {
+        // Nothing to settle into a cache that no longer exists: the update would
+        // write an empty conversation back, which is the opposite of what the
+        // operator asked for when the cache went away.
+        guard await conversations.load(sessionId: sessionId) != nil else { return }
+        await conversations.update(sessionId: sessionId) { known in
+            CachedConversation(
+                sessionId: sessionId,
+                items: known?.items ?? [],
+                throughSeq: known?.throughSeq,
+                syncedAt: known?.syncedAt ?? Date(),
+                hasMore: known?.hasMore ?? false,
+                turns: settlingStaleRuns(in: known?.turns ?? []),
+                oldestSeq: known?.oldestSeq,
+                stats: known?.stats,
+                deliveredSeq: known?.deliveredSeq,
+            )
         }
     }
 

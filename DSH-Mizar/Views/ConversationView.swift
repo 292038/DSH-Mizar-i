@@ -215,6 +215,15 @@ private struct TurnSummary: View {
                 if turn.isRunning {
                     TwinStar(size: 13)
                         .transition(.pop)
+                } else if turn.isEndInferred {
+                    // A later turn proves this one is over, but the log never
+                    // said how. A hollow tick rather than a filled one: the row
+                    // may not claim a completion the host did not report.
+                    Image(systemName: "checkmark.circle")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .symbolRenderingMode(.hierarchical)
+                        .transition(.pop)
                 } else {
                     Image(systemName: turn.failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                         .font(.footnote)
@@ -241,8 +250,11 @@ private struct TurnSummary: View {
         .animation(.mizarBouncy, value: turn.isRunning)
         .animation(.mizarSnappy, value: turn.stepCount)
         // One small tap when a turn the operator is watching finishes. Only on
-        // the change, never on the first draw of a finished turn.
-        .mizarFeedback(.success, trigger: turn.isRunning) { old, new in old && !new && !turn.failed }
+        // the change, never on the first draw of a finished turn -- and never
+        // for a turn settled from a missing record, which nobody just watched.
+        .mizarFeedback(.success, trigger: turn.isRunning) { old, new in
+            old && !new && !turn.failed && !turn.isEndInferred
+        }
     }
 
     /// The state of the turn, and for a running one a clock that moves.
@@ -276,6 +288,10 @@ private struct TurnSummary: View {
         // A turn with a number and no end is running; this case is reached when
         // it also has no start to measure from.
         if turn.isRunning { return String(localized: "DeepSeeking") }
+        // A turn whose end record never arrived, but which a later turn proves
+        // is over. No duration: the end this row was given is an upper bound,
+        // not a measurement, and a figure here would read as one.
+        if turn.isEndInferred { return String(localized: "Ended") }
         if turn.failed {
             return turn.duration.map {
                 String(format: String(localized: "Unfinished after %@"), Self.spell($0))

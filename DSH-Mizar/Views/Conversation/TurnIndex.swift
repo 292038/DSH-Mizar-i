@@ -104,24 +104,31 @@ extension ConversationTurn {
     }
 
     /// How long the turn took, or has taken so far.
+    ///
+    /// Nothing for a turn settled from a missing record: the end it was given is
+    /// the next turn's start -- an upper bound, not a reading -- and a number
+    /// here would be taken for a measurement on the index's bar and total.
     func spent(asOf now: Date) -> TimeInterval? {
-        isRunning ? elapsed(asOf: now) : duration
+        if isEndInferred { return nil }
+        return isRunning ? elapsed(asOf: now) : duration
     }
 
     /// What kind of row this is, for its colour and its glyph.
     var state: TurnState {
         if isRunning { return .running }
+        if isEndInferred { return .ended }
         return failed ? .unfinished : .done
     }
 }
 
 enum TurnState {
-    case running, done, unfinished
+    case running, done, ended, unfinished
 
     var tint: Color {
         switch self {
         case .running: .accentColor
         case .done: Theme.running
+        case .ended: Color.secondary
         case .unfinished: Theme.waiting
         }
     }
@@ -419,6 +426,17 @@ private struct TurnIndexRow: View {
         case .done:
             Circle()
                 .fill(onScreen ? Color.accentColor : Theme.running.opacity(0.85))
+                .frame(width: 9, height: 9)
+                .overlay {
+                    Circle().strokeBorder(Theme.sidebarBackground, lineWidth: 2).padding(-2)
+                }
+                .scaleEffect(onScreen ? 1.25 : 1)
+        case .ended:
+            // Over, but the log never said how: a hollow node rather than the
+            // filled "done" dot or the orange "unfinished" mark. See
+            // ``ConversationTurn/isEndInferred``.
+            Circle()
+                .strokeBorder(Color.secondary.opacity(0.8), lineWidth: 1.5)
                 .frame(width: 9, height: 9)
                 .overlay {
                     Circle().strokeBorder(Theme.sidebarBackground, lineWidth: 2).padding(-2)

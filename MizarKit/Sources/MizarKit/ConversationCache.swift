@@ -345,6 +345,13 @@ public func mergeConversations(
 /// direction that matters: a turn that has ended cannot be un-ended by a later
 /// read, whichever page it came from.
 ///
+/// One case is neither a turn nor a copy: a `turn/end` that arrived alone,
+/// because the page window began between the turn's last record and its ending.
+/// It is joined to the copy the phone holds -- which is how a turn that was
+/// running when the phone last looked gets its ending -- and dropped when there
+/// is no copy, because a row with no prompt and no answer is not a turn the
+/// operator can read.
+///
 /// - Parameters:
 ///   - cached: turns the phone already had.
 ///   - fresh: turns from the page just fetched, older or newer than `cached`.
@@ -356,11 +363,26 @@ public func mergeTurns(
     var byId: [String: ConversationTurn] = [:]
     for turn in cached { byId[turn.id] = turn }
     for turn in fresh {
-        guard let known = byId[turn.id] else {
-            byId[turn.id] = turn
+        if let known = byId[turn.id] {
+            byId[turn.id] = turn.merging(known)
             continue
         }
-        byId[turn.id] = turn.merging(known)
+        // A page-edge ending for a turn this phone does not hold *under that
+        // number*. There is one place it can still belong: a chain of
+        // continuations keeps its first number as identity, so an ending that
+        // names the chain's last continuation arrives under a number no entry
+        // has. ``ConversationTurn/lastTurn`` is the other end of that chain.
+        if turn.isEndOnly,
+           let id = byId.first(where: { $0.value.lastTurn == turn.turn })?.key,
+           let known = byId[id] {
+            // `known` first: the ending is what the other copy brings, but the
+            // identity and the prompt are the chain's and must stay so.
+            byId[id] = known.merging(turn)
+            continue
+        }
+        // Nothing to end, and drawing it would be a row with no prompt and no
+        // answer: see ``ConversationTurn/isEndOnly``.
+        if !turn.isEndOnly { byId[turn.id] = turn }
     }
     // Ordered by where each turn sits in the log, not by its number. A turn can
     // arrive without one -- see `reclaimStrandedPrompts` -- and ordering by
@@ -369,6 +391,125 @@ public func mergeTurns(
     return collapseContinuations(
         in: reclaimStrandedPrompts(in: byId.values.sorted(by: ConversationTurn.precedes)),
     )
+}
+
+/// A turn this phone still holds as running, though a later turn exists.
+///
+/// The agent's turn model is serial: a turn ends before the next one begins, and
+/// the log says so -- over every session log measured on this machine, no
+/// `turn/start` is followed by another `turn/start` before its `turn/end`. So a
+/// running turn with a finished turn after it is not a state the **agent** can be
+/// in. What produces it is a copy of the log missing the `turn/end` that ended the
+/// turn -- almost always this phone's, because its reads are incremental and a
+/// page can step over records; a host that died mid-turn could leave the record
+/// out of the log too, and the answer below is the same either way. The shape on
+/// screen was the reported one: a row still counting "深度求索中" above rows that
+/// say "已完成".
+///
+/// The missing record cannot be re-asked for by position alone -- the read that
+/// skipped it did not know it had skipped anything -- so the repair is a page of
+/// older records, the same `beforeSeq` paging the operator's scroll-up uses.
+/// ``beforeSeq`` is where that page must stop: the earliest log position of any
+/// turn after this one, which is the exclusive upper bound of the range the
+/// missing end lives in. `nil` means no later turn named a position, and
+/// nothing can be asked for.
+public struct StaleRunningTurn: Sendable, Equatable {
+    /// The turn that cannot still be running.
+    public let turn: ConversationTurn
+    /// The exclusive upper bound for the page holding the missing `turn/end`.
+    public let beforeSeq: Int?
+
+    public init(turn: ConversationTurn, beforeSeq: Int?) {
+        self.turn = turn
+        self.beforeSeq = beforeSeq
+    }
+}
+
+/// The first turn the merge left running although a later turn exists.
+///
+/// A postcondition of ``mergeTurns(cached:fresh:)``, not a second reading of the
+/// records: the agent cannot start a turn before the one before it ends, so any
+/// held shape that says otherwise is a phone missing a record. See
+/// ``StaleRunningTurn`` for what that costs and how the page is asked for.
+///
+/// Later is decided by turn number, not by array position. A continuation is
+/// folded into the turn it continued and keeps that turn's number, so numbers
+/// stay monotonic across the fold; positions do not, because a turn whose
+/// `firstSeq` was never stored sorts by its items, and an item-less turn sorts
+/// last regardless of when it happened.
+///
+/// - Parameter turns: merged turns, oldest first.
+/// - Returns: the first stale run, or `nil` when the turns are serial.
+public func staleRunningTurn(in turns: [ConversationTurn]) -> StaleRunningTurn? {
+    for turn in turns where turn.isRunning {
+        guard staleTurnIsSuperseded(turn, in: turns) else { continue }
+        let beforeSeq = turns
+            .filter { ($0.turn ?? .min) > (turn.turn ?? .max) }
+            .compactMap(\.orderSeq)
+            .min()
+        return StaleRunningTurn(turn: turn, beforeSeq: beforeSeq)
+    }
+    return nil
+}
+
+/// Settle every turn a later turn proves has ended.
+///
+/// The display-side half of ``staleRunningTurn(in:)``, and the last resort when
+/// the missing record cannot be fetched: a turn that is not the newest cannot be
+/// running, so it is drawn as **ended** (``ConversationTurn/isEndInferred``) at
+/// the instant the next turn began -- the latest it could have ended. No reason
+/// is written and no duration is reported as measured, because the log never
+/// said either. "Ended, and the record of how is missing" is true; "still
+/// running" is not, and "completed" would be a claim the phone cannot make.
+///
+/// Idempotent, and it never touches the newest turn: that one may genuinely be
+/// running, and is the one row the screen must keep counting.
+///
+/// - Parameter turns: merged turns, oldest first.
+/// - Returns: the same turns, with every stale run settled.
+public func settlingStaleRuns(in turns: [ConversationTurn]) -> [ConversationTurn] {
+    var out = turns
+    var settled = false
+    for index in turns.indices where turns[index].isRunning {
+        guard let next = nextTurn(after: turns[index], in: turns) else { continue }
+        // The next turn by *number* bounds the ending. Only when it has no start
+        // to give does the turn's own last known instant stand in -- never an
+        // unrelated neighbour's, which array order can put on either side of a
+        // turn whose position was not stored.
+        let end = next.beganAt
+            ?? turns[index].items.map(\.at).max()
+            ?? turns[index].beganAt
+            ?? Date(timeIntervalSince1970: 0)
+        out[index] = turns[index].settling(at: end)
+        settled = true
+    }
+    return settled ? out : turns
+}
+
+/// Whether a turn with a greater number is among these turns.
+///
+/// - Parameters:
+///   - turn: the running turn.
+///   - turns: merged turns, oldest first.
+/// - Returns: whether a recorded turn came after it.
+private func staleTurnIsSuperseded(_ turn: ConversationTurn, in turns: [ConversationTurn]) -> Bool {
+    nextTurn(after: turn, in: turns) != nil
+}
+
+/// The next recorded turn after this one, by turn number.
+///
+/// - Parameters:
+///   - turn: the turn to look past.
+///   - turns: merged turns, oldest first.
+/// - Returns: the lowest-numbered turn with a greater number, or `nil`.
+private func nextTurn(
+    after turn: ConversationTurn,
+    in turns: [ConversationTurn],
+) -> ConversationTurn? {
+    guard let number = turn.turn else { return nil }
+    return turns
+        .filter { ($0.turn ?? .min) > number }
+        .min { ($0.turn ?? .max) < ($1.turn ?? .max) }
 }
 
 /// Fold the turns an agent continued on its own back into the turn they continued.
@@ -448,6 +589,8 @@ public func reclaimStrandedPrompts(in turns: [ConversationTurn]) -> [Conversatio
             endedAt: turn.endedAt,
             endedReason: turn.endedReason,
             firstSeq: turn.firstSeq,
+            endInferred: turn.endInferred,
+            lastTurn: turn.lastTurn,
         )
     }
 
