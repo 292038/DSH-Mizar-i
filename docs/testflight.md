@@ -10,8 +10,8 @@
 |---|---|
 | **Bundle ID** | `me.shirazu.dshmizar` |
 | **显示名** | `DSH-Mizar` |
-| **版本号** | `0.9.0` |
-| **构建号** | `22` |
+| **版本号** | `0.9.1` |
+| **构建号** | `23` |
 | **Team ID** | `5Q2A46685M` |
 | 团队名 | Vreeland Lee |
 | 签名身份 | `Apple Distribution: Vreeland Lee (5Q2A46685M)` |
@@ -51,13 +51,13 @@
 **这一步 Xcode 替你做不了**，只能在网页上做，而且**一个 Bundle ID 只做一次**。
 我第一次试上传时它就停在这里，报 `Downloading App Information`。
 
-产物都在 **`release/`**（工作区根目录，非隐藏）：
+产物都在 **`release/iOS/`**（工作区根目录，非隐藏）：
 
 ```
-release/
-├─ DSH-Mizar.xcarchive        ← 双击打开 Organizer，用它上传
-├─ export/DSH-Mizar.ipa       ← 已签名的构建，可以手动用 Transporter 上传
-└─ dsh-mizar-0.1.0.tgz        ← 电脑端插件本体（npm 包，装到 DSH 里）
+release/iOS/
+├─ DSH-Mizar-0.9.1.xcarchive   ← 双击打开 Organizer，用它上传
+├─ DSH-Mizar-0.9.1.ipa         ← 已签名的构建，可以手动用 Transporter 上传
+└─ RELEASE_NOTES-0.9.1.md      ← 这一版改了什么、怎么验
 ```
 
 ---
@@ -93,12 +93,12 @@ release/
 **最省事的方式**（用你 Xcode 里已登录的账号，不需要额外配任何密钥）：
 
 ```bash
-open release/DSH-Mizar.xcarchive
+open release/iOS/DSH-Mizar-0.9.1.xcarchive
 ```
 
 Xcode 的 **Organizer** 会打开：
 
-1. 选中 **DSH-Mizar 0.1.0 (1)**
+1. 选中 **DSH-Mizar 0.9.1 (23)**
 2. 点右侧 **Distribute App**
 3. 选 **TestFlight & App Store** → **Distribute**
 4. 后面一路默认：
@@ -144,7 +144,7 @@ Xcode 的 **Organizer** 会打开：
    - **内部测试**：只能加你 App Store Connect 团队里的成员。
      一个个人开发者账号通常就是你自己，**用你的 Apple ID 邮箱**
    - **不需要 Apple 审核**，加完立刻能装 ← **自己测试走这条最快**
-3. 加完在构建那一栏点 **`+`** → 选 `0.1.0 (1)` → **Add**
+3. 加完在构建那一栏点 **`+`** → 选 `0.9.1 (23)` → **Add**
 
 > **外部测试**（External Testing）可以加最多 10000 人，但**第一次需要 Apple 审核**，
 > 通常 1–2 天。自己用不上走这条。
