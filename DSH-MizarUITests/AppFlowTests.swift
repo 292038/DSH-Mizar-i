@@ -730,25 +730,65 @@ final class AppFlowTests: XCTestCase {
         return matches.firstMatch
     }
 
-    /// Scroll the settings list until a row has been built.
+    /// Scroll the settings window until a row has been built.
     ///
     /// A SwiftUI `List` is lazy in the same way the conversation is: a row below
     /// the fold is not in the accessibility tree at all, and `waitForExistence`
     /// cannot see what the app has not built.
     ///
+    /// The settings are a small window out of the gear, so the thing to scroll
+    /// is the window and not the screen. A `swipeUp()` carries the list much
+    /// further than one row: asking for the Live Activity switch after a flick
+    /// found the About section instead, with the switch built and already gone
+    /// above the window -- which reads exactly like a missing switch. Short
+    /// drags inside the window, one at a time, land on it.
+    ///
     /// - Parameters:
     ///   - element: the row to look for.
     ///   - app: the running app.
-    ///   - swipes: how far to travel.
+    ///   - attempts: how many windows' worth to travel.
     /// - Returns: whether it turned up.
     @discardableResult
-    private func revealInSettings(_ element: XCUIElement, in app: XCUIApplication, swipes: Int = 6) -> Bool {
-        if element.waitForExistence(timeout: 3) { return true }
-        for _ in 0..<swipes {
-            app.swipeUp()
-            if element.exists { return true }
+    private func revealInSettings(_ element: XCUIElement, in app: XCUIApplication, attempts: Int = 8) -> Bool {
+        if element.waitForExistence(timeout: 3) {
+            nudgeIntoView(element, in: app)
+            return true
+        }
+        // Inside the settings window on every phone: it hangs from the gear at
+        // the foot of the sidebar, so this band is its content, nowhere near the
+        // edges the window can be dismissed from.
+        let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.66))
+        let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.46))
+        for _ in 0..<attempts {
+            from.press(forDuration: 0.05, thenDragTo: to)
+            // A row that has just been built under a finger still moving is not
+            // a tap target yet: the log export was found and tapped in the same
+            // tenth of a second once, and the tap landed on the scroll view.
+            Thread.sleep(forTimeInterval: 0.45)
+            if element.exists, element.isHittable {
+                nudgeIntoView(element, in: app)
+                return true
+            }
         }
         return element.exists
+    }
+
+    /// Move a row that was revealed at the window's very bottom edge up a little.
+    ///
+    /// Being built is not the same as being *in* the window: a row that just
+    /// cleared the fold has the row below it unbuilt, and a test that then
+    /// expects the next row -- the archive an export produces -- is asking about
+    /// something the app has not drawn. One short drag leaves room under it.
+    ///
+    /// - Parameters:
+    ///   - element: the row that was found.
+    ///   - app: the running app.
+    private func nudgeIntoView(_ element: XCUIElement, in app: XCUIApplication) {
+        guard element.exists, element.frame.maxY > app.frame.height * 0.72 else { return }
+        let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.66))
+        let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.46))
+        from.press(forDuration: 0.05, thenDragTo: to)
+        Thread.sleep(forTimeInterval: 0.45)
     }
 
     /// Skip the naming prompt.
@@ -766,8 +806,21 @@ final class AppFlowTests: XCTestCase {
     ///
     /// - Parameter app: the launched app.
     private func dismissNamingIfPresented(_ app: XCUIApplication) {
-        let skip = app.buttons["rename.skip"]
-        if skip.waitForExistence(timeout: Self.patience) { skip.tap() }
+        // Two tries, because the window is presented once the drawers have
+        // stopped moving and a launch can get through the first frame before
+        // that. The second only happens when the first tap found nothing: a
+        // query that existed a moment ago is not a window that is there now.
+        for _ in 0..<2 {
+            let skip = app.buttons["rename.skip"]
+            guard skip.waitForExistence(timeout: Self.patience) else { return }
+            guard skip.isHittable else {
+                Thread.sleep(forTimeInterval: 0.4)
+                continue
+            }
+            skip.tap()
+            if !skip.waitForExistence(timeout: 2) { return }
+            Thread.sleep(forTimeInterval: 0.4)
+        }
     }
 
     /// Wait for an element to exist.
@@ -825,9 +878,14 @@ final class AppFlowTests: XCTestCase {
             app.descendants(matching: .any).matching(identifier: "settings.notify.authorization").firstMatch,
             "the system notification permission is not shown",
         )
-        // 实时活动.
-        expect(settingControl("settings.liveActivity", in: app), "there is no live activity switch")
-        // 日志 and 关于 are below the fold on a phone.
+        // 实时活动. The settings are a small window out of the gear now, not a
+        // sheet, and this section starts below its fold -- so it is scrolled to
+        // before it is asked for, since a lazy list has not built it yet.
+        XCTAssertTrue(
+            revealInSettings(settingControl("settings.liveActivity", in: app), in: app),
+            "there is no live activity switch",
+        )
+        // 日志 and 关于 are below the fold too.
         XCTAssertTrue(
             revealInSettings(app.buttons["settings.logs.export"], in: app),
             "there is no log export button",
@@ -978,8 +1036,11 @@ final class AppFlowTests: XCTestCase {
             "关于 is not on the settings screen",
         )
         expect(chinese.staticTexts["源代码"], "源代码 is not translated")
-        // A name is not translated, in either language.
-        expect(chinese.staticTexts["ShirazuNagisa"], "the first credit is missing in Chinese")
+        // A name is not translated, in either language. The credits are the last
+        // rows of a small window, so the row is scrolled to rather than assumed
+        // to have been built.
+        let firstCredit = labelled("settings.credits.shirazu", in: chinese, contains: "ShirazuNagisa")
+        XCTAssertTrue(revealInSettings(firstCredit, in: chinese), "the first credit is missing in Chinese")
         chinese.terminate()
 
         // The same screen in English, so a catalogue that lost one of the two
@@ -988,7 +1049,10 @@ final class AppFlowTests: XCTestCase {
         openSettings(english)
         expect(settingControl("settings.notify.turn-finished", in: english), "there is no notifications section")
         expect(english.staticTexts["Notifications"], "the notifications section did not translate")
-        expect(english.staticTexts["Live Activity"], "the live activity section did not translate")
+        XCTAssertTrue(
+            revealInSettings(english.staticTexts["Live Activity"].firstMatch, in: english),
+            "the live activity section did not translate",
+        )
         XCTAssertTrue(
             revealInSettings(english.staticTexts["Credits"], in: english),
             "the about section did not translate",
@@ -2386,9 +2450,20 @@ final class AppFlowTests: XCTestCase {
 
         // A slow sideways drag across the conversation opens it too. Decided on
         // distance, not speed: a drag in a test is slow.
+        //
+        // A beat first: the sidebar is judged away the moment its marker stops
+        // being hittable, which is mid-animation, and a synthetic drag delivered
+        // while the card is still moving is the one flake this test has had on a
+        // loaded machine. And if the first drag is swallowed anyway, one more is
+        // the difference between a flaky gesture and a missing one -- the path
+        // under test is the same one either way.
+        Thread.sleep(forTimeInterval: 0.4)
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.45))
         let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.47))
         start.press(forDuration: 0.05, thenDragTo: finish)
+        if !sidebar(newSession, isOut: true) {
+            start.press(forDuration: 0.05, thenDragTo: finish)
+        }
         XCTAssertTrue(sidebar(newSession, isOut: true), "a sideways drag did not open the sidebar")
     }
 
@@ -2857,6 +2932,80 @@ final class AppFlowTests: XCTestCase {
         expect(app.textFields["composer.field"], "sending from home did not open a conversation")
         let sent = app.staticTexts.matching(NSPredicate(format: "label == %@", "start something from the phone")).firstMatch
         XCTAssertTrue(sent.waitForExistence(timeout: Self.patience * 2), "the first prompt never reached the new conversation\nHIERARCHY-START\n\(app.debugDescription)\nHIERARCHY-END")
+    }
+
+
+    // MARK: - Turn index and small windows
+
+    /// The turn index comes out on the right by a drag to the left, and a turn
+    /// chosen there is shown in the conversation, with the index put away.
+    func testTheTurnIndexOpensByADragAndJumps() {
+        let app = launch(pending: false)
+        let field = app.textFields["composer.field"]
+        expect(field, "the conversation never opened")
+        Thread.sleep(forTimeInterval: 1)
+
+        // Mirrored from the sidebar's drag: right to left across the conversation.
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.45))
+        let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.47))
+        start.press(forDuration: 0.05, thenDragTo: finish)
+
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "turnIndex.row."))
+        let first = rows.firstMatch
+        XCTAssertTrue(first.waitForExistence(timeout: Self.patience), "a leftward drag did not open the turn index")
+        XCTAssertEqual(rows.count, 4, "the index does not list every turn of the session")
+        // The sidebar is the other drawer, and it stays put away.
+        XCTAssertFalse(app.buttons["sessions.new"].isHittable, "the sidebar came out instead of the index")
+
+        first.tap()
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false OR hittable == false"), object: first)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: Self.patience), .completed, "choosing a turn did not put the index away")
+        // The first turn's prompt is on screen again, above the composer.
+        let prompt = app.staticTexts["Refactor the parser and run the tests."]
+        XCTAssertTrue(prompt.waitForExistence(timeout: Self.patience), "the chosen turn was not shown")
+        XCTAssertTrue(prompt.isHittable, "the conversation did not scroll to the chosen turn")
+    }
+
+    /// The session's title is a button that opens the same index.
+    func testTheTitleOpensTheTurnIndex() {
+        let app = launch(pending: false)
+        let title = app.buttons["session.turnIndex"]
+        expect(title, "the title is not a way to the turns")
+        XCTAssertTrue(labelLands(title, containing: "4"), "the title does not say how many turns there are")
+        title.tap()
+        let panel = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "turnIndex.row.")).firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: Self.patience), "tapping the title did not open the turn index")
+        let dismiss = app.buttons["shell.dismissSidebar"]
+        expect(dismiss, "the conversation pushed aside cannot be tapped to come back")
+        dismiss.tap()
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false OR hittable == false"), object: panel)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: Self.patience), .completed, "the index did not go away")
+    }
+
+    /// The connection capsule opens a window that says how the link is, how
+    /// fast it is -- measured -- and what keeps the phone current.
+    func testTheConnectionWindowMeasuresLatency() {
+        let app = launch(session: nil, pending: false)
+        let capsule = app.buttons["sidebar.connection"]
+        expect(capsule, "there is no connection control")
+        capsule.tap()
+        expect(app.descendants(matching: .any)["connection.panel"], "the connection window did not open")
+        let latency = app.staticTexts["connection.latency"]
+        expect(latency, "the window does not report latency")
+        // A local mock answers in well under 80 ms: once measured, it says so.
+        XCTAssertTrue(labelLands(latency, containing: "Excellent"), "the latency was never measured")
+        expect(app.descendants(matching: .any)["connection.poll"], "the window does not say what the poll is doing")
+    }
+
+    /// The computer's name is the way to another computer, in a small window.
+    func testTheComputersNameOpensTheComputerPicker() {
+        let app = launch(session: nil, pending: false)
+        let name = app.buttons["sessions.hosts"]
+        expect(name, "the computer's name is not a button")
+        XCTAssertTrue(name.staticTexts["Mock Mac (fixture)"].exists, "the button is not the computer's name")
+        name.tap()
+        expect(app.buttons["hosts.add"], "the window offers no way to add a computer")
+        expect(app.buttons["host.row.mock-host-0000-4000-8000-000000000000"], "the paired computer is not listed")
     }
 
 }

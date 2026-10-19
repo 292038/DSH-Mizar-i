@@ -6,8 +6,9 @@
 //
 //  Two ways in, because the QR path can fail for reasons that have nothing to do
 //  with the app: a camera that will not focus, a code on a screen across the
-//  room, or a simulator with no camera at all. The scan is the one big button;
-//  the manual path folds out beneath it for the times the scan cannot work.
+//  room, or a simulator with no camera at all. The scan is the one big button,
+//  and the camera opens out of it inside the same small window; the manual path
+//  folds out beneath it for the times the scan cannot work.
 //
 //  The camera is asked for at the moment "Scan" is tapped, never before: a
 //  permission most sessions never need, asked at launch, is a permission the
@@ -22,92 +23,144 @@ struct PairingView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
-    @State private var showingScanner = false
+    /// Whether the camera is open, inside this window.
+    @State private var scanning = false
+    /// Whether the camera has read a code, for the frame to close on it.
+    @State private var locked = false
     @State private var manual = false
     @State private var authority = ""
     @State private var code = ""
     @State private var deviceName = ""
     @State private var pairing = false
     @State private var scans = 0
+    @Namespace private var lens
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 0) {
-                    MizarMarkSearching()
-                        .frame(width: 84)
-                        .padding(.top, 28)
-                        .padding(.bottom, 26)
+        ScrollView {
+            VStack(spacing: 0) {
+                MizarMarkSearching()
+                    .frame(width: 56)
+                    .padding(.top, 22)
+                    .padding(.bottom, 16)
 
-                    Text("Connect to DSH")
-                        .font(.largeTitle.weight(.bold))
-                    Text("On the computer, open DSH and look for the Mizar panel in the sidebar.")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.top, 8)
-                        .padding(.horizontal, 24)
+                Text("Connect to DSH")
+                    .font(.title2.weight(.bold))
+                Text("On the computer, open DSH and look for the Mizar panel in the sidebar.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 6)
+                    .padding(.horizontal, 8)
 
-                    Button {
-                        showingScanner = true
-                    } label: {
-                        Label("Scan the code on your computer", systemImage: "qrcode.viewfinder")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .controlSize(.extraLarge)
-                    .disabled(!DataScannerViewController.isSupported)
-                    .padding(.top, 32)
-
-                    Button {
-                        withMizarAnimation(.mizarSmooth) { manual.toggle() }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text("Or enter it by hand")
-                            Image(systemName: "chevron.down")
-                                .font(.caption.weight(.bold))
-                                .rotationEffect(.degrees(manual ? 180 : 0))
+                // The camera opens out of the button that asked for it, in this
+                // window -- a viewfinder the size of the code it is looking
+                // for, not a screen given over to a camera.
+                ZStack {
+                    if scanning {
+                        viewfinder
+                            .transition(.identity)
+                    } else {
+                        Button {
+                            withMizarAnimation(.mizarBouncy) { scanning = true }
+                        } label: {
+                            Label("Scan the code on your computer", systemImage: "qrcode.viewfinder")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 4)
                         }
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 12)
-                        .contentShape(.rect)
+                        .buttonStyle(.glassProminent)
+                        .controlSize(.large)
+                        .disabled(!DataScannerViewController.isSupported)
+                        .matchedGeometryEffect(id: "lens", in: lens)
+                        .transition(.identity)
                     }
-                    .buttonStyle(.pressable(scale: 0.97, dims: true))
-                    .padding(.top, 10)
+                }
+                .padding(.top, 22)
 
-                    if manual {
-                        manualForm
-                            .transition(.rise(distance: -12, blur: 6))
+                Button {
+                    withMizarAnimation(.mizarSmooth) { manual.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("Or enter it by hand")
+                        Image(systemName: "chevron.down")
+                            .font(.caption.weight(.bold))
+                            .rotationEffect(.degrees(manual ? 180 : 0))
                     }
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 12)
+                    .contentShape(.rect)
                 }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 32)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-            .sheet(isPresented: $showingScanner) {
-                ScannerSheet { scanned in
-                    if let target = PairingURI.parse(scanned) {
-                        scans += 1
-                        Task {
-                            // A beat for the frame to close on the code before
-                            // the sheet goes, so the scan is seen to land.
-                            try? await Task.sleep(for: .milliseconds(450))
-                            showingScanner = false
-                            await model.pair(with: target, deviceName: resolvedDeviceName)
-                        }
-                    }
+                .buttonStyle(.pressable(scale: 0.97, dims: true))
+                .padding(.top, 6)
+
+                if manual {
+                    manualForm
+                        .transition(.rise(distance: -12, blur: 6))
                 }
             }
-            .mizarFeedback(.success, trigger: scans)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 20)
         }
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollDismissesKeyboard(.interactively)
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .mizarFeedback(.success, trigger: scans)
+    }
+
+    /// The camera, inside the window: square, with corners that close on the
+    /// code once it is read, and a way back to the button.
+    private var viewfinder: some View {
+        ZStack {
+            Scanner { value in
+                guard let target = PairingURI.parse(value) else { return }
+                withMizarAnimation(.mizarBouncy) { locked = true }
+                scans += 1
+                Task {
+                    // A beat for the frame to close on the code before pairing
+                    // takes over, so the scan is seen to land.
+                    try? await Task.sleep(for: .milliseconds(450))
+                    await model.pair(with: target, deviceName: resolvedDeviceName)
+                }
+            }
+            ViewfinderCorners()
+                .stroke(locked ? Theme.running : .white, style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+                .padding(locked ? 52 : 34)
+                .shadow(color: .black.opacity(0.4), radius: 6)
+                .allowsHitTesting(false)
+            VStack {
+                HStack {
+                    Spacer()
+                    Button {
+                        withMizarAnimation(.mizarSmooth) {
+                            scanning = false
+                            locked = false
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .bold))
+                            .frame(width: 30, height: 30)
+                            .glassEffect(.regular.interactive(), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text("Close"))
+                }
+                Spacer()
+                Text(locked ? "Connecting…" : "Point at the code on your computer")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .liquidCapsule()
+                    .contentTransition(.opacity)
+            }
+            .padding(10)
+            .environment(\.colorScheme, .dark)
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.xl, style: .continuous))
+        .matchedGeometryEffect(id: "lens", in: lens)
     }
 
     private var manualForm: some View {
@@ -188,57 +241,6 @@ struct PairingView: View {
             await model.pair(with: target, deviceName: resolvedDeviceName)
             pairing = false
         }
-    }
-}
-
-/// The camera, with a frame to aim and a way out.
-private struct ScannerSheet: View {
-    let onScan: (String) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var locked = false
-
-    var body: some View {
-        ZStack {
-            Scanner { value in
-                withMizarAnimation(.mizarBouncy) { locked = true }
-                onScan(value)
-            }
-            .ignoresSafeArea()
-
-            // The frame: four corners that close in on the code when it is read.
-            ViewfinderCorners()
-                .stroke(locked ? Theme.running : .white, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
-                .frame(width: locked ? 200 : 250, height: locked ? 200 : 250)
-                .shadow(color: .black.opacity(0.4), radius: 8)
-                .allowsHitTesting(false)
-
-            VStack {
-                HStack {
-                    Spacer()
-                    Button {
-                        dismiss()
-                    } label: {
-                        GlassCircleLabel(size: 44) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 16, weight: .semibold))
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(Text("Close"))
-                }
-                .padding(20)
-                Spacer()
-                Text(locked ? "Connecting…" : "Point at the code on your computer")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 12)
-                    .liquidCapsule()
-                    .contentTransition(.opacity)
-                    .padding(.bottom, 40)
-            }
-        }
-        .environment(\.colorScheme, .dark)
     }
 }
 

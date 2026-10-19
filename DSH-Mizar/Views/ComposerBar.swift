@@ -46,7 +46,6 @@ struct ComposerBar: View {
     @Binding var showingModel: Bool
     @Binding var showingContext: Bool
     @Binding var showingCommands: Bool
-    @Namespace private var sheets
 
     /// DSH's own commands. The slash forms are what the host parses; the titles
     /// are what the operator is choosing between, in their language.
@@ -65,30 +64,6 @@ struct ComposerBar: View {
             contextPill
         }
         .animation(.mizarSmooth, value: focused)
-        // Sheets, zooming out of the control that opened them. They were
-        // popovers once, and a popover anchored in this overlay never appeared.
-        .sheet(isPresented: $showingModel) {
-            ModelPickerView(sessionId: sessionId, stats: stats)
-                .navigationTransition(.zoom(sourceID: "model", in: sheets))
-        }
-        .sheet(isPresented: $showingContext) {
-            ContextDetail(stats: stats)
-                .presentationDetents([.height(320)])
-                .presentationDragIndicator(.visible)
-                .navigationTransition(.zoom(sourceID: "context", in: sheets))
-        }
-        .sheet(isPresented: $showingCommands) {
-            CommandList { command in
-                // Written first, then closed. The other order dismissed the
-                // sheet and the write went with it.
-                draft = command
-                focused = true
-                showingCommands = false
-            }
-            .presentationDetents([.height(300)])
-            .presentationDragIndicator(.visible)
-            .navigationTransition(.zoom(sourceID: "commands", in: sheets))
-        }
     }
 
     /// `deepseek-v4 · High`, as the host reports the route it is using.
@@ -134,7 +109,11 @@ struct ComposerBar: View {
             .contentShape(.capsule)
         }
         .buttonStyle(.pressable)
-        .matchedTransitionSource(id: "model", in: sheets)
+        // Each panel is a small window out of the control that opened it.
+        .mizarPopover(isPresented: $showingModel, arrowEdge: .bottom) {
+            ModelPickerView(sessionId: sessionId, stats: stats)
+                .frame(width: PopoverSize.list.width, height: PopoverSize.list.height)
+        }
         .accessibilityLabel("Model, \(modelLabel)")
         .accessibilityIdentifier("composer.model")
     }
@@ -162,7 +141,9 @@ struct ComposerBar: View {
         .buttonStyle(.pressable)
         .fixedSize()
         .disabled(stats?.context == nil)
-        .matchedTransitionSource(id: "context", in: sheets)
+        .mizarPopover(isPresented: $showingContext, arrowEdge: .bottom) {
+            ContextDetail(stats: stats)
+        }
         .accessibilityLabel("Context, \(contextLabel)")
         .accessibilityIdentifier("composer.context")
     }
@@ -188,7 +169,15 @@ struct ComposerBar: View {
                 .contentShape(.circle)
         }
         .buttonStyle(.pressable)
-        .matchedTransitionSource(id: "commands", in: sheets)
+        .mizarPopover(isPresented: $showingCommands, arrowEdge: .bottom) {
+            CommandList { command in
+                // Written first, then closed. The other order dismissed the
+                // window and the write went with it.
+                draft = command
+                focused = true
+                showingCommands = false
+            }
+        }
         .accessibilityLabel("Commands")
         .accessibilityIdentifier("composer.commands")
     }
@@ -199,7 +188,8 @@ private struct CommandList: View {
     let onPick: (String) -> Void
 
     var body: some View {
-        NavigationStack {
+        VStack(alignment: .leading, spacing: 0) {
+            PopoverHeader(title: "Commands", systemImage: "plus.circle")
             // A VStack, not a List.
             //
             // As List rows with `.buttonStyle(.plain)` the taps never reached
@@ -232,12 +222,10 @@ private struct CommandList: View {
                     .buttonStyle(.pressable(scale: 0.98, dims: true))
                     .accessibilityIdentifier("command.\(command.slash.dropFirst())")
                 }
-                Spacer(minLength: 0)
             }
-            .padding(.top, 4)
-            .navigationTitle("Commands")
-            .navigationBarTitleDisplayMode(.inline)
+            .padding(.bottom, 8)
         }
+        .frame(width: 300)
     }
 }
 
@@ -303,6 +291,19 @@ private struct ContextDetail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let context = stats?.context {
+                // The window opens with the figure the chip shows, large, and
+                // the dial it came from -- then what it is made of.
+                HStack(spacing: 14) {
+                    ContextRing(percent: context.percent, size: 44, lineWidth: 5)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(context.percent.map { "\($0)%" } ?? "—")
+                            .font(.title2.monospacedDigit().weight(.bold))
+                        Text("of the context window in use")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.bottom, 4)
                 // Looked up before `Text` sees them. `Text(String)` is the
                 // verbatim initialiser, not the localisable one, so passing
                 // these words through a `String` parameter is how the Chinese
@@ -322,8 +323,8 @@ private struct ContextDetail: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(14)
-        .frame(minWidth: 220)
+        .padding(18)
+        .frame(width: 280)
     }
 
     /// One label and its figure.

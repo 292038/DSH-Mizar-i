@@ -26,10 +26,9 @@ import MizarKit
 import UIKit
 
 struct SidebarView: View {
-    let actions: SidebarActions
-
     @Environment(AppModel.self) private var model
     @Environment(ShellState.self) private var shell
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var query = ""
     @FocusState private var searching: Bool
     /// How many sessions each workspace shows before offering more.
@@ -38,19 +37,21 @@ struct SidebarView: View {
     /// to row rather than one per row that blinks.
     @Namespace private var selection
 
+    /// Which small window is out of which control. One at a time, as the
+    /// system's own are.
+    @State private var showingComputers = false
+    @State private var showingSync = false
+    @State private var showingNewSession = false
+    @State private var showingConnection = false
+    @State private var showingSettings = false
+
     private static let pageSize = 10
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                header
-                    .padding(.horizontal, 8)
-                    .padding(.top, 6)
-                problemLine
-                search
-                    .padding(.top, 14)
                 newSession
-                    .padding(.top, 10)
+                    .padding(.top, 6)
                 workspaces
                     .padding(.top, 22)
             }
@@ -60,8 +61,13 @@ struct SidebarView: View {
         .scrollDismissesKeyboard(.immediately)
         .scrollIndicators(.hidden)
         .refreshable { await model.refreshSessions() }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            SidebarFooter(actions: actions)
+        // The computer, the refresh and the search stay put at the top; the
+        // sessions slide underneath them, softened by the bar's edge as they go.
+        .safeAreaBar(edge: .top, spacing: 0) {
+            pinned
+        }
+        .safeAreaBar(edge: .bottom, spacing: 0) {
+            SidebarFooter(showingConnection: $showingConnection, showingSettings: $showingSettings)
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
         .background(Theme.sidebarBackground)
@@ -81,20 +87,30 @@ struct SidebarView: View {
         }
     }
 
+    /// What stays at the top while the list moves.
+    private var pinned: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+                .padding(.horizontal, 8)
+                .padding(.top, 6)
+            problemLine
+            search
+                .padding(.top, 12)
+                .padding(.bottom, 10)
+        }
+        .padding(.horizontal, 12)
+    }
+
     // MARK: - Header
 
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
-            // One plain text, alone: the computer's name is how the operator knows
-            // which machine this is, and it is the one string on this screen
-            // that is theirs rather than the app's.
-            Text(model.host?.displayName ?? model.welcome?.hostName ?? String(localized: "Sessions"))
-                .font(.title2.weight(.bold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .contentTransition(.opacity)
+            computerButton
             Spacer(minLength: 0)
-            Button(action: actions.sync) {
+            Button {
+                showingSync = true
+                Task { await model.syncAllConversations() }
+            } label: {
                 GlassCircleLabel(size: 38) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 15, weight: .semibold))
@@ -105,7 +121,81 @@ struct SidebarView: View {
             .disabled(model.isSyncing)
             .accessibilityLabel(Text("Refresh"))
             .accessibilityIdentifier("sessions.refresh")
+            .mizarPopover(isPresented: $showingSync) {
+                SyncProgressSheet()
+            }
         }
+    }
+
+    /// The computer's name, which is also the way to another computer.
+    ///
+    /// The name is how the operator knows which machine this is, and it is the
+    /// one string on this screen that is theirs rather than the app's -- so it
+    /// is the control that chooses the machine, and the chevron beside it turns
+    /// to say the window is out.
+    private var computerButton: some View {
+        // Read in the body rather than inside the presentation binding, so the
+        // prompt is asked about again the moment the drawers stop moving.
+        let namingWanted = wantsNamingHere
+        return Button {
+            showingComputers = true
+        } label: {
+            HStack(spacing: 8) {
+                Text(model.host?.displayName ?? model.welcome?.hostName ?? String(localized: "Sessions"))
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .contentTransition(.opacity)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(showingComputers ? 180 : 0))
+                    .frame(width: 22, height: 22)
+                    .background(.fill.tertiary, in: Circle())
+                    .animation(.mizarBouncy, value: showingComputers)
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.pressable(scale: 0.97))
+        .accessibilityIdentifier("sessions.hosts")
+        .mizarPopover(isPresented: $showingComputers) {
+            HostListView()
+                .frame(width: PopoverSize.compact.width, height: PopoverSize.compact.height)
+        }
+        // A switch that has landed puts the window away: the computer was chosen
+        // to look at its sessions, not to keep looking at the list.
+        .onChange(of: model.host?.hostId) { old, new in
+            guard old != nil, new != nil, old != new, showingComputers else { return }
+            Task {
+                try? await Task.sleep(for: .milliseconds(450))
+                showingComputers = false
+            }
+        }
+        // The one-time "what should this computer be called", out of the name it
+        // is about -- when the sidebar is where the operator is looking.
+        .background {
+            Color.clear
+                .mizarPopover(
+                    isPresented: Binding(
+                        get: { namingWanted },
+                        set: { if !$0 { model.pendingNameHostId = nil } },
+                    ),
+                ) {
+                    NamingWindow()
+                }
+        }
+    }
+
+    /// Whether the naming prompt hangs off this name, rather than off the
+    /// sidebar button on the conversation.
+    ///
+    /// Held back while a drawer is moving: a window anchored to a control that
+    /// is travelling across the display goes away with the travel, and a
+    /// one-time prompt that dismisses itself is a prompt nobody answers.
+    private var wantsNamingHere: Bool {
+        model.pendingNameHostId != nil && !shell.isSettling && !shell.isDragging
+            && (shell.settledOpen || sizeClass == .regular)
     }
 
     /// A refresh that failed says so and stays out of the way: one quiet line,
@@ -166,7 +256,7 @@ struct SidebarView: View {
     // MARK: - New session
 
     private var newSession: some View {
-        Button(action: actions.newSession) {
+        Button { showingNewSession = true } label: {
             HStack(spacing: 12) {
                 Image(systemName: "square.and.pencil")
                     .font(.body.weight(.semibold))
@@ -183,6 +273,10 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("sessions.new")
+        .mizarPopover(isPresented: $showingNewSession) {
+            NewSessionView()
+                .frame(width: PopoverSize.compact.width, height: 440)
+        }
         // Long-press goes straight to a workspace, for the operator who already
         // knows where the work is.
         .contextMenu {
@@ -357,53 +451,80 @@ enum SessionTitle {
 
 // MARK: - Footer
 
-/// The computer this is, how it is reached, and the way to the settings.
+/// How the phone is reaching the computer, and the way to the settings.
 private struct SidebarFooter: View {
-    let actions: SidebarActions
+    @Binding var showingConnection: Bool
+    @Binding var showingSettings: Bool
     @Environment(AppModel.self) private var model
 
     var body: some View {
         HStack(spacing: 10) {
-            Button(action: actions.hosts) {
+            Button {
+                showingConnection = true
+            } label: {
                 HStack(spacing: 12) {
                     ConnectionDot(live: model.isConnected)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(status)
                             .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                            .fixedSize()
                             .contentTransition(.opacity)
                         Text(route)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     }
+                    .layoutPriority(1)
                     Spacer(minLength: 4)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption.weight(.semibold))
+                    if model.runningPollIsActive {
+                        // The poll is up: something is running and the phone is
+                        // following it.
+                        TwinStar(size: 10)
+                            .transition(.pop)
+                    }
+                    Image(systemName: "chevron.up")
+                        .font(.caption2.weight(.bold))
                         .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(showingConnection ? 180 : 0))
+                        .animation(.mizarBouncy, value: showingConnection)
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 14)
                 .frame(height: 54)
                 .contentShape(.capsule)
                 .liquidCapsule(interactive: true)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(Text("Computers, \(status)"))
-            .accessibilityIdentifier("sessions.hosts")
+            .accessibilityLabel(Text("Connection, \(status)"))
+            .accessibilityIdentifier("sidebar.connection")
+            .mizarPopover(isPresented: $showingConnection, arrowEdge: .bottom) {
+                ConnectionPanel()
+            }
 
-            Button(action: actions.settings) {
+            Button {
+                showingSettings = true
+            } label: {
                 GlassCircleLabel(size: 54) {
                     Image(systemName: "gearshape")
                         .font(.system(size: 19, weight: .medium))
+                        .rotationEffect(.degrees(showingSettings ? 60 : 0))
+                        .animation(.mizarBouncy, value: showingSettings)
                 }
             }
             .buttonStyle(.plain)
             .accessibilityLabel(Text("Settings"))
             .accessibilityIdentifier("sidebar.settings")
+            .mizarPopover(isPresented: $showingSettings, arrowEdge: .bottom) {
+                SettingsView(onDone: { showingSettings = false })
+                    .frame(width: PopoverSize.tall.width, height: PopoverSize.tall.height)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 4)
         .animation(.mizarSmooth, value: model.isConnected)
+        .animation(.mizarSmooth, value: model.runningPollIsActive)
     }
 
     private var status: String {
@@ -424,31 +545,16 @@ private struct SidebarFooter: View {
     }
 }
 
-/// Green and breathing while the computer is reachable; grey and still when it is
-/// not.
-private struct ConnectionDot: View {
-    let live: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+/// The one-time naming prompt, for whichever control it hangs from.
+struct NamingWindow: View {
+    @Environment(AppModel.self) private var model
 
     var body: some View {
-        ZStack {
-            if live && !reduceMotion {
-                Circle()
-                    .fill(Theme.running.opacity(0.35))
-                    .frame(width: 10, height: 10)
-                    .phaseAnimator([false, true]) { content, out in
-                        content
-                            .scaleEffect(out ? 2.4 : 1)
-                            .opacity(out ? 0 : 1)
-                    } animation: { out in
-                        out ? .easeOut(duration: 1.6) : .linear(duration: 0.01).delay(0.6)
-                    }
+        if let host = model.pendingNameHostId.flatMap({ id in model.hosts.first { $0.hostId == id } }) {
+            RenameForm(host: host) { name in
+                Task { await model.rename(hostId: host.hostId, to: name) }
+                model.pendingNameHostId = nil
             }
-            Circle()
-                .fill(live ? Theme.running : Color.secondary.opacity(0.5))
-                .frame(width: 10, height: 10)
         }
-        .frame(width: 14, height: 14)
-        .accessibilityHidden(true)
     }
 }

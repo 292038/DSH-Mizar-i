@@ -16,10 +16,10 @@ import SwiftUI
 import MizarKit
 
 struct HomeView: View {
-    /// Opens the full workspace picker, for a directory that is not on offer.
-    let onChooseWorkspace: () -> Void
-
     @Environment(AppModel.self) private var model
+    /// The full workspace picker, for a directory that is not on offer, out of
+    /// the workspace chip.
+    @State private var choosingElsewhere = false
     @State private var draft = ""
     @State private var workspace: String?
     @State private var sending = false
@@ -133,7 +133,7 @@ struct HomeView: View {
                 }
             }
             Divider()
-            Button(action: onChooseWorkspace) {
+            Button { choosingElsewhere = true } label: {
                 Label("Somewhere else…", systemImage: "folder.badge.plus")
             }
         } label: {
@@ -160,6 +160,10 @@ struct HomeView: View {
         .accessibilityLabel(Text("Workspace, \(workspaceTitle)"))
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("home.workspace")
+        .mizarPopover(isPresented: $choosingElsewhere, arrowEdge: .bottom) {
+            NewSessionView()
+                .frame(width: PopoverSize.compact.width, height: 440)
+        }
     }
 
     private var workspaceTitle: String {

@@ -2,7 +2,7 @@
 //  SidebarPan.swift
 //  DSH-Mizar
 //
-//  The drag that opens and closes the sidebar.
+//  The drag that brings the drawers out and puts them away.
 //
 //  A UIKit pan rather than a SwiftUI `DragGesture`, and the reason is the
 //  conversation's own scroll view. A simultaneous SwiftUI drag cannot cancel a
@@ -21,23 +21,24 @@ import SwiftUI
 import UIKit
 
 struct SidebarPan: UIGestureRecognizerRepresentable {
+    /// Which way a drag may begin.
     enum Direction {
-        /// From the conversation, towards the sidebar: a rightward drag.
-        case opening
-        /// From the sidebar or the card, back again: a leftward drag.
-        case closing
+        /// A drag to the right: opening the sidebar, or putting the index away.
+        case rightward
+        /// A drag to the left: opening the index, or putting the sidebar away.
+        case leftward
+        /// Either, from a conversation with both drawers closed.
+        case either
     }
 
     let shell: ShellState
-    /// The sidebar's width, which a full open is measured against.
-    let width: CGFloat
     let direction: Direction
-    /// Whether it may begin at all -- off on a regular width, where the sidebar
-    /// is pinned, and off while the card is already pushed aside.
+    /// Whether it may begin at all -- off on a regular width, where the
+    /// drawers are columns.
     var enabled: Bool = true
 
     func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator {
-        Coordinator(direction: direction)
+        Coordinator(direction: direction, shell: shell)
     }
 
     func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
@@ -58,14 +59,13 @@ struct SidebarPan: UIGestureRecognizerRepresentable {
         // to is the card, and the card is what the drag moves -- in its own
         // coordinates the finger would appear to stand still.
         let space = recognizer.view?.window
-        let width = max(1, width)
         switch recognizer.state {
         case .began:
             shell.beginDrag()
         case .changed:
-            shell.drag(by: recognizer.translation(in: space).x / width)
+            shell.drag(by: recognizer.translation(in: space).x)
         case .ended:
-            shell.endDrag(velocity: recognizer.velocity(in: space).x / width)
+            shell.endDrag(velocity: recognizer.velocity(in: space).x)
         case .cancelled, .failed:
             shell.endDrag(velocity: 0)
         default:
@@ -73,11 +73,14 @@ struct SidebarPan: UIGestureRecognizerRepresentable {
         }
     }
 
+    @MainActor
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var direction: Direction
+        let shell: ShellState
 
-        init(direction: Direction) {
+        init(direction: Direction, shell: ShellState) {
             self.direction = direction
+            self.shell = shell
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -93,15 +96,16 @@ struct SidebarPan: UIGestureRecognizerRepresentable {
             let dy = travel.y + speed.y * 0.05
             guard abs(dx) > abs(dy) * 1.5 else { return false }
             switch direction {
-            case .opening: return dx > 0
-            case .closing: return dx < 0
+            case .rightward: return dx > 0
+            case .leftward: return dx < 0
+            case .either: return dx > 0 || shell.trailingAvailable
             }
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
             // Never from inside something that wants a sideways drag of its own:
             // a text field moving its cursor, or anything that scrolls
-            // horizontally (a wide code block, a carousel).
+            // horizontally (a wide code block, a table, a carousel).
             var view = touch.view
             while let current = view {
                 if current is UITextField || current is UITextView { return false }

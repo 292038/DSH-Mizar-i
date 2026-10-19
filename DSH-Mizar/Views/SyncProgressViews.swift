@@ -205,7 +205,8 @@ struct SyncProgressSheet: View {
         // Tall enough for the figures first and the workspace count last: the
         // sheet grew a line when that count arrived, and a detent that clips the
         // last line is a line nobody reads.
-        .presentationDetents([.height(300)])
+        // The window's own size: a column of figures, no taller than they are.
+        .frame(width: 320, height: progress == nil ? 230 : 290)
         .animation(.mizarSmooth, value: progress?.total ?? -1)
     }
 }

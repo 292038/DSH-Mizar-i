@@ -1005,7 +1005,8 @@ function answer(frame) {
         },
       }
     case 'ping':
-      return { v: 1, type: 'ok', id }
+      // What the real host answers: its own clock.
+      return { v: 1, type: 'ok', id, result: { time: Date.now() } }
     case 'approval.answer':
     case 'question.answer':
       return { v: 1, type: 'ok', id, result: { accepted: true } }

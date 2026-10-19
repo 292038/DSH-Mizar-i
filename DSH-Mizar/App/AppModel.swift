@@ -461,7 +461,18 @@ final class AppModel {
     /// This is the accessor ``HostScoped`` has a `held` for.
     private var recentHostEventsForArchive: [HostSummary.Event] { recentHostEventState.held ?? [] }
 
-    private var connection: MizarConnection?
+    private var connection: MizarConnection? {
+        didSet {
+            // Stamped here, the one place every socket passes through, so "how
+            // long has this been up" cannot disagree with the socket in use.
+            if connection == nil {
+                connectedSince = nil
+            } else if connection !== oldValue {
+                connectedSince = Date()
+                latencySamples = []
+            }
+        }
+    }
 
     /// How many sockets this run has opened.
     ///
@@ -637,6 +648,68 @@ final class AppModel {
 
     /// Whether a connection to the host is open right now.
     var isConnected: Bool { connection != nil }
+
+    // MARK: - Vitals
+
+    /// When the socket in use was opened, or `nil` while there is none.
+    private(set) var connectedSince: Date?
+    /// Round trips to the host, in milliseconds, oldest first and at most
+    /// ``latencyHistory`` of them -- measured with `ping` only while somebody
+    /// is looking at them, so a phone in a pocket sends nothing.
+    private(set) var latencySamples: [Double] = []
+    /// When the running poll last read the session list.
+    private(set) var lastPollTickAt: Date?
+    /// How many round trips are kept for the connection window's trace.
+    static let latencyHistory = 24
+
+    /// Whether the ten-second poll that follows a running turn is up.
+    var runningPollIsActive: Bool { runningPoll != nil }
+    /// How often it asks.
+    var runningPollInterval: Duration { RunningPoll.interval }
+    /// Ticks in a row that could not read; the poll rebuilds the socket after two.
+    var runningPollFailures: Int { runningPollRecovery.failures }
+    /// Whether the host's pushed events are being listened to.
+    var listensForHostEvents: Bool { eventListener != nil }
+    /// How often pending requests are re-read when nothing has been pushed.
+    var interactionFallbackInterval: Duration { Self.interactionPollSeconds }
+
+    /// Measure one round trip to the host.
+    ///
+    /// `ping` is the cheapest frame the host answers -- it is answered before
+    /// any method lookup -- so what is measured is the link, not the host's
+    /// work. Not written to the activity log: it is asked every couple of
+    /// seconds while the connection window is open, and a log of pings would
+    /// bury the requests worth reading.
+    ///
+    /// - Returns: the round trip in milliseconds, or `nil` when there is no
+    ///   socket or it did not answer.
+    @discardableResult
+    func measureLatency() async -> Double? {
+        guard let connection else { return nil }
+        let started = ContinuousClock.now
+        do {
+            _ = try await connection.call("ping", as: PingResult.self)
+        } catch let error as MizarError where error.code == "EMPTY_RESULT" {
+            // An answer with nothing in it is still an answer: the round trip
+            // happened, which is all this measures.
+        } catch {
+            return nil
+        }
+        guard connection === self.connection else { return nil }
+        let taken = ContinuousClock.now - started
+        let milliseconds = Double(taken.components.seconds) * 1000
+            + Double(taken.components.attoseconds) / 1e15
+        latencySamples.append(milliseconds)
+        if latencySamples.count > Self.latencyHistory {
+            latencySamples.removeFirst(latencySamples.count - Self.latencyHistory)
+        }
+        return milliseconds
+    }
+
+    /// The host's answer to `ping`: its own clock, which is not needed here.
+    private struct PingResult: Decodable, Sendable {
+        let time: Double?
+    }
 
     /// Put what this phone already knows on screen, before asking anybody.
     ///
@@ -1128,6 +1201,7 @@ final class AppModel {
             }
         }
         await refreshRunningSessionList()
+        lastPollTickAt = Date()
         runningPollTicks &+= 1
     }
 
@@ -2722,6 +2796,14 @@ final class AppModel {
             // screen, and the session screen is not in the hierarchy while this
             // is.
             await runFirstLoad()
+            // And a beat before the prompt. The download screen is replaced by
+            // the session screen right here, and the session screen may still be
+            // closing its sidebar or arriving in its place: a window hung off a
+            // layout that is still moving is dismissed by the movement, and the
+            // prompt that was meant to be asked once is gone before it can be
+            // answered. Short enough that nobody notices, long enough that the
+            // screen is still.
+            try? await Task.sleep(for: .milliseconds(700))
             pendingNameHostId = paired.hostId
         } catch {
             let message = Self.describe(error, authority: target.authority ?? target.baseURL)

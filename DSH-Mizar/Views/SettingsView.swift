@@ -53,6 +53,8 @@ struct SettingsView: View {
                 aboutSection
             }
             .navigationTitle(Text("Settings"))
+            // A small window keeps its title small.
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if let onDone {
                     ToolbarItem(placement: .confirmationAction) {

@@ -18,7 +18,10 @@ struct SessionDetailView: View {
     let sessionId: String
 
     @Environment(AppModel.self) private var model
+    @Environment(TurnIndex.self) private var turnIndex
+    @Environment(ShellState.self) private var shell
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var stats: SessionStatsFrame?
     /// The session `stats` was read for.
     ///
@@ -206,6 +209,21 @@ struct SessionDetailView: View {
                     proxy.scrollTo(Self.endAnchor, anchor: .bottom)
                 }
             }
+            .onChange(of: turnIndex.jumpCount) { _, _ in
+                // A turn chosen in the index: go there, just under the bar,
+                // then let it glow once so the eye finds it.
+                guard turnIndex.sessionId == sessionId, let target = turnIndex.jumpTarget else { return }
+                Task { @MainActor in
+                    // A beat for the card to start coming back on a phone, so
+                    // the scroll is seen rather than finished behind it.
+                    try? await Task.sleep(for: .milliseconds(sizeClass == .regular ? 0 : 140))
+                    withMizarAnimation(.mizarSmooth) {
+                        proxy.scrollTo(target, anchor: UnitPoint(x: 0.5, y: 0.08))
+                    }
+                    try? await Task.sleep(for: .milliseconds(320))
+                    turnIndex.glow(target)
+                }
+            }
             .onChange(of: shownItems.count) { old, new in
                 // Something new arrived below while the operator was reading
                 // further up: count it on the way-back button.
@@ -227,6 +245,18 @@ struct SessionDetailView: View {
             .overlay(alignment: .bottom) {
                 bottomStack(proxy: proxy)
             }
+            // On an iPad with the index column put away, the turns stay at the
+            // edge as a rail to scrub.
+            .overlay(alignment: .trailing) {
+                if sizeClass == .regular, !shell.indexPinnedVisible {
+                    TurnRail()
+                        .padding(.vertical, 90)
+                        .padding(.bottom, composerHeight)
+                        .padding(.trailing, 6)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .animation(.mizarSmooth, value: shell.indexPinnedVisible)
             .overlay(alignment: .topLeading) {
                 if let flight {
                     FlightGhost(flight: flight)
@@ -240,22 +270,46 @@ struct SessionDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             // A subtitle with the workspace, under the session's own title.
+            // The session's title, with its workspace and how many turns it
+            // has under it -- and a button: the turn index comes out of it, the
+            // way a document's outline comes out of its name.
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 0) {
-                    Text(shownStats?.title ?? String(localized: "Session"))
-                        .font(.headline)
-                        .lineLimit(1)
-                        .contentTransition(.opacity)
-                    if let workspace {
-                        Text(workspace)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                Button {
+                    shell.toggleTrailing(compact: sizeClass != .regular)
+                } label: {
+                    VStack(spacing: 0) {
+                        Text(shownStats?.title ?? String(localized: "Session"))
+                            .font(.headline)
+                            .foregroundStyle(.primary)
                             .lineLimit(1)
-                            .transition(.opacity)
+                            .contentTransition(.opacity)
+                        HStack(spacing: 4) {
+                            if let workspace {
+                                Text(workspace)
+                            }
+                            if !shownTurns.isEmpty {
+                                if workspace != nil { Text(verbatim: "·") }
+                                Text("\(shownTurns.count) turns")
+                                    .contentTransition(.numericText())
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 7, weight: .heavy))
+                                    .rotationEffect(.degrees(indexIsOut ? 180 : 0))
+                            }
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                     }
+                    .padding(.horizontal, 10)
+                    .contentShape(.rect)
                 }
+                .buttonStyle(.pressable(scale: 0.96))
                 .animation(.mizarSmooth, value: shownStats?.title)
-                .accessibilityHidden(true)
+                .animation(.mizarBouncy, value: indexIsOut)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text(String(format: String(localized: "Turns, %lld"), shownTurns.count)))
+                .accessibilityAddTraits(.isButton)
+                .accessibilityIdentifier("session.turnIndex")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 // A session that has gone quiet is the reason this screen is
@@ -283,10 +337,10 @@ struct SessionDetailView: View {
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .accessibilityIdentifier("session.permissions")
+                .mizarPopover(isPresented: $showingPermissionPicker, arrowEdge: .top) {
+                    PermissionPickerView(sessionId: sessionId, current: shownStats?.permissionPreset)
+                }
             }
-        }
-        .sheet(isPresented: $showingPermissionPicker) {
-            PermissionPickerView(sessionId: sessionId, current: shownStats?.permissionPreset)
         }
         .task(id: sessionId) {
             // A session just started from the home screen arrives with its first
@@ -306,6 +360,10 @@ struct SessionDetailView: View {
             // evidence, which stops a poll that was up for a conversation nobody
             // is looking at any more.
             model.noteConversationTurns([], for: sessionId)
+            turnIndex.withdraw(sessionId: sessionId)
+        }
+        .onChange(of: shownStats?.title) { _, title in
+            turnIndex.publish(sessionId: sessionId, title: title, turns: shownTurns)
         }
         .onChange(of: model.runningPollTicks) { _, _ in
             // The model's poll found a new session list; the turn rows live here,
@@ -445,6 +503,12 @@ struct SessionDetailView: View {
         self.turns = turns
         conversationSessionId = sessionId
         model.noteConversationTurns(turns, for: sessionId)
+        turnIndex.publish(sessionId: sessionId, title: shownStats?.title, turns: turns)
+    }
+
+    /// Whether the turn index is out, for the title's chevron.
+    private var indexIsOut: Bool {
+        sizeClass == .regular ? shell.indexPinnedVisible : shell.trailingOpen
     }
 
     /// Move the conversation to its newest message, once per appearance.

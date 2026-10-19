@@ -18,60 +18,93 @@ import SwiftUI
 import MizarKit
 
 /// Every paired machine, with a way to add more.
+///
+/// The window that drops out of the computer's name at the top of the sidebar.
+/// Choosing a row switches to that computer; adding one, or renaming one, goes
+/// deeper inside the same window rather than opening another on top of it.
 struct HostListView: View {
     @Environment(AppModel.self) private var model
-    @State private var showingPairing = false
-    @State private var renaming: PairedHost?
+    @State private var path: [HostRoute] = []
+
+    enum HostRoute: Hashable {
+        case pair
+        case rename(String)
+    }
 
     var body: some View {
-        List {
-            Section("Paired") {
-                ForEach(model.hosts, id: \.hostId) { host in
-                    Button {
-                        Task { await model.open(hostId: host.hostId) }
-                    } label: {
-                        HostRow(host: host, isOpen: model.host?.hostId == host.hostId)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("host.row.\(host.hostId)")
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
-                            Task { await model.forget(hostId: host.hostId) }
-                        } label: {
-                            Label("Forget", systemImage: "trash")
-                        }
+        NavigationStack(path: $path) {
+            ScrollView {
+                VStack(spacing: 6) {
+                    ForEach(model.hosts, id: \.hostId) { host in
                         Button {
-                            renaming = host
+                            Task { await model.open(hostId: host.hostId) }
                         } label: {
-                            Label("Rename", systemImage: "pencil")
+                            HostRow(host: host, isOpen: model.host?.hostId == host.hostId, live: model.isConnected)
+                        }
+                        .buttonStyle(.pressable(scale: 0.98))
+                        .accessibilityIdentifier("host.row.\(host.hostId)")
+                        .contextMenu {
+                            Button {
+                                path.append(.rename(host.hostId))
+                            } label: {
+                                Label("Rename…", systemImage: "pencil")
+                            }
+                            Button(role: .destructive) {
+                                Task { await model.forget(hostId: host.hostId) }
+                            } label: {
+                                Label("Forget", systemImage: "trash")
+                            }
                         }
                     }
-                    .contextMenu {
-                        Button("Rename…") { renaming = host }
-                        Button("Forget", role: .destructive) {
-                            Task { await model.forget(hostId: host.hostId) }
+
+                    Button {
+                        path.append(.pair)
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "plus")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 34, height: 34)
+                                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            Text("Add a computer")
+                                .font(.body.weight(.medium))
+                            Spacer(minLength: 0)
+                            Image(systemName: "qrcode.viewfinder")
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.pressable(scale: 0.98))
+                    .accessibilityIdentifier("hosts.add")
+                    .padding(.top, 4)
+
+                    Text("Long-press a computer to rename or forget it.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 4)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .navigationTitle("Computers")
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(for: HostRoute.self) { route in
+                switch route {
+                case .pair:
+                    PairingView()
+                case .rename(let hostId):
+                    if let host = model.hosts.first(where: { $0.hostId == hostId }) {
+                        RenameForm(host: host, skipTitle: "Cancel") { name in
+                            if let name { Task { await model.rename(hostId: host.hostId, to: name) } }
+                            path.removeAll()
                         }
                     }
                 }
-            }
-        }
-        .navigationTitle("DSH-Mizar")
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarLeading) {
-                Button {
-                    showingPairing = true
-                } label: {
-                    Label("Add a computer", systemImage: "plus")
-                }
-                .accessibilityIdentifier("hosts.add")
-            }
-        }
-        .sheet(isPresented: $showingPairing) {
-            PairingView()
-        }
-        .sheet(item: $renaming) { host in
-            RenameSheet(host: host) { name in
-                Task { await model.rename(hostId: host.hostId, to: name) }
             }
         }
     }
@@ -81,93 +114,134 @@ struct HostListView: View {
 private struct HostRow: View {
     let host: PairedHost
     let isOpen: Bool
+    let live: Bool
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "desktopcomputer")
-                .foregroundStyle(isOpen ? Color.accentColor : Color.secondary)
-                .font(.title3)
+                .font(.body.weight(.medium))
+                .foregroundStyle(isOpen ? Theme.onAccent : Color.secondary)
+                .frame(width: 34, height: 34)
+                .background(
+                    isOpen ? AnyShapeStyle(Color.accentColor.gradient) : AnyShapeStyle(.fill.tertiary),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous),
+                )
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(host.displayName)
-                    .font(.body)
+                    .font(.body.weight(isOpen ? .semibold : .regular))
                     .foregroundStyle(.primary)
+                    .lineLimit(1)
                 // The host's own name is shown under a chosen one, so a machine
                 // renamed to something memorable can still be identified.
                 Text(host.label == nil ? host.pairedAt.formatted(.relative(presentation: .named)) : host.hostName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
-            Spacer()
+            Spacer(minLength: 4)
 
             if isOpen {
-                Text("connected")
-                    .font(.caption2)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(.quaternary, in: Capsule())
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(live ? Theme.running : Color.secondary)
+                        .frame(width: 6, height: 6)
+                    Text(live ? "connected" : "offline")
+                        .font(.caption2.weight(.medium))
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .frame(height: 22)
+                .background(.fill.quaternary, in: Capsule())
+                .transition(.pop)
             }
         }
-        .contentShape(Rectangle())
-        .padding(.vertical, 2)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background {
+            if isOpen {
+                RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
+                    .fill(Theme.selectionFill)
+            }
+        }
+        .contentShape(.rect)
+        .animation(.mizarSmooth, value: isOpen)
     }
 }
 
-/// The name prompt.
+/// The name prompt, as the contents of a small window.
 ///
 /// Offered once, immediately after pairing, because that is the moment the
-/// operator still knows which machine they just scanned. Offered again from the
-/// row's menu when they have thought of a better one.
-struct RenameSheet: View {
+/// operator still knows which machine they just scanned -- out of the
+/// computer's name at the top of the sidebar, where the name will be. Offered
+/// again from the row's menu when they have thought of a better one.
+struct RenameForm: View {
     let host: PairedHost
+    /// "Skip" right after pairing, "Cancel" from the menu.
+    var skipTitle: LocalizedStringKey = "Skip"
     let onSave: (String?) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var name: String = ""
+    @FocusState private var focused: Bool
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField(host.hostName, text: $name)
-                        .textInputAutocapitalization(.words)
-                        .accessibilityIdentifier("rename.field")
-                } header: {
-                    Text("Name this computer")
-                } footer: {
-                    Text("Shown only on this phone. Leave it empty to use the machine's own name, \(host.hostName).")
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Name this computer")
+                .font(.headline)
+            TextField(host.hostName, text: $name)
+                .textInputAutocapitalization(.words)
+                .focused($focused)
+                .submitLabel(.done)
+                .onSubmit { save() }
+                .padding(.horizontal, 14)
+                .frame(height: 44)
+                .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
+                .accessibilityIdentifier("rename.field")
+            Text("Shown only on this phone. Leave it empty to use the machine's own name, \(host.hostName).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                // "Skip", not "Cancel", after a pairing: naming is optional, and
+                // a pairing that has already succeeded must not look like
+                // something the operator can back out of from here.
+                Button {
+                    onSave(nil)
+                    dismiss()
+                } label: {
+                    Text(skipTitle).frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.glass)
+                .accessibilityIdentifier("rename.skip")
+                Button {
+                    save()
+                } label: {
+                    Text("Save").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.glassProminent)
+                .accessibilityIdentifier("rename.save")
             }
-            .navigationTitle("Rename")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    // "Skip", not "Cancel": naming is optional, and a pairing
-                    // that has already succeeded must not look like something
-                    // the operator can back out of from here.
-                    Button("Skip") {
-                        onSave(nil)
-                        dismiss()
-                    }
-                    .accessibilityIdentifier("rename.skip")
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        onSave(name)
-                        dismiss()
-                    }
-                    .accessibilityIdentifier("rename.save")
-                }
-            }
-            .onAppear { name = host.label ?? "" }
+            .controlSize(.large)
+            .padding(.top, 4)
         }
+        .padding(18)
+        .frame(width: 320)
+        .onAppear {
+            name = host.label ?? ""
+            focused = true
+        }
+    }
+
+    private func save() {
+        onSave(name)
+        dismiss()
     }
 }
 
 extension PairedHost: @retroactive Identifiable {
-    /// Identity for `sheet(item:)`.
+    /// Identity for `popover(item:)`.
     public var id: String { hostId }
 }
 
@@ -222,8 +296,13 @@ struct UnpairedView: View {
                 }
                 .buttonStyle(.glassProminent)
                 .controlSize(.extraLarge)
-                .padding(.horizontal, 28)
                 .accessibilityIdentifier("unpaired.scan")
+                // The pairing window grows out of the button, over the navy.
+                .mizarPopover(isPresented: $showingPairing, arrowEdge: .bottom) {
+                    PairingView()
+                        .frame(width: 360, height: 540)
+                }
+                .padding(.horizontal, 28)
                 Text("There are no other steps.")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.5))
@@ -232,8 +311,5 @@ struct UnpairedView: View {
             }
         }
         .environment(\.colorScheme, .dark)
-        .sheet(isPresented: $showingPairing) {
-            PairingView()
-        }
     }
 }

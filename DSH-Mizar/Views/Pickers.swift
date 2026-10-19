@@ -271,58 +271,95 @@ struct PermissionPickerView: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    /// The dangerous preset being confirmed, inside this window.
     @State private var confirming: PermissionOption?
     /// What was just chosen here, ahead of the host's next report.
     @State private var applied: String?
     @Namespace private var tick
 
     var body: some View {
-        NavigationStack {
-            List {
-                if let catalog = model.permissionCatalog {
-                    Section {
-                        ForEach(catalog.options) { option in
+        VStack(alignment: .leading, spacing: 0) {
+            PopoverHeader(title: "Permissions", systemImage: "lock.shield")
+            if let catalog = model.permissionCatalog {
+                VStack(spacing: 4) {
+                    ForEach(catalog.options) { option in
+                        VStack(spacing: 0) {
                             Button {
                                 if option.isDangerous {
-                                    confirming = option
+                                    withMizarAnimation(.mizarSmooth) {
+                                        confirming = confirming == option ? nil : option
+                                    }
                                 } else {
                                     Task { await apply(option) }
                                 }
                             } label: {
                                 optionRow(option)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.pressable(scale: 0.98))
                             .accessibilityIdentifier("permission.row.\(option.value)")
+
+                            // A preset that grants unrestricted access to the
+                            // machine is never one tap away: the second tap
+                            // folds out under the row that asked for it, rather
+                            // than an alert in the middle of the screen.
+                            if confirming == option {
+                                confirmation(for: option)
+                                    .transition(.rise(distance: -8, blur: 4))
+                            }
                         }
-                    } footer: {
-                        Text("Applies to this session immediately. A running turn is not interrupted.")
+                        .background {
+                            RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous)
+                                .fill(confirming == option ? Theme.waiting.opacity(0.1) : .clear)
+                        }
                     }
-                } else {
-                    ProgressView().task { await model.loadCatalogs() }
                 }
-            }
-            .navigationTitle("Permissions")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-            .alert(
-                "Allow full access?",
-                isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
-                presenting: confirming,
-            ) { option in
-                Button("Cancel", role: .cancel) { confirming = nil }
-                Button("Allow", role: .destructive) {
-                    confirming = nil
-                    Task { await apply(option) }
-                }
-            } message: { option in
-                Text(option.description ?? "This preset grants unrestricted access to your machine.")
+                .padding(.horizontal, 8)
+                Text("Applies to this session immediately. A running turn is not interrupted.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 10)
+                    .padding(.bottom, 16)
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(30)
+                    .task { await model.loadCatalogs() }
             }
         }
+        .frame(width: 330)
         .task { await model.loadCatalogs() }
+    }
+
+    private func confirmation(for option: PermissionOption) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Allow full access?")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Theme.waiting)
+            Text("The agent will run commands and change files anywhere on this computer without asking.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button {
+                    withMizarAnimation(.mizarSmooth) { confirming = nil }
+                } label: {
+                    Text("Cancel").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.glass)
+                Button(role: .destructive) {
+                    Task { await apply(option) }
+                } label: {
+                    Text("Allow").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.glassProminent)
+                .tint(Theme.waiting)
+                .accessibilityIdentifier("permission.confirm")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
     }
 
     private func optionRow(_ option: PermissionOption) -> some View {
@@ -330,9 +367,10 @@ struct PermissionPickerView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(option.name)
+                        .font(.body.weight(option.value == (applied ?? current) ? .semibold : .regular))
                     if option.isDangerous {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Theme.waiting)
                             .font(.caption)
                     }
                 }
@@ -340,10 +378,11 @@ struct PermissionPickerView: View {
                     Text(description)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
                 }
             }
             Spacer()
-            // The one in force, ticked -- it was the only picker here without.
+            // The one in force, ticked -- and the tick slides to a new choice.
             if option.value == (applied ?? current) {
                 Image(systemName: "checkmark")
                     .font(.body.weight(.semibold))
@@ -352,13 +391,18 @@ struct PermissionPickerView: View {
                     .transition(.pop)
             }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .contentShape(.rect)
     }
 
     private func apply(_ option: PermissionOption) async {
-        withMizarAnimation(.mizarSnappy) { applied = option.value }
+        withMizarAnimation(.mizarSnappy) {
+            applied = option.value
+            confirming = nil
+        }
         _ = await model.setPermission(option.value, sessionId: sessionId)
-        try? await Task.sleep(for: .milliseconds(220))
+        try? await Task.sleep(for: .milliseconds(260))
         dismiss()
     }
 }

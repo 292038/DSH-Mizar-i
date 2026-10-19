@@ -161,6 +161,7 @@ struct ConversationView: View {
 /// One turn: the prompt, the row that says how it is going, and the answer.
 private struct TurnSection: View {
     let turn: ConversationTurn
+    @Environment(TurnIndex.self) private var index
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -182,6 +183,23 @@ private struct TurnSection: View {
             }
         }
         .animation(.mizarSmooth, value: turn.steps.count)
+        // Arrived at from the index: a soft light behind the turn, once.
+        .background {
+            RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
+                .fill(Color.accentColor.opacity(index.glowing == turn.id ? 0.1 : 0))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(index.glowing == turn.id ? 0.35 : 0), lineWidth: 1)
+                }
+                .padding(.horizontal, -10)
+                .padding(.vertical, -8)
+                .allowsHitTesting(false)
+        }
+        // Which turns are on screen, for the index's "you are here".
+        .onScrollVisibilityChange(threshold: 0.25) { visible in
+            index.setVisible(turn.id, visible)
+        }
+        .onDisappear { index.setVisible(turn.id, false) }
     }
 }
 

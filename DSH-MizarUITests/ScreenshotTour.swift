@@ -105,10 +105,10 @@ final class ScreenshotTour: XCTestCase {
                 shoot("05-question\(suffix)")
             }
 
-            // The model picker.
+            // The model picker, as a small window out of its chip.
             app.buttons["composer.model"].tap()
             shoot("06-model\(suffix)")
-            app.navigationBars.buttons.element(boundBy: app.navigationBars.buttons.count - 1).tap()
+            dismissWindow(app)
 
             // Home, and the settings.
             app.terminate()
@@ -118,7 +118,7 @@ final class ScreenshotTour: XCTestCase {
             app.buttons["shell.dismissSidebar"].tap()
             shoot("07-home\(suffix)", settle: 1.6)
             app.buttons["shell.sidebarToggle"].tap()
-            // Tapped until the sheet is up: a tap that lands while the sidebar
+            // Tapped until the window is up: a tap that lands while the sidebar
             // is still settling is a tap on a control that is moving.
             for _ in 0..<3 {
                 settled(app.buttons["sidebar.settings"])
@@ -129,4 +129,88 @@ final class ScreenshotTour: XCTestCase {
             app.terminate()
         }
     }
+
+    /// Put away whatever small window is out, the way a person would: a tap
+    /// outside it.
+    private func dismissWindow(_ app: XCUIApplication) {
+        let region = app.otherElements["PopoverDismissRegion"]
+        if region.waitForExistence(timeout: 2) {
+            region.tap()
+        }
+        Thread.sleep(forTimeInterval: 0.6)
+    }
+
+    /// Every small window, out of the control that opens it, and the turn index.
+    func testWindowsTour() {
+        // The sidebar's windows.
+        var app = launch(session: nil, language: "en", pending: true)
+        _ = app.buttons["sessions.new"].waitForExistence(timeout: 20)
+        settled(app.buttons["sessions.hosts"])
+        app.buttons["sessions.hosts"].tap()
+        shoot("w01-computers")
+        dismissWindow(app)
+        app.buttons["sidebar.connection"].tap()
+        shoot("w02-connection", settle: 5)
+        dismissWindow(app)
+        app.buttons["sessions.new"].tap()
+        shoot("w03-new-session")
+        dismissWindow(app)
+        app.buttons["sessions.refresh"].tap()
+        shoot("w04-refresh", settle: 2)
+        dismissWindow(app)
+        app.buttons["sidebar.settings"].tap()
+        shoot("w05-settings")
+        dismissWindow(app)
+        app.terminate()
+
+        // The conversation, its windows, and the turn index.
+        app = launch(session: "first", language: "en", pending: false)
+        _ = app.textFields["composer.field"].waitForExistence(timeout: 20)
+        Thread.sleep(forTimeInterval: 2)
+        app.buttons["composer.model"].tap()
+        shoot("w06-model")
+        dismissWindow(app)
+        app.buttons["composer.context"].tap()
+        shoot("w07-context")
+        dismissWindow(app)
+        app.buttons["composer.commands"].tap()
+        shoot("w08-commands")
+        dismissWindow(app)
+        app.buttons["session.permissions"].tap()
+        if app.buttons["permission.row.danger-full-access"].waitForExistence(timeout: 5) {
+            app.buttons["permission.row.danger-full-access"].tap()
+        }
+        shoot("w09-permissions")
+        dismissWindow(app)
+
+        // The index, by a drag to the left across the conversation.
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.45))
+        let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.47))
+        start.press(forDuration: 0.05, thenDragTo: finish)
+        shoot("w10-turn-index")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'turnIndex.row.'"))
+        if rows.count > 0 {
+            rows.element(boundBy: 0).tap()
+            shoot("w11-jumped", settle: 1.0)
+        }
+        // And by the title.
+        app.buttons["session.turnIndex"].tap()
+        shoot("w12-turn-index-title")
+        app.terminate()
+    }
+
+
+    /// The iPad: the index as a column, and as the rail when it is put away.
+    func testPadTour() throws {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("an iPad tour") }
+        let app = launch(session: "first", language: "en", pending: false)
+        _ = app.textFields["composer.field"].waitForExistence(timeout: 20)
+        shoot("p01-rail", settle: 2)
+        app.buttons["shell.turnIndexToggle"].tap()
+        shoot("p02-index-column", settle: 1.5)
+        app.buttons["sidebar.connection"].tap()
+        shoot("p03-connection", settle: 5)
+        app.terminate()
+    }
+
 }

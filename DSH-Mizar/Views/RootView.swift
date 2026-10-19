@@ -187,19 +187,21 @@ private struct UnreachableView: View {
             .buttonStyle(.borderedProminent)
             .disabled(model.reconnecting)
             .accessibilityIdentifier("failure.retry")
-            // Sheets, not links: this screen has no navigation stack, so the
-            // links it used to carry went nowhere.
+            // Windows out of the buttons, not links: this screen has no
+            // navigation stack, so the links it used to carry went nowhere.
             if !model.hosts.isEmpty {
                 Button("Choose another computer") { showingHosts = true }
+                    .mizarPopover(isPresented: $showingHosts) {
+                        HostListView()
+                            .frame(width: PopoverSize.compact.width, height: PopoverSize.compact.height)
+                    }
             } else {
                 Button("Scan a code") { showingPairing = true }
+                    .mizarPopover(isPresented: $showingPairing) {
+                        PairingView()
+                            .frame(width: 360, height: 540)
+                    }
             }
-        }
-        .sheet(isPresented: $showingHosts) {
-            NavigationStack { HostListView() }
-        }
-        .sheet(isPresented: $showingPairing) {
-            PairingView()
         }
     }
 }
