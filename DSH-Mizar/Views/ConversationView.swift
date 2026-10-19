@@ -31,6 +31,15 @@ struct ConversationView: View {
     /// The conversation grouped into turns. Empty when the host sent no turn
     /// numbers, in which case the flat list is drawn instead.
     var turns: [ConversationTurn] = []
+    /// A turn to draw on its own, while a long jump to it is being staged.
+    ///
+    /// The conversation is lazy: a row a few screens away has been thrown away,
+    /// and a row that has been thrown away has no frame for `scrollTo` to aim
+    /// at. Drawing just the turn asked for -- at the top of the content, where a
+    /// lazy stack always builds -- is what puts it back in the hierarchy long
+    /// enough for the scroll to find it. See
+    /// `SessionDetailView/jump(to:proxy:)`.
+    var stagedTurn: String?
     let loading: Bool
     /// Why the conversation is empty, when it is empty because the read failed.
     var failure: String?
@@ -71,10 +80,36 @@ struct ConversationView: View {
         loadingOlder = false
     }
 
+    /// What is drawn while a jump is staged: the turn asked for, first, and the
+    /// couple after it.
+    ///
+    /// First, because a lazy stack builds what the content *starts* with
+    /// whatever the scroll offset is -- and that row has to exist before it can
+    /// be scrolled to. The couple after it come along so that flipping on down
+    /// from the turn is as immediate as flipping down from anywhere else. The
+    /// turns *before* it cannot come with it: they would push it off the top of
+    /// a content that begins where the operator is going, and they arrive a
+    /// frame later with the rest of the conversation.
+    private var staged: [ConversationTurn] {
+        guard let stagedTurn,
+              let start = turns.firstIndex(where: { $0.id == stagedTurn })
+        else { return [] }
+        return Array(turns[start...min(turns.count - 1, start + 2)])
+    }
+
+    /// The turns actually drawn: the conversation, or the staged window when
+    /// there is one.
+    private var drawnTurns: [ConversationTurn] {
+        staged.isEmpty ? turns : staged
+    }
+
     var body: some View {
         // Lazy, not eager: a conversation can hold hundreds of items.
         LazyVStack(alignment: .leading, spacing: 14) {
-            if !exhausted, let onLoadOlder, !items.isEmpty {
+            // Not while a jump is staged: the row sits at the very top and
+            // would ask for a page of history the screen is in the middle of
+            // leaving.
+            if !exhausted, let onLoadOlder, !items.isEmpty, staged.isEmpty {
                 loadOlderRow(onLoadOlder)
             }
 
@@ -105,7 +140,11 @@ struct ConversationView: View {
                         .transition(.rise)
                 }
             } else {
-                ForEach(turns) { turn in
+                // One list either way, narrowed to the staged turn while a jump
+                // is playing: the same `ForEach` with the same identities, so
+                // the row being jumped to is *kept* across the swap rather than
+                // destroyed and built again.
+                ForEach(drawnTurns) { turn in
                     TurnSection(turn: turn, sessionId: sessionId)
                         .transition(.rise)
                 }
@@ -200,11 +239,19 @@ private struct TurnSection: View {
                 .padding(.vertical, -8)
                 .allowsHitTesting(false)
         }
-        // Which turns are on screen, for the index's "you are here".
+        // Which turns are on screen, for the index's "you are here" -- and
+        // which ones the conversation has built at all. The two differ: a row
+        // scrolled far enough away is destroyed, and the index asks before it
+        // tries to scroll to one, because a scroll to a row that no longer
+        // exists goes nowhere. See ``TurnIndex/travels(to:)``.
+        .onAppear { index.setRealized(turn.id, true) }
         .onScrollVisibilityChange(threshold: 0.25) { visible in
             index.setVisible(turn.id, visible)
         }
-        .onDisappear { index.setVisible(turn.id, false) }
+        .onDisappear {
+            index.setVisible(turn.id, false)
+            index.setRealized(turn.id, false)
+        }
     }
 }
 

@@ -20,7 +20,9 @@
 //      long as the turn took, against the longest turn in the session: the one
 //      that ran for twenty minutes is visible from across the room.
 //    - **It lands softly.** A tap closes it, scrolls the conversation to that
-//      turn, and lets the turn glow once so the eye finds it.
+//      turn, and lets the turn glow once so the eye finds it. A turn the
+//      conversation has long since thrown away is *travelled* to rather than
+//      scrolled to: see ``TurnIndex/travels(to:)``.
 //    - **It filters to what went wrong.** One tap narrows it to the turns that
 //      did not finish -- the ones worth going back to.
 //
@@ -41,6 +43,15 @@ final class TurnIndex {
     private(set) var turns: [ConversationTurn] = []
     /// The turns on screen in the conversation right now.
     private(set) var visible: Set<String> = []
+    /// The turns the conversation has built at all, on screen or not.
+    ///
+    /// Not the same set as ``visible``, and the difference is the whole reason
+    /// this exists: a lazy stack keeps about a screenful either side of the
+    /// viewport and throws the rest away, so a row the operator scrolled past a
+    /// minute ago has been destroyed. A destroyed row has no frame, and a scroll
+    /// to a row with no frame goes nowhere -- which is how a turn could be listed
+    /// here, be tapped, and refuse to be shown.
+    private(set) var realized: Set<String> = []
     /// The turn the operator asked to go to, and a count that makes asking
     /// for the same one twice a second request.
     private(set) var jumpTarget: String?
@@ -51,6 +62,7 @@ final class TurnIndex {
     func publish(sessionId: String, title: String?, turns: [ConversationTurn]) {
         if self.sessionId != sessionId {
             visible = []
+            realized = []
             glowing = nil
         }
         self.sessionId = sessionId
@@ -63,6 +75,7 @@ final class TurnIndex {
         self.sessionId = nil
         turns = []
         visible = []
+        realized = []
         title = nil
     }
 
@@ -70,10 +83,65 @@ final class TurnIndex {
         if isVisible { visible.insert(id) } else { visible.remove(id) }
     }
 
+    func setRealized(_ id: String, _ isRealized: Bool) {
+        if isRealized { realized.insert(id) } else { realized.remove(id) }
+    }
+
     /// Ask the conversation to show a turn.
     func jump(to id: String) {
         jumpTarget = id
         jumpCount &+= 1
+    }
+
+    // MARK: - How far away a turn is
+
+    /// How many turns from the screen a jump is still worth animating.
+    ///
+    /// A lazy stack builds about a screenful beyond the viewport, and one turn
+    /// can be a screenful itself -- so past a few turns the row may simply not
+    /// be there, and a scroll to a row that is not there is the bug this
+    /// measures against.
+    private static let animatedReach = 4
+
+    /// Whether going to `id` has to be travelled rather than animated.
+    ///
+    /// Two conditions, and they are the same fact seen from both ends. A turn
+    /// the conversation has not built cannot be animated *to* -- there is no row
+    /// to aim at. A turn that is built but a long way from where the operator is
+    /// reading would animate *across* forty rows the stack has to create and
+    /// discard on the way, which is work spent on frames nobody asked to see.
+    /// Either way the answer is the same: travel.
+    ///
+    /// - Parameter id: the turn asked for.
+    /// - Returns: `true` when the conversation should dip and jump rather than
+    ///   scroll.
+    func travels(to id: String) -> Bool {
+        guard let target = turns.firstIndex(where: { $0.id == id }) else { return false }
+        guard realized.contains(id) else { return true }
+        let nearest = turns.indices
+            .filter { visible.contains(turns[$0].id) }
+            .map { abs($0 - target) }
+            .min()
+        // Nothing on screen to measure from -- a conversation still opening, or
+        // a screen that has not published where it is yet. The safe reading is
+        // that the turn is far away.
+        guard let nearest else { return true }
+        return nearest > Self.animatedReach
+    }
+
+    /// Which way the page would move to reach `id`.
+    ///
+    /// `1` for a turn above the operator, which brings the content *down* as
+    /// scrolling up does; `-1` for one below. Used by the dip that stands in for
+    /// a long scroll.
+    ///
+    /// - Parameter id: the turn asked for.
+    /// - Returns: the vertical direction, in the sense of an offset.
+    func direction(to id: String) -> CGFloat {
+        guard let target = turns.firstIndex(where: { $0.id == id }),
+              let reference = turns.lastIndex(where: { visible.contains($0.id) })
+        else { return 1 }
+        return target < reference ? 1 : -1
     }
 
     /// The conversation has arrived at a turn: let it glow, briefly.

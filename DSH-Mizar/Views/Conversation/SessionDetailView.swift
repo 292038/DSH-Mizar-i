@@ -93,6 +93,25 @@ struct SessionDetailView: View {
     /// question two of them can answer "no" to before either starts. Whoever
     /// increments first owns the socket; everyone else waits for zero.
     @State private var conversationLoads = 0
+    /// The turn the conversation has been reduced to, for the length of a long
+    /// jump. See ``jump(to:proxy:)``.
+    @State private var stagedTurn: String?
+    /// How far the page is faded out while a long jump plays, and how far it has
+    /// been shifted on its way there.
+    ///
+    /// These two *are* the animation of a jump. A jump across forty turns is
+    /// thousands of points of travel, and animating that makes the phone build
+    /// and throw away every row along the way -- work spent on frames nobody
+    /// asked to see. So the scroll itself is instantaneous and invisible, and
+    /// what the eye is given instead is the page leaving in the direction of the
+    /// turn and arriving from the other side.
+    @State private var jumpFade: Double = 1
+    @State private var jumpShift: CGFloat = 0
+    /// Whether a jump is playing, so the conversation stops taking taps.
+    @State private var jumping = false
+    /// Which jump is current, so a second one tapped while the first is still
+    /// playing takes over instead of the two of them taking turns.
+    @State private var jumpGeneration = 0
 
     /// The figures for the session on screen, or nothing.
     ///
@@ -128,6 +147,7 @@ struct SessionDetailView: View {
                         sessionId: sessionId,
                         items: shownItems,
                         turns: shownTurns,
+                        stagedTurn: stagedTurn,
                         loading: loadingConversation,
                         failure: shownItems.isEmpty ? model.conversationError : nil,
                         onLoadOlder: {
@@ -176,6 +196,13 @@ struct SessionDetailView: View {
             // Dragging the conversation puts the keyboard away, which is what
             // every messaging app does and what a thumb already expects.
             .scrollDismissesKeyboard(.interactively)
+            // A long jump dips the page rather than travelling it. Applied to
+            // the scroll view and not to the screen, so the composer and the
+            // rail stay where they are while the conversation moves under
+            // them: what is travelling is the page, not the furniture.
+            .opacity(jumpFade)
+            .offset(y: jumpShift)
+            .allowsHitTesting(!jumping)
             .scrollEdgeEffectStyle(.soft, for: .bottom)
             .refreshable { await reload() }
             .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -211,19 +238,10 @@ struct SessionDetailView: View {
                 }
             }
             .onChange(of: turnIndex.jumpCount) { _, _ in
-                // A turn chosen in the index: go there, just under the bar,
-                // then let it glow once so the eye finds it.
+                // A turn chosen in the index: go there, then let it glow once
+                // so the eye finds it.
                 guard turnIndex.sessionId == sessionId, let target = turnIndex.jumpTarget else { return }
-                Task { @MainActor in
-                    // A beat for the card to start coming back on a phone, so
-                    // the scroll is seen rather than finished behind it.
-                    try? await Task.sleep(for: .milliseconds(sizeClass == .regular ? 0 : 140))
-                    withMizarAnimation(.mizarSmooth) {
-                        proxy.scrollTo(target, anchor: UnitPoint(x: 0.5, y: 0.08))
-                    }
-                    try? await Task.sleep(for: .milliseconds(320))
-                    turnIndex.glow(target)
-                }
+                Task { await jump(to: target, proxy: proxy) }
             }
             .onChange(of: shownItems.count) { old, new in
                 // Something new arrived below while the operator was reading
@@ -538,6 +556,140 @@ struct SessionDetailView: View {
             await Task.yield()
             proxy.scrollTo(Self.endAnchor, anchor: .bottom)
         }
+    }
+
+    /// Go to a turn chosen in the index.
+    ///
+    /// Two ways there, and which one is right is decided by whether the
+    /// conversation still has the turn built. A turn within reach is scrolled to
+    /// with the same spring every other move on this screen uses. One that is
+    /// not -- because a lazy stack throws away what is more than a screen or two
+    /// away -- is *travelled* to, and that is the fix for a real report: a turn
+    /// could be listed in the index, be tapped, and simply not be shown, because
+    /// the row it named had been destroyed and a scroll to a row that does not
+    /// exist goes nowhere.
+    ///
+    /// - Parameters:
+    ///   - target: the turn to show.
+    ///   - proxy: the conversation's scroll view.
+    private func jump(to target: String, proxy: ScrollViewProxy) async {
+        jumpGeneration &+= 1
+        let generation = jumpGeneration
+        // A jump still playing when this one was asked for leaves the page
+        // dipped and half-way through a swap. Put it back first: the two must
+        // not take turns holding the fade.
+        if jumping {
+            jumpFade = 1
+            jumpShift = 0
+            jumping = false
+        }
+        // A turn this screen does not hold -- an index from a session that has
+        // just been replaced, or a turn whose page has not arrived. There is
+        // nothing to show and nothing to say.
+        guard turnIndex.turns.contains(where: { $0.id == target }) else { return }
+        // A beat for the card to start coming back on a phone, so the jump is
+        // seen rather than finished behind it.
+        try? await Task.sleep(for: .milliseconds(sizeClass == .regular ? 0 : 140))
+        guard isCurrentJump(generation) else { return }
+
+        let anchor = UnitPoint(x: 0.5, y: 0.08)
+        guard turnIndex.travels(to: target) else {
+            withMizarAnimation(.mizarSmooth) {
+                proxy.scrollTo(target, anchor: anchor)
+            }
+            try? await Task.sleep(for: .milliseconds(320))
+            guard isCurrentJump(generation) else { return }
+            turnIndex.glow(target)
+            return
+        }
+        await travel(to: target, anchor: anchor, proxy: proxy, generation: generation)
+    }
+
+    /// The long way: dip the page, put the turn back in the conversation, jump
+    /// with no animation at all, and come back up with the turn under the eye.
+    ///
+    /// The order is the whole trick. A row that is not in the hierarchy cannot be
+    /// scrolled to, so the turn asked for is drawn *alone* first -- at the top of
+    /// the content, where a lazy stack always builds it, whatever the offset --
+    /// and only then is the scroll asked for. The rest of the conversation comes
+    /// back in the same update as the final scroll, while the row is still built
+    /// and still on screen, so the anchor holds as everything above it is put
+    /// back. The neighbours the operator is most likely to flip to next are the
+    /// two turns drawn with it; everything beyond them is the lazy stack's own
+    /// business, exactly as it is anywhere else in the conversation.
+    ///
+    /// - Parameters:
+    ///   - target: the turn to show.
+    ///   - anchor: where the turn should sit once it is there.
+    ///   - proxy: the conversation's scroll view.
+    ///   - generation: which jump this is, so a later tap takes over cleanly.
+    private func travel(
+        to target: String,
+        anchor: UnitPoint,
+        proxy: ScrollViewProxy,
+        generation: Int,
+    ) async {
+        // Which way the page would have gone, so the dip carries it: a turn
+        // above the operator brings the content down, as scrolling up does.
+        let direction = turnIndex.direction(to: target)
+        jumping = true
+        // Fast enough that the page is gone before the swap below, slow enough
+        // to read as leaving rather than as blinking.
+        withAnimation(Motion.pick(.easeIn(duration: 0.1))) {
+            jumpFade = 0.08
+            jumpShift = Motion.reduced ? 0 : direction * 30
+        }
+        try? await Task.sleep(for: .milliseconds(140))
+        guard isCurrentJump(generation) else {
+            jumping = false
+            return
+        }
+
+        stagedTurn = target
+        await settleLayout()
+        guard isCurrentJump(generation) else {
+            stagedTurn = nil
+            jumping = false
+            return
+        }
+        proxy.scrollTo(target, anchor: .top)
+
+        // The conversation back, and the scroll re-aimed in the same update:
+        // the row is built and on screen at this instant, so the anchor holds
+        // while the turns above it are put back.
+        await settleLayout()
+        stagedTurn = nil
+        proxy.scrollTo(target, anchor: anchor)
+        await settleLayout()
+        // A second aim, for the update the first one may have raced. Harmless
+        // when the first landed: it is the position the view is already at.
+        proxy.scrollTo(target, anchor: anchor)
+
+        // Arriving from the far side, so the dip reads as travel rather than as
+        // a screen that blinked.
+        jumpShift = Motion.reduced ? 0 : -direction * 18
+        withAnimation(Motion.pick(.mizarSmooth)) {
+            jumpFade = 1
+            jumpShift = 0
+        }
+        turnIndex.glow(target)
+        try? await Task.sleep(for: .milliseconds(220))
+        jumping = false
+    }
+
+    /// Let the lazy stack build and lay out what it was just given.
+    ///
+    /// A scheduler yield is not enough: a row exists after the runloop has taken
+    /// the update, and a `scrollTo` asked for before that turn has nothing to
+    /// place.
+    private func settleLayout() async {
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(16))
+    }
+
+    /// Whether a jump is still the one the operator is waiting for.
+    private func isCurrentJump(_ generation: Int) -> Bool {
+        jumpGeneration == generation
     }
 
     /// Reload the conversation after a send, allowing for the host's lag.
