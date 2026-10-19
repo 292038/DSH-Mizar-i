@@ -129,8 +129,21 @@ public struct SessionActivityResult: Codable, Sendable, Equatable {
     public let turn: Int?
     /// The running turn's details, oldest first. Empty when nothing is running.
     public let entries: [ActivityEntry]
-    /// Whether the host trimmed entries to stay inside its caps.
+    /// Whether older entries may still be read -- for a forward read, the
+    /// entries were trimmed to fit or the host's log page has older records; for
+    /// a backwards page, the page was full and contributed entries of the turn.
+    ///
+    /// Widened from "the entries were trimmed" when backwards paging arrived:
+    /// the phone now needs to know whether asking for an older page is worth a
+    /// round trip, not only whether this answer was cut short.
     public let hasMore: Bool
+    /// The smallest log position in the page the host read, when it named one.
+    ///
+    /// The cursor for the next older page: the phone sends this value back as
+    /// `beforeSeq`. Optional because an older host does not send it -- paging
+    /// then has to start from the oldest entry's own seq, and stops when an
+    /// answer stops making progress.
+    public let oldestSeq: Int?
 
     public init(
         sessionId: String,
@@ -138,12 +151,14 @@ public struct SessionActivityResult: Codable, Sendable, Equatable {
         turn: Int? = nil,
         entries: [ActivityEntry] = [],
         hasMore: Bool = false,
+        oldestSeq: Int? = nil,
     ) {
         self.sessionId = sessionId
         self.asOfSeq = asOfSeq
         self.turn = turn
         self.entries = entries
         self.hasMore = hasMore
+        self.oldestSeq = oldestSeq
     }
 
     public init(from decoder: any Decoder) throws {
@@ -153,6 +168,7 @@ public struct SessionActivityResult: Codable, Sendable, Equatable {
         turn = try container.decodeIfPresent(Int.self, forKey: .turn)
         entries = try container.decodeIfPresent([ActivityEntry].self, forKey: .entries) ?? []
         hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
+        oldestSeq = try container.decodeIfPresent(Int.self, forKey: .oldestSeq)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -161,6 +177,7 @@ public struct SessionActivityResult: Codable, Sendable, Equatable {
         case turn
         case entries
         case hasMore
+        case oldestSeq
     }
 
     /// An answer saying nothing is running, for tests and for an early exit.
@@ -190,11 +207,25 @@ public extension MizarConnection {
     ///   - sessionId: the session to read.
     ///   - maxEntries: how many entries to ask for; omitted lets the host use
     ///     its default (200) and its own caps.
+    ///   - beforeSeq: read the page before this log position instead of the
+    ///     newest one -- the lazy-loading read for a long turn. Requires
+    ///     `turn`; a host from before this field existed ignores both and
+    ///     answers the newest page, which the caller detects as no progress.
+    ///   - turn: the running turn an older page belongs to, echoed by the host.
     /// - Returns: the running turn's details.
     /// - Throws: ``MizarError`` when the host refuses, or a timeout.
-    func sessionActivity(sessionId: String, maxEntries: Int? = nil) async throws -> SessionActivityResult {
+    func sessionActivity(
+        sessionId: String,
+        maxEntries: Int? = nil,
+        beforeSeq: Int? = nil,
+        turn: Int? = nil,
+    ) async throws -> SessionActivityResult {
         var fields: [String: JSONValue] = ["sessionId": .string(sessionId)]
         if let maxEntries { fields["maxEntries"] = .number(Double(maxEntries)) }
+        if let beforeSeq {
+            fields["beforeSeq"] = .number(Double(beforeSeq))
+            if let turn { fields["turn"] = .number(Double(turn)) }
+        }
         return try await call("session.activity", payload: .object(fields), as: SessionActivityResult.self)
     }
 }

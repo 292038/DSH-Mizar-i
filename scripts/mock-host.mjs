@@ -421,6 +421,70 @@ const createdSessions = []
 let activityPolls = 0
 
 /**
+ * How many entries the long activity fixture exposes, or zero for the default.
+ *
+ * `/activity?count=NNN` sets it and `/reset` puts it back. The default fixture
+ * -- `ACTIVITY_ENTRIES`, growing three rows per poll up to its eight -- is what
+ * every other suite measures, and must stay exactly as it was. The long one is
+ * a fixed log of N distinct entries, so a test can scroll the detail area back
+ * and prove the phone asked the host for an older page instead of treating the
+ * window it was given as the whole turn.
+ */
+let activityLongCount = 0
+
+/**
+ * How many `session.activity` requests carried `beforeSeq` since the last
+ * reset.
+ *
+ * Lazy loading is invisible from the screen -- the rows that arrive look like
+ * the rows that were already there -- so "an older page was asked for" is a
+ * fact only the host holds. Reported on `/loads` as `activityPages`.
+ */
+let activityPageRequests = 0
+
+/**
+ * How many rows the long fixture's forward (newest) answer carries.
+ *
+ * Deliberately smaller than the host's own log and than the phone's ask: the
+ * paging path only exists for a turn longer than one window, so the fixture
+ * serves a short newest window in long mode and the rest of the log by
+ * `beforeSeq`. A test then reaches the paging code after a couple of drags
+ * rather than after scrolling through the whole turn.
+ */
+const LONG_ACTIVITY_FORWARD = 12
+
+/** The log position of the long fixture's oldest entry. */
+const LONG_ACTIVITY_FIRST_SEQ = 100
+
+/** The kinds the long fixture cycles through, so the rows look like a turn. */
+const LONG_ACTIVITY_KINDS = ['thinking', 'command', 'output', 'tool']
+
+/**
+ * The long activity fixture: N distinct rows, oldest first.
+ *
+ * Every row belongs to the running turn and has a distinct id, seq and
+ * one-line text ending in "Activity line <n> of <N>". The numbering is what
+ * lets a test name a row the newest window cannot contain, and then find it
+ * after paging back to it.
+ *
+ * @param count - how many rows the log holds.
+ * @param turn - the running turn they belong to.
+ * @returns the log, oldest first.
+ */
+function longActivityEntries(count, turn) {
+  const now = Date.now()
+  return Array.from({ length: count }, (_, index) => ({
+    id: `activity-long-${index + 1}`,
+    seq: LONG_ACTIVITY_FIRST_SEQ + index,
+    at: now - (count - index) * 900,
+    kind: LONG_ACTIVITY_KINDS[index % LONG_ACTIVITY_KINDS.length],
+    title: '',
+    text: `Activity line ${index + 1} of ${count}`,
+    turn,
+  }))
+}
+
+/**
  * The paid full-detail feed for the fixture's running turn.
  *
  * Shaped like the host's `session.activity` entries: compact one-liners the
@@ -867,20 +931,94 @@ function answer(frame) {
       // The paid full-detail feed: only the running turn's compact process
       // details. Free accounts never ask, so this is only reachable from a paid
       // launch -- but the mock answers it for anyone, like a real host would.
-      activityPolls += 1
+      const payload = frame.payload ?? {}
       const now = Date.now()
-      const requested = Number(frame.payload?.maxEntries)
+      const requested = Number(payload.maxEntries)
       const cap = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 300) : 200
-      const created = createdSessions.find((s) => s.sessionId === frame.payload?.sessionId)
+      const created = createdSessions.find((s) => s.sessionId === payload.sessionId)
       const sessionId = created !== undefined
         ? created.sessionId
-        : frame.payload?.sessionId ?? SESSION.sessionId
+        : payload.sessionId ?? SESSION.sessionId
       // The same running turn the conversation fixture draws: turn 4 while the
       // session runs with nothing sent since, otherwise the newest prompt's
       // turn. Nothing running -- `/session?running=0` -- is turn:null.
       const runningTurn = created !== undefined
         ? (sessionRunning && created.prompts.length > 0 ? created.prompts.length : null)
         : (sessionRunning ? (sentPrompts.length === 0 ? 4 : 4 + sentPrompts.length) : null)
+
+      // A backwards read: the page before `beforeSeq`, for one turn. Counted
+      // whether or not it is well formed, because the count is about what the
+      // phone asked for, not about what it was told.
+      if (typeof payload.beforeSeq === 'number') {
+        activityPageRequests += 1
+        const beforeSeq = payload.beforeSeq
+        if (typeof payload.turn !== 'number') {
+          // The protocol makes the turn mandatory here: a page can be cut
+          // through a turn by definition, so beforeSeq without one cannot say
+          // whose older rows are wanted.
+          return {
+            v: 1,
+            type: 'error',
+            id,
+            code: 'MALFORMED_FRAME',
+            message: 'session.activity with beforeSeq needs the turn it pages back through',
+          }
+        }
+        const turn = payload.turn
+        if (activityLongCount > 0 && runningTurn !== null && turn === runningTurn) {
+          // The long fixture's log is flat: every row belongs to the running
+          // turn. This answer is the whole remainder of the turn behind
+          // `beforeSeq`, trimmed only by the protocol's own 300-row ceiling --
+          // a real host would read a log page of its own size, and this fixture
+          // deliberately makes that page the rest of the log so a test reaches
+          // the turn's beginning in one round trip and can then prove the walk
+          // stops rather than paging through a wall of fixture.
+          const log = longActivityEntries(activityLongCount, runningTurn)
+          const older = log.filter((entry) => entry.seq < beforeSeq).slice(-300)
+          const oldestSeq = older.length > 0 ? older[0].seq : null
+          const hasOlderRecords = older.length > 0 && log[0].seq < older[0].seq
+          console.log(
+            'mock: activity page before', beforeSeq,
+            'turn', turn, '->', older.length, 'entries',
+            '| hasMore', hasOlderRecords,
+          )
+          return {
+            v: 1,
+            type: 'ok',
+            id,
+            result: {
+              sessionId,
+              asOfSeq: 27 + sentPrompts.length,
+              turn: runningTurn,
+              entries: older.map(({ turn: _turn, ...entry }) => entry),
+              // Widened: the log has older records *and* this page contributed
+              // rows of the turn. Empty, or the turn's beginning, stops the
+              // walk.
+              hasMore: hasOlderRecords,
+              oldestSeq,
+            },
+          }
+        }
+        // The default fixture holds its whole eight-row log in the forward
+        // answer, so there is nothing behind it: an empty page with `hasMore`
+        // false is the host saying the walk is over.
+        return {
+          v: 1,
+          type: 'ok',
+          id,
+          result: {
+            sessionId,
+            asOfSeq: 27 + sentPrompts.length,
+            turn: runningTurn,
+            entries: [],
+            hasMore: false,
+            oldestSeq: null,
+          },
+        }
+      }
+
+      // A forward read: the newest window of the running turn.
+      activityPolls += 1
       if (runningTurn === null) {
         return {
           v: 1,
@@ -892,6 +1030,25 @@ function answer(frame) {
             turn: null,
             entries: [],
             hasMore: false,
+            oldestSeq: null,
+          },
+        }
+      }
+      if (activityLongCount > 0) {
+        const log = longActivityEntries(activityLongCount, runningTurn)
+        const window = Math.min(cap, LONG_ACTIVITY_FORWARD, log.length)
+        const entries = log.slice(log.length - window)
+        return {
+          v: 1,
+          type: 'ok',
+          id,
+          result: {
+            sessionId,
+            asOfSeq: 27 + sentPrompts.length,
+            turn: runningTurn,
+            entries: entries.map(({ turn: _turn, ...entry }) => entry),
+            hasMore: entries.length < log.length,
+            oldestSeq: entries.length > 0 ? entries[0].seq : null,
           },
         }
       }
@@ -913,6 +1070,10 @@ function answer(frame) {
           turn: runningTurn,
           entries,
           hasMore,
+          // The smallest position in this page. The default fixture's log is
+          // exactly these rows, so there is nothing older to reach; the value
+          // is here because the contract has the field on every answer.
+          oldestSeq: entries.length > 0 ? entries[0].seq : null,
         },
       }
     }
@@ -1594,14 +1755,31 @@ const server = createServer((request, response) => {
       methods: { ...methodCounts },
       refusedMethods: { ...refusedCounts },
       modelSets: modelSets.slice(),
+      // How many `session.activity` reads carried `beforeSeq`. A lazy page is
+      // invisible from the screen -- the rows look like the rows that were
+      // already there -- so this is the only place "the older history was
+      // actually asked for" is a fact.
+      activityPages: activityPageRequests,
     }
     if ((request.url ?? '').includes('reset=1')) {
       messagesInFlight = 0
       messagesPeak = 0
+      activityPageRequests = 0
       for (const key of Object.keys(methodCounts)) delete methodCounts[key]
     }
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify(answer))
+    return
+  }
+  if (request.url?.startsWith('/activity')) {
+    // How many rows the long detail fixture exposes, from now on. See
+    // `activityLongCount`. Zero (or no `count`) is the default fixture every
+    // other suite measures; a positive count is the fixed log a paging test
+    // scrolls back through.
+    const match = /count=(\d+)/.exec(request.url ?? '')
+    activityLongCount = match === null ? 0 : Math.min(500, Number(match[1]))
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ ok: true, activityCount: activityLongCount }))
     return
   }
   if (request.url?.startsWith('/session')) {
@@ -1668,8 +1846,11 @@ const server = createServer((request, response) => {
     // must not inherit the previous test's paid plan or its session tokens.
     resetAccounts()
     // The detail feed grows per poll; a test that starts from the fixture must
-    // start from the beginning of it.
+    // start from the beginning of it. The long fixture and its paging counter
+    // go back with it, so a paging test cannot hand the next test a 120-row log.
     activityPolls = 0
+    activityLongCount = 0
+    activityPageRequests = 0
     // `?skew=NNN` moves the host's clock ahead of the phone's, which is what a
     // running turn's negative duration came from. `?pageLimit=NNN` makes the
     // host refuse a page it cannot carry.

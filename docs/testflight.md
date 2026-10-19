@@ -300,6 +300,7 @@ App 里订阅按钮的文案和价格都来自 `Product.displayPrice`，**没有
 | 附件上传、运行中轮次完整细节 | 0.8.4（附件）/ 0.9.0（`session.activity`） |
 | 局域网扫描时向电脑要当前监听地址（`host.info.addresses`） | 0.8.5 |
 | 侧边栏「归档该会话」（`session.archive`，并在列表里过滤已归档会话） | 0.8.5 |
+| 运行中全量细节上翻懒加载（`session.activity` 的 `beforeSeq`/`turn`/`oldestSeq`） | 0.8.5 |
 
 插件没更新时，旧插件会回「未实现」：归档菜单会显示失败原因；局域网扫描退回只试配对时
 记下的地址，其余功能不受影响。

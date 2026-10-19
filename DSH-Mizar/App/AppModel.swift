@@ -1761,58 +1761,91 @@ final class AppModel {
         _ = try? await loggedCall("session.cancel", payload: payload, on: connection, as: AcceptanceResult.self)
     }
 
-    // MARK: - Full-detail activity (paid accounts)
+    // MARK: - Full-detail activity (unlocked accounts)
 
-    /// The last full-detail read for a session, by session id.
+    /// The running turn's process details, accumulated per session.
     ///
-    /// Only ever populated for a **paid** account, and only while a turn is
-    /// running. Free accounts never fill this, because they never ask: the
-    /// method below returns before touching the socket. That is a product
-    /// boundary, not a UI one -- a screen that hides the detail but still spends
-    /// the bandwidth would be the wrong half of the trade.
+    /// A feed, not the last answer. The poll merges its newest window into the
+    /// feed and the operator's scrolling prepends older pages, so the list on
+    /// screen only ever grows -- replacing it with each answer would re-animate
+    /// every row once a poll and throw away the older pages the operator had
+    /// asked for. See ``ActivityFeed`` for the merge rules and their tests.
+    ///
+    /// Only ever populated for an **unlocked** account (paid, or connected over
+    /// a LAN link) and only while a turn is running. A locked account never
+    /// fills this, because it never asks: the methods below return before
+    /// touching the socket. That is a product boundary, not a UI one -- a screen
+    /// that hides the detail but still spends the bandwidth is the wrong half of
+    /// the trade.
     ///
     /// Nothing here is persisted. The summary-only history is what the phone
     /// keeps; this is a live view of a turn that is happening now, and when the
     /// turn ends the detail goes with it.
-    private(set) var sessionActivity: [String: SessionActivityResult] = [:]
+    private var sessionActivity: [String: ActivityFeed] = [:]
 
-    /// Bumped whenever the activity cache changes.
+    /// Bumped whenever the accumulated detail changes.
     ///
     /// The detail list is read through a method, and the running row needs a
-    /// direct observable dependency to redraw when the first answer lands. The
-    /// revision is that dependency; it is deliberately an integer, not a copy of
-    /// the feed.
+    /// direct observable dependency to redraw when a window lands or a page is
+    /// prepended. The revision is that dependency; it is deliberately an
+    /// integer, not a copy of the feed. It is bumped only when there is a real
+    /// change, so a poll that repeats what is held does not redraw the area.
     private(set) var activityRevision = 0
 
-    /// Sessions with a full-detail read in flight.
+    /// How many recent entries one poll asks for.
     ///
-    /// The poll runs every two seconds and the read is a round trip, so without
-    /// this a slow host would have two reads of the same session in flight and
-    /// the slower, older answer could land last.
+    /// Small on purpose: the newest few dozen rows are what the window follows,
+    /// and older rows are a deliberate walk backwards. Asking for the host's
+    /// default 200 every second is most of this feature's traffic spent on rows
+    /// nobody is looking at.
+    private static let activityLatestEntries = 60
+
+    /// How many entries one lazy older page asks for.
+    private static let activityOlderEntries = 100
+
+    /// Sessions with a full-detail window read in flight.
+    ///
+    /// The poll is a round trip, so without this a slow host would have two
+    /// reads of the same session in flight and the slower, older answer could
+    /// land last.
     private var activityReads: Set<String> = []
 
-    /// The last full-detail answer for a session, for the running-turn row.
+    /// Sessions with an older page in flight, so a scroll that keeps bouncing
+    /// at the top cannot stack pages.
+    private var activityOlderReads: Set<String> = []
+
+    /// The accumulated details for a session, for the running-turn row.
     ///
     /// - Parameter sessionId: the session.
-    /// - Returns: the answer, or `nil` when there is none, or when the full
-    ///   detail is not unlocked. The check is repeated here so a caller cannot
-    ///   draw a detail area the account has no right to by reading a stale
+    /// - Returns: the rows, oldest first, or `nil` when there are none, or when
+    ///   the full detail is not unlocked. The check is repeated here so a caller
+    ///   cannot draw a detail area the account has no right to by reading a stale
     ///   cache; ``advancedFeaturesUnlocked`` is what makes a LAN link entitled
     ///   to it without a paid plan.
-    func activity(for sessionId: String) -> SessionActivityResult? {
+    func activity(for sessionId: String) -> [ActivityEntry]? {
         guard advancedFeaturesUnlocked else { return nil }
-        return sessionActivity[sessionId]
+        return sessionActivity[sessionId]?.entries
     }
 
-    /// Read the running turn's compact process details.
+    /// Whether older rows may still be read from the host.
+    ///
+    /// - Parameter sessionId: the session.
+    /// - Returns: whether a scroll to the top of the detail area is worth a
+    ///   request.
+    func activityHasOlder(for sessionId: String) -> Bool {
+        guard advancedFeaturesUnlocked else { return false }
+        return sessionActivity[sessionId]?.canLoadOlder ?? false
+    }
+
+    /// Read the running turn's latest process details.
     ///
     /// Unlocked accounts only -- paid, or connected over a LAN link. Called on a
-    /// two-second poll by the running-turn row itself (see
-    /// `TurnActivitySummary`), which is where "while it is running" is decided;
-    /// this method is the fetch, not the schedule.
+    /// poll by the running-turn row itself (see `TurnActivitySummary`), which is
+    /// where "while it is running" is decided; this method is the fetch, not the
+    /// schedule.
     ///
     /// Deliberately not through `loggedCall`: that writes a request entry into the
-    /// log, and a log line every two seconds for the whole of a turn would bury
+    /// log, and a log line every second or two for the whole of a turn would bury
     /// the events the log export exists for.
     ///
     /// A failure is not shown and does not erase anything. The last answer stays
@@ -1825,31 +1858,75 @@ final class AppModel {
         activityReads.insert(sessionId)
         defer { activityReads.remove(sessionId) }
         do {
-            let result = try await connection.sessionActivity(sessionId: sessionId)
+            let result = try await connection.sessionActivity(
+                sessionId: sessionId,
+                maxEntries: Self.activityLatestEntries,
+            )
             // An answer about another session is not this session's detail. The
             // host echoes the id; trusting it is one cheap check against a
             // mis-routed answer landing under the wrong row.
             guard result.sessionId.isEmpty || result.sessionId == sessionId else { return }
-            if result.hasRunningTurn {
-                // Assign a new dictionary rather than mutating in place:
-                // `sessionActivity` is an @Observable stored property, and an
-                // in-place subscript mutation does not reliably notify the
-                // running row that the detail it should draw has arrived.
-                var next = sessionActivity
-                next[sessionId] = result
-                sessionActivity = next
-                activityRevision &+= 1
-            } else {
+            guard let turn = result.turn else {
                 // The turn ended (or was cancelled) between polls. The detail
                 // area has nothing left to describe, so it goes -- not faded,
                 // gone, because there is no turn for it to belong to.
-                var next = sessionActivity
-                next.removeValue(forKey: sessionId)
-                sessionActivity = next
+                clearActivity(for: sessionId)
+                return
+            }
+            if var feed = sessionActivity[sessionId], feed.turn == turn {
+                let changed = feed.merge(latest: result)
+                sessionActivity[sessionId] = feed
+                if changed { activityRevision &+= 1 }
+            } else if let feed = ActivityFeed(latest: result) {
+                // A new turn (or the first read of this one): its process is a
+                // different list, not more rows on the old one.
+                sessionActivity[sessionId] = feed
                 activityRevision &+= 1
             }
         } catch {
             // Keep what is on screen; see the doc comment.
+        }
+    }
+
+    /// Read one older page of the running turn's details.
+    ///
+    /// Called when the detail area is scrolled to its top. The page goes in
+    /// front of what is held; a page that adds nothing ends the walk (an older
+    /// host ignores the request and answers the newest window again), which is
+    /// the no-progress guard that keeps a scroll at the top from looping.
+    ///
+    /// A failure leaves the feed as it was and shows nothing: the rows already on
+    /// screen are still true, and the next scroll to the top asks again.
+    ///
+    /// - Parameter sessionId: the session to extend.
+    /// - Returns: whether the page added rows.
+    @discardableResult
+    func loadOlderActivity(for sessionId: String) async -> Bool {
+        guard advancedFeaturesUnlocked, let connection,
+              let cursor = sessionActivity[sessionId]?.olderCursor,
+              let turn = sessionActivity[sessionId]?.turn,
+              sessionActivity[sessionId]?.canLoadOlder == true,
+              !activityOlderReads.contains(sessionId)
+        else { return false }
+        activityOlderReads.insert(sessionId)
+        defer { activityOlderReads.remove(sessionId) }
+        do {
+            let result = try await connection.sessionActivity(
+                sessionId: sessionId,
+                maxEntries: Self.activityOlderEntries,
+                beforeSeq: cursor,
+                turn: turn,
+            )
+            // Re-read the feed: a poll may have merged a window while this page
+            // was in flight, and the newer tail must not be overwritten.
+            guard var feed = sessionActivity[sessionId], feed.turn == turn else { return false }
+            let grew = feed.prepend(older: result)
+            sessionActivity[sessionId] = feed
+            activityRevision &+= 1
+            return grew
+        } catch {
+            log.add(.request, "activity older page failed for \(sessionId)")
+            return false
         }
     }
 

@@ -434,9 +434,9 @@ private struct TurnActivitySummary: View {
     /// The details for this session, when there are any to show.
     private var entries: [ActivityEntry] {
         // Touch the observable revision before the method read, so the row
-        // re-evaluates when the first activity answer lands.
+        // re-evaluates when a window lands or an older page is prepended.
         _ = model.activityRevision
-        return model.activity(for: sessionId)?.entries ?? []
+        return model.activity(for: sessionId) ?? []
     }
 
     /// Whether the chevron and the detail exist at all.
@@ -463,8 +463,12 @@ private struct TurnActivitySummary: View {
         VStack(alignment: .leading, spacing: 0) {
             row
             if expanded, canExpand {
-                TurnActivityDetail(entries: entries)
-                    .padding(.top, 8)
+                TurnActivityDetail(
+                    entries: entries,
+                    hasOlder: model.activityHasOlder(for: sessionId),
+                    onLoadOlder: { await model.loadOlderActivity(for: sessionId) },
+                )
+                .padding(.top, 8)
                     // In from under the row and up under it again on the way
                     // out: the detail belongs to the row, and leaving should
                     // look like going back where it came from.
