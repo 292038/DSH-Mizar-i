@@ -33,15 +33,32 @@ struct MarkdownMessage: View {
     }
 
     var body: some View {
+        MarkdownBlocksView(blocks: blocks)
+            .textSelection(.enabled)
+            // The whole message, not the rendering of it -- and, for a reveal,
+            // not only the part that has been typed. An answer must be readable
+            // by VoiceOver, and findable by a test, while it is still arriving.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(source)
+    }
+}
+
+/// A message's blocks, drawn.
+///
+/// Kept apart from ``MarkdownMessage`` so the typewriter can draw the same
+/// blocks cut down to what has been typed, frame after frame, without parsing
+/// the Markdown again on every one of them. The parse happens once when the
+/// message arrives; a reveal only moves the boundary.
+struct MarkdownBlocksView: View {
+    let blocks: [MarkdownBlock]
+
+    var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.sm + 2) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 blockView(block)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .textSelection(.enabled)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(source)
     }
 
     // MARK: - Blocks

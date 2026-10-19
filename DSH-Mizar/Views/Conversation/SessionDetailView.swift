@@ -22,6 +22,7 @@ struct SessionDetailView: View {
     @Environment(ShellState.self) private var shell
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var stats: SessionStatsFrame?
     /// The session `stats` was read for.
     ///
@@ -43,6 +44,21 @@ struct SessionDetailView: View {
     @State private var conversationSessionId: String?
     /// The same conversation grouped into turns, when the host gave turn numbers.
     @State private var turns: [ConversationTurn] = []
+
+    /// The newest log position that was already part of this conversation when
+    /// it opened.
+    ///
+    /// The typewriter's gate. An answer is typed only when it arrives while the
+    /// screen is watching, and "arrived while watching" is exactly "its seq is
+    /// past the newest one the first page held". Everything at or below this is
+    /// history, and history appears as history -- instantly.
+    @State private var answerBaseline: Int?
+    /// Answers this screen has already started typing (or chosen not to type).
+    ///
+    /// A lazy row that scrolls out of the stack is destroyed, and the answer it
+    /// held would otherwise be a new arrival again when it comes back. One
+    /// entry per answer, for the life of the screen.
+    @State private var settledAnswerIds: Set<String> = []
     @State private var loadingConversation = true
     /// Whether this appearance has already jumped to the newest message.
     ///
@@ -143,26 +159,7 @@ struct SessionDetailView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    ConversationView(
-                        sessionId: sessionId,
-                        items: shownItems,
-                        turns: shownTurns,
-                        stagedTurn: stagedTurn,
-                        loading: loadingConversation,
-                        failure: shownItems.isEmpty ? model.conversationError : nil,
-                        onLoadOlder: {
-                            let arrived = await model.loadOlder(sessionId: sessionId)
-                            // Re-read what is on screen; the page was folded into
-                            // the cache, and the cache is what the screen draws
-                            // from after a successful fetch.
-                            if let arrived, arrived > 0,
-                               let cached = await model.cachedConversation(for: sessionId) {
-                                items = cached.items
-                                show(turns: cached.turns ?? [])
-                            }
-                            return arrived
-                        },
-                    )
+                    conversation
 
                     // What was just sent, drawn where it will land before the
                     // host has recorded it. Hidden from the accessibility tree:
@@ -366,6 +363,11 @@ struct SessionDetailView: View {
             }
         }
         .task(id: sessionId) {
+            // A different session is a different conversation, and the typewriter
+            // state belongs to the one that was on screen. The first page of the
+            // new one sets a fresh baseline.
+            answerBaseline = nil
+            settledAnswerIds = []
             // A session just started from the home screen arrives with its first
             // prompt already sent: put it where it will land, and watch for the
             // host to record it, exactly as for a send from this screen.
@@ -409,6 +411,37 @@ struct SessionDetailView: View {
             guard !showing else { return }
             Task { await refreshStatsFromCache() }
         }
+    }
+
+    /// The conversation itself.
+    ///
+    /// A property rather than an expression inline in `body`: the view takes
+    /// enough parameters and closures that naming it keeps the body's type
+    /// checker inside its budget.
+    private var conversation: some View {
+        ConversationView(
+            sessionId: sessionId,
+            items: shownItems,
+            turns: shownTurns,
+            stagedTurn: stagedTurn,
+            loading: loadingConversation,
+            failure: shownItems.isEmpty ? model.conversationError : nil,
+            onLoadOlder: {
+                let arrived = await model.loadOlder(sessionId: sessionId)
+                // Re-read what is on screen; the page was folded into the
+                // cache, and the cache is what the screen draws from after a
+                // successful fetch.
+                if let arrived, arrived > 0,
+                   let cached = await model.cachedConversation(for: sessionId) {
+                    noteAnswerBaseline(in: cached.items)
+                    items = cached.items
+                    show(turns: cached.turns ?? [])
+                }
+                return arrived
+            },
+            typingAnswerId: typingAnswerId,
+            onAnswerTypingStarted: noteAnswerTypingStarted,
+        )
     }
 
     /// The dock, the way back to the newest message, and the composer.
@@ -744,6 +777,7 @@ struct SessionDetailView: View {
             let cached = await model.cachedConversation(for: sessionId)
             withMizarAnimation(.mizarSmooth) {
                 if !synced.isEmpty {
+                    noteAnswerBaseline(in: synced)
                     items = synced
                     conversationSessionId = sessionId
                 }
@@ -802,6 +836,7 @@ struct SessionDetailView: View {
         // answer rises into place.
         withMizarAnimation(.mizarSmooth) {
             if !synced.isEmpty {
+                noteAnswerBaseline(in: synced)
                 items = synced
                 conversationSessionId = sessionId
             }
@@ -866,6 +901,74 @@ struct SessionDetailView: View {
         }
         conversationLoads += 1
         return true
+    }
+
+    // MARK: - The typewriter's gate
+
+    /// The answer currently being typed, if any.
+    ///
+    /// Only the newest answer can be typed. When several arrived while the
+    /// screen was elsewhere -- the phone was on another screen, or the app was
+    /// in the background -- they are history the operator missed, and history
+    /// appears at once. The voice they are watching is the one still arriving.
+    ///
+    /// Reduce Motion is the one switch that turns the reveal off entirely: a
+    /// reader who asked for less motion gets the answer, not a slower one.
+    private var typingAnswerId: String? {
+        guard !reduceMotion, let answerBaseline else { return nil }
+        guard let newest = shownItems.last(where: { item in
+            if case .message(_, .assistant, _, _) = item { return true }
+            return false
+        }), let seq = newest.seq, seq > answerBaseline,
+            !settledAnswerIds.contains(newest.id)
+        else { return nil }
+        return newest.id
+    }
+
+    /// Record that an answer's reveal has begun.
+    ///
+    /// Called from the row before its first character. From here on the answer
+    /// is drawn by the typewriter's own state, so a parent redraw cannot restart
+    /// it, and a row rebuilt after scrolling cannot start it again.
+    ///
+    /// - Parameter answerId: the item id of the answer being typed.
+    private func noteAnswerTypingStarted(_ answerId: String) {
+        settledAnswerIds.insert(answerId)
+    }
+
+    /// Establish the baseline from the first page that reached this screen.
+    ///
+    /// Called before the page is assigned to `items`, in the same run-loop turn,
+    /// so the rows built from it already know whether they are history: the
+    /// baseline has to exist before the rows do, or the newest answer would be
+    /// drawn once as history and could never be typed.
+    ///
+    /// - Parameter list: the items about to be drawn.
+    private func noteAnswerBaseline(in list: [ConversationItem]) {
+        guard answerBaseline == nil, !list.isEmpty else { return }
+        let newest = list.compactMap(\.seq).max()
+        guard let newest else { return }
+        if Self.previewTypesNewestAnswer,
+           let answer = list.last(where: { item in
+               if case .message(_, .assistant, _, _) = item { return true }
+               return false
+           })?.seq {
+            // Debug-only preview: type the newest answer when the conversation
+            // opens, so the effect can be watched (and captured) without waiting
+            // for a live turn to finish.
+            answerBaseline = max(0, answer - 1)
+        } else {
+            answerBaseline = newest
+        }
+    }
+
+    /// Whether the Debug launch argument asked for the effect on open.
+    private static var previewTypesNewestAnswer: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains("-mizarTypewriterDemo")
+        #else
+        false
+        #endif
     }
 
     /// The permission preset in force, as the app and the host agree on it.
@@ -1012,6 +1115,7 @@ struct SessionDetailView: View {
         // The phone's own copy first. It is instant, it is there when the
         // network is not, and the fetch below replaces it when it lands.
         if let cached = await model.cachedConversation(for: sessionId), !cached.items.isEmpty {
+            noteAnswerBaseline(in: cached.items)
             items = cached.items
             show(turns: cached.turns ?? [])
             loadingConversation = false
@@ -1046,6 +1150,7 @@ struct SessionDetailView: View {
         // populated screen is what "pull to refresh loses my history" was.
         let fresh = conversationResult
         if !fresh.isEmpty {
+            noteAnswerBaseline(in: fresh)
             items = fresh
             conversationSessionId = sessionId
         }

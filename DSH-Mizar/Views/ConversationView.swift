@@ -53,6 +53,16 @@ struct ConversationView: View {
     /// permanently.
     var onLoadOlder: (() async -> Int?)?
 
+    /// The answer currently being typed, decided by the screen above.
+    ///
+    /// `nil` for every answer that was already part of the conversation when it
+    /// opened. The detail screen owns the decision because it owns the load: it
+    /// knows which page was the conversation's first, which is what makes "this
+    /// answer arrived while the operator was watching" answerable at all.
+    var typingAnswerId: String?
+    /// Called when that answer's reveal begins, before the first character.
+    var onAnswerTypingStarted: (String) -> Void = { _ in }
+
     @State private var loadingOlder = false
     @State private var exhausted = false
     /// Pages fetched automatically since this row came on screen.
@@ -136,8 +146,13 @@ struct ConversationView: View {
                 .transition(.rise)
             } else if turns.isEmpty {
                 ForEach(items) { item in
-                    ConversationRow(item: item, isLastPrompt: false)
-                        .transition(.rise)
+                    ConversationRow(
+                        item: item,
+                        isLastPrompt: false,
+                        typing: item.id == typingAnswerId,
+                        onTypingStarted: { onAnswerTypingStarted(item.id) },
+                    )
+                    .transition(.rise)
                 }
             } else {
                 // One list either way, narrowed to the staged turn while a jump
@@ -145,8 +160,13 @@ struct ConversationView: View {
                 // the row being jumped to is *kept* across the swap rather than
                 // destroyed and built again.
                 ForEach(drawnTurns) { turn in
-                    TurnSection(turn: turn, sessionId: sessionId)
-                        .transition(.rise)
+                    TurnSection(
+                        turn: turn,
+                        sessionId: sessionId,
+                        typingAnswerId: typingAnswerId,
+                        onAnswerTypingStarted: onAnswerTypingStarted,
+                    )
+                    .transition(.rise)
                 }
             }
 
@@ -206,6 +226,10 @@ private struct TurnSection: View {
     let turn: ConversationTurn
     /// The session this turn belongs to, for the paid activity feed.
     let sessionId: String
+    /// The answer currently being typed, when it belongs to this turn.
+    var typingAnswerId: String?
+    /// Called when that answer's reveal begins.
+    var onAnswerTypingStarted: (String) -> Void = { _ in }
     @Environment(TurnIndex.self) private var index
 
     var body: some View {
@@ -222,8 +246,13 @@ private struct TurnSection: View {
             TurnActivitySummary(turn: turn, sessionId: sessionId)
 
             ForEach(turn.steps) { item in
-                ConversationRow(item: item, isLastPrompt: false)
-                    .transition(.rise(distance: 14, blur: 6))
+                ConversationRow(
+                    item: item,
+                    isLastPrompt: false,
+                    typing: item.id == typingAnswerId,
+                    onTypingStarted: { onAnswerTypingStarted(item.id) },
+                )
+                .transition(.rise(distance: 14, blur: 6))
             }
         }
         .animation(.mizarSmooth, value: turn.steps.count)
@@ -526,13 +555,17 @@ private struct ConversationRow: View {
     /// Whether this is the last of the operator's messages before the agent
     /// answers, which is the bubble that carries the tail.
     let isLastPrompt: Bool
+    /// Whether this row's answer should be typed onto the page.
+    var typing: Bool = false
+    /// Called when typing that answer starts.
+    var onTypingStarted: () -> Void = {}
 
     var body: some View {
         switch item {
         case .message(_, .user, let text, _):
             UserBubble(text: text, tail: isLastPrompt)
         case .message(_, .assistant, let text, _):
-            AgentText(text: text)
+            AgentText(text: text, typing: typing, onTypingStarted: onTypingStarted)
         case .message(_, .system, let text, _):
             SystemNote(text: text)
         case .failure(_, let message, let at):
@@ -617,9 +650,13 @@ private struct UserBubble: View {
 /// The agent's answer: the page, not a bubble.
 private struct AgentText: View {
     let text: String
+    /// Whether this answer is being typed onto the page as it arrives.
+    var typing: Bool = false
+    /// Called when that reveal begins.
+    var onTypingStarted: () -> Void = {}
 
     var body: some View {
-        MessageText(text: text)
+        TypewriterMessage(text: text, typing: typing, onStarted: onTypingStarted)
             .font(.body)
             .lineSpacing(4)
             .foregroundStyle(.primary)

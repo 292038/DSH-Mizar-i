@@ -1,0 +1,168 @@
+//
+//  TypewriterMessage.swift
+//  DSH-Mizar
+//
+//  The agent's answer, typed onto the page.
+//
+//  The host sends a turn's answer once, whole. The desktop shows it arriving
+//  token by token while the model writes it, and an answer that appears between
+//  one frame and the next reads as a screen that refreshed rather than as a
+//  model that finished talking. This is the phone's stand-in for that arrival:
+//  ``TypewriterPlan`` decides which character is visible at which moment, and
+//  this view draws the message up to that character, every frame, until the
+//  message is whole.
+//
+//  Three rules make it read as a voice rather than as an effect:
+//
+//    - it draws the *parsed* blocks, cut down, so nothing in the message's
+//      markdown syntax crawls across the screen;
+//    - it never re-types. The reveal is chosen once, when the row first
+//      appears, and the finished state is what every later redraw draws. A
+//      message scrolled away and back is the message, not a re-run;
+//    - it respects Reduce Motion by not existing -- the caller decides, and a
+//      message that would have been typed is simply there.
+//
+//  The accessibility label is the whole answer from the first frame. A reader
+//  using VoiceOver should not have to wait for the clock, and a UI test asking
+//  for "the turn's answer" should find it while it is still arriving.
+//
+
+import SwiftUI
+import MizarKit
+
+/// An answer body that reveals itself character by character when asked to.
+struct TypewriterMessage: View {
+    /// The answer, as the host sent it.
+    let text: String
+    /// Whether this appearance of the answer should be typed.
+    ///
+    /// Decided once by the conversation screen, and only ever `true` for an
+    /// answer that arrived while the screen was watching. A message that was
+    /// already part of the conversation is never typed again.
+    let typing: Bool
+    /// Called when the reveal begins, before the first character.
+    ///
+    /// The conversation screen records the answer as seen here, so a row that
+    /// scrolls out of the lazy stack mid-reveal cannot come back and start the
+    /// reveal over.
+    var onStarted: () -> Void = {}
+
+    /// The message's blocks, parsed once. Empty for a body that is not Markdown.
+    @State private var blocks: [MarkdownBlock]
+    /// Whether the body is Markdown, and therefore has blocks to cut down.
+    @State private var isMarkdown: Bool
+    /// The schedule for this message. Deterministic, so a redraw types the same
+    /// way; built once, in the initializer.
+    @State private var plan: TypewriterPlan
+    /// How many characters are visible right now.
+    @State private var revealed: Int
+    /// Whether the reveal is still running. Also the "draw only part" branch.
+    @State private var running: Bool
+
+    init(text: String, typing: Bool, onStarted: @escaping () -> Void = {}) {
+        self.text = text
+        self.typing = typing
+        self.onStarted = onStarted
+        let markdown = MessageMarkdown.looksLikeMarkdown(text)
+        let parsed = markdown ? MarkdownBlocks.parse(text) : []
+        // The plan paces the characters the reveal actually counts: for a
+        // Markdown body that is the text inside its blocks, without markers,
+        // pipes or fences. See `MarkdownReveal`.
+        let visible = markdown ? MarkdownReveal.plainText(parsed) : text
+        // The schedule only matters for a reveal. A message that is drawn
+        // instantly -- all of history, every redraw of it -- must not pay for a
+        // per-character table it will never read; a long answer's table is
+        // thousands of entries, rebuilt on every redraw of its row.
+        let plan = typing ? TypewriterPlan(text: visible) : TypewriterPlan(text: "")
+        _blocks = State(initialValue: parsed)
+        _isMarkdown = State(initialValue: markdown)
+        _plan = State(initialValue: plan)
+        _revealed = State(initialValue: 0)
+        _running = State(initialValue: typing)
+    }
+
+    var body: some View {
+        Group {
+            if running {
+                revealing
+            } else {
+                whole
+            }
+        }
+        .task {
+            // A task on the view, not a timer: it starts when the row appears,
+            // ends when the message is whole or the row goes away, and it is
+            // cancelled with the view. `.task` runs once per appearance, so a
+            // redraw of the parent cannot restart a reveal.
+            await reveal()
+        }
+    }
+
+    // MARK: - Drawing
+
+    /// The message with only the typed part drawn.
+    @ViewBuilder private var revealing: some View {
+        if isMarkdown {
+            MarkdownBlocksView(blocks: MarkdownReveal.blocks(blocks, visibleCharacters: revealed))
+                .textSelection(.enabled)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(text)
+                .accessibilityIdentifier("conversation.answer.typing")
+        } else {
+            Text(String(text.prefix(revealed)))
+                .textSelection(.enabled)
+                .accessibilityLabel(text)
+                .accessibilityIdentifier("conversation.answer.typing")
+        }
+    }
+
+    /// The finished message, drawn from the blocks already parsed above.
+    ///
+    /// Not `MarkdownMessage(text)`: that would parse the Markdown a second time
+    /// for the same frame, and this view already holds the parse.
+    @ViewBuilder private var whole: some View {
+        if isMarkdown {
+            MarkdownBlocksView(blocks: blocks)
+                .textSelection(.enabled)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(text)
+        } else {
+            Text(text)
+                .textSelection(.enabled)
+                .accessibilityLabel(text)
+        }
+    }
+
+    // MARK: - The reveal
+
+    /// Type the message, one frame at a time, until it is whole.
+    ///
+    /// The character count is read off the message's clock rather than counted
+    /// up: a tick that arrives late does not make the reveal lag behind, it
+    /// catches up on the next frame, and the schedule stays the schedule. The
+    /// loop stops on the frame the last character appears, then hands the row
+    /// over to the finished drawing.
+    private func reveal() async {
+        guard running else { return }
+        onStarted()
+        let clock = ContinuousClock()
+        let start = clock.now
+        var last = -1
+        while !Task.isCancelled {
+            let elapsed = clock.now - start
+            let count = plan.revealedCount(after: elapsed)
+            if count != last {
+                revealed = count
+                last = count
+            }
+            if plan.isFinished(after: elapsed) { break }
+            // Fourteen milliseconds: sixty-ish frames a second, and no more
+            // precision than a phone display can show. The count is derived
+            // from elapsed time, so a missed tick costs nothing but a redraw.
+            try? await Task.sleep(for: .milliseconds(14))
+        }
+        guard !Task.isCancelled else { return }
+        revealed = plan.totalCharacters
+        running = false
+    }
+}
