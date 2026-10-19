@@ -336,7 +336,6 @@ struct AccountScreen: View {
             }
             .pickerStyle(.segmented)
             .accessibilityIdentifier("account.mode")
-            .listRowBackground(Color.clear)
 
             if mode == .login {
                 TextField("Username or email", text: $identifier)
@@ -394,6 +393,7 @@ struct AccountScreen: View {
                 }
             }
             .disabled(!canSubmit || model.account.working)
+            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
             .accessibilityIdentifier("account.submit")
 
             AppleSignInView { failure in appleFailure = failure }
@@ -514,6 +514,12 @@ struct AccountScreen: View {
                 }
             }
             .disabled(!model.subscription.canPurchase || model.subscription.phase == .purchasing)
+            // The label is a full-width HStack with the title centred between
+            // Spacers, so without this the separator starts at the text rather
+            // than the card's edge and the divider under the row is only
+            // half-width. Pin it to the leading edge, as the sign-in form's
+            // submit button does.
+            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
             .accessibilityIdentifier("account.subscription.cta")
 
             Button {
@@ -522,6 +528,10 @@ struct AccountScreen: View {
                 Label("Restore purchases", systemImage: "arrow.clockwise")
             }
             .disabled(model.subscription.phase == .purchasing || model.subscription.phase == .pending)
+            // A Label's text starts after its icon, so the default separator
+            // would be inset to the text; pin both subscription buttons to the
+            // card's leading edge like the CTA above.
+            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
             .accessibilityIdentifier("account.subscription.restore")
 
             Button {
@@ -529,6 +539,7 @@ struct AccountScreen: View {
             } label: {
                 Label("Manage subscription", systemImage: "arrow.up.right.square")
             }
+            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
             .accessibilityIdentifier("account.subscription.manage")
 
             if let notice = model.subscription.notice {
