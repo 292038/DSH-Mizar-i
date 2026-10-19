@@ -104,13 +104,22 @@ struct ConnectionPanel: View {
         return String(localized: "Offline")
     }
 
+    /// How the phone is reaching the computer, in the operator's terms.
+    ///
+    /// A relay's own address is not something anybody can act on -- it is a
+    /// string of a hostname -- so a relayed link says which tier of the relay is
+    /// carrying it instead: the free one, or the high-bandwidth one a paid
+    /// account is entitled to. A direct link keeps its address, because there
+    /// the address *is* the answer: it is the computer on this network.
     private var route: String {
         guard model.isConnected else {
             return model.hasStoredIndex ? String(localized: "Showing saved history") : String(localized: "Not reachable")
         }
         switch model.activeEndpoint {
-        case .relay(let base):
-            return String(format: String(localized: "Relay · %@"), URL(string: base)?.host() ?? base)
+        case .relay:
+            return model.account.isPaid
+                ? String(localized: "High-bandwidth server")
+                : String(localized: "Free-tier server")
         case .direct(let authority):
             return String(format: String(localized: "Direct · %@"), authority)
         case nil:

@@ -263,6 +263,64 @@ struct ModelPickerView: View {
     }
 }
 
+// MARK: - What a preset is called
+
+extension PermissionOption {
+    /// The preset's name, in the operator's language.
+    ///
+    /// The host names its presets after their wire values -- `read-only`,
+    /// `workspace-write`, `danger-full-access`, `auto` -- which are identifiers,
+    /// not words, and they reached the screen as they were. The four DSH ships
+    /// with are translated here by value; a preset a later host invents falls
+    /// back to whatever that host called it, which is the only name anybody has
+    /// for it.
+    var title: String {
+        Self.title(for: value) ?? name
+    }
+
+    /// What the preset allows, in one line.
+    ///
+    /// The host's own sentence when this app has never heard of the preset, and
+    /// nothing at all when the host sent none.
+    var detail: String? {
+        Self.detail(for: value) ?? description
+    }
+
+    /// The name for a preset value, or `nil` for one this app does not know.
+    ///
+    /// - Parameter value: the preset id, as the host sends it.
+    /// - Returns: the name to show, or `nil`.
+    static func title(for value: String) -> String? {
+        switch value {
+        case "read-only": String(localized: "Read only")
+        case "workspace-write": String(localized: "Workspace write")
+        case "danger-full-access": String(localized: "Full access")
+        case "auto": String(localized: "Auto approve")
+        default: nil
+        }
+    }
+
+    /// The description for a preset value, or `nil` for one this app does not
+    /// know.
+    ///
+    /// - Parameter value: the preset id, as the host sends it.
+    /// - Returns: the sentence to show under the name, or `nil`.
+    static func detail(for value: String) -> String? {
+        switch value {
+        case "read-only":
+            String(localized: "Can look at the workspace, but cannot change it.")
+        case "workspace-write":
+            String(localized: "Can change files inside the workspace.")
+        case "danger-full-access":
+            String(localized: "Can run commands and change files anywhere on this computer.")
+        case "auto":
+            String(localized: "Reviews and approves its own steps, and asks only when a decision needs you.")
+        default:
+            nil
+        }
+    }
+}
+
 /// Permission presets.
 struct PermissionPickerView: View {
     let sessionId: String
@@ -366,7 +424,9 @@ struct PermissionPickerView: View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(option.name)
+                    // The name in the operator's language, not the host's
+                    // identifier for it. See ``PermissionOption/title``.
+                    Text(option.title)
                         .font(.body.weight(option.value == (applied ?? current) ? .semibold : .regular))
                     if option.isDangerous {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -374,7 +434,7 @@ struct PermissionPickerView: View {
                             .font(.caption)
                     }
                 }
-                if let description = option.description {
+                if let description = option.detail {
                     Text(description)
                         .font(.caption)
                         .foregroundStyle(.secondary)

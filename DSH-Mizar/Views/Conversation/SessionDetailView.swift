@@ -856,14 +856,18 @@ struct SessionDetailView: View {
     }
 
     /// The permission preset, as a word rather than a raw value.
+    ///
+    /// Through the catalogue's own rows when the host has listed this preset,
+    /// so the bar and the picker behind it cannot disagree -- and through the
+    /// app's own names when the catalogue has not been read yet, which is the
+    /// case on the first frame of a session. A preset nobody has a name for
+    /// reads as its value, which is what the host called it.
     private var permissionLabel: String {
         guard let preset = shownStats?.permissionPreset else { return String(localized: "Permissions") }
-        switch preset {
-        case "read-only": return String(localized: "Read only")
-        case "workspace-write": return String(localized: "Workspace write")
-        case "danger-full-access": return String(localized: "Full access")
-        default: return preset
+        if let option = model.permissionCatalog?.options.first(where: { $0.value == preset }) {
+            return option.title
         }
+        return PermissionOption.title(for: preset) ?? preset
     }
 
     /// The shield, shaped by how much the session may do.

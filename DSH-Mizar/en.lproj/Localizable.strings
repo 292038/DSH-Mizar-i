@@ -43,6 +43,16 @@
 "The turn ended without a response" = "The turn ended without a response";
 "system" = "system";
 
+/* Permissions */
+"Read only" = "Read only";
+"Workspace write" = "Workspace write";
+"Full access" = "Full access";
+"Auto approve" = "Auto approve";
+"Can look at the workspace, but cannot change it." = "Can look at the workspace, but cannot change it.";
+"Can change files inside the workspace." = "Can change files inside the workspace.";
+"Can run commands and change files anywhere on this computer." = "Can run commands and change files anywhere on this computer.";
+"Reviews and approves its own steps, and asks only when a decision needs you." = "Reviews and approves its own steps, and asks only when a decision needs you.";
+
 /* Usage */
 "Tokens" = "Tokens";
 "Input (new)" = "Input (new)";
@@ -244,7 +254,8 @@
 "Computers" = "Computers";
 "Connection, %@" = "Connection, %@";
 "Direct · %@" = "Direct · %@";
-"Relay · %@" = "Relay · %@";
+"Free-tier server" = "Free-tier server";
+"High-bandwidth server" = "High-bandwidth server";
 "Each prompt you send starts one, and it is listed here." = "Each prompt you send starts one, and it is listed here.";
 "Every %lld s · first read soon" = "Every %lld s · first read soon";
 "Every %lld s · next read in %lld s" = "Every %1$lld s · next read in %2$lld s";

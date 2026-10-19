@@ -44,6 +44,16 @@
 "The turn ended without a response" = "本轮没有产生回复";
 "system" = "系统";
 
+/* Permissions */
+"Read only" = "只读";
+"Workspace write" = "工作区写入";
+"Full access" = "完全访问";
+"Auto approve" = "自动审批";
+"Can look at the workspace, but cannot change it." = "可以查看工作区，但不能做任何修改。";
+"Can change files inside the workspace." = "可以修改工作区内的文件。";
+"Can run commands and change files anywhere on this computer." = "可以在这台电脑的任何位置运行命令、修改文件。";
+"Reviews and approves its own steps, and asks only when a decision needs you." = "自行审查并批准执行步骤，只在需要你决定时才询问。";
+
 /* Usage */
 "Tokens" = "Token";
 "Input (new)" = "输入（新增）";
@@ -244,7 +254,8 @@
 "Computers" = "电脑";
 "Connection, %@" = "连接，%@";
 "Direct · %@" = "直连 · %@";
-"Relay · %@" = "中继 · %@";
+"Free-tier server" = "免费版服务器";
+"High-bandwidth server" = "高带宽服务器";
 "Each prompt you send starts one, and it is listed here." = "你发出的每条消息都会开始新的一轮，并列在这里。";
 "Every %lld s · first read soon" = "每 %lld 秒一次 · 马上开始第一次读取";
 "Every %lld s · next read in %lld s" = "每 %1$lld 秒一次 · %2$lld 秒后再读";
