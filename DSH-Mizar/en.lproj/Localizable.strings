@@ -424,3 +424,8 @@
 "Show turn details" = "Show turn details";
 "Hide turn details" = "Hide turn details";
 "Scroll up for earlier details" = "Scroll up for earlier details";
+
+/* Transfer settings */
+"Transfer" = "Transfer";
+"Local network first" = "Local network first";
+"When on, every reconnect first looks for the computer on your local network and falls back to the relay when it is not there. When off, the scan is skipped and reconnecting goes straight to the saved route, which is faster." = "When on, every reconnect first looks for the computer on your local network and falls back to the relay when it is not there. When off, the scan is skipped and reconnecting goes straight to the saved route, which is faster.";

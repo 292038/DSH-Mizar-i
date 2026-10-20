@@ -207,7 +207,7 @@ private struct UnreachableView: View {
                     // because a refresh that fails calls back into `reconnect`
                     // and doing that while the reconnect flag is held deadlocked
                     // the app.
-                    if await model.reconnect(patient: true) {
+                    if await model.reconnectFromUser() {
                         await model.refreshSessions()
                     }
                 }

@@ -1455,6 +1455,21 @@ final class AppModel {
         // fact this close carries is that the local network is gone; the direct
         // address is still in the plan behind it, for a Wi-Fi blip.
         guard activeEndpoint?.isLocalNetwork == true, appIsActive, !reconnecting else { return }
+        if settings.values.localNetworkFirst {
+            // The operator asked to look for the computer on their own network
+            // before giving up on it. On a phone that changed Wi-Fi networks
+            // the stored address is often dead but the *new* one answers, and
+            // this is the one automatic reconnect that can still find it.
+            log.add(.connection, "the local link closed; asking the local network before the relay")
+            Task { [weak self] in
+                guard let self else { return }
+                let switched = await self.scanForLocalNetwork()
+                if !switched, !(await self.reconnect(preferringRelay: true)) { return }
+                await self.refreshSessions(reconnectingIfNeeded: false)
+                await self.refreshInteractions()
+            }
+            return
+        }
         log.add(.connection, "the local link closed; failing over to the relay")
         Task { [weak self] in
             guard let self else { return }
@@ -2362,8 +2377,9 @@ final class AppModel {
     /// when it finds nothing -- the read it precedes is the answer the operator
     /// actually asked for.
     func manualRefresh() async {
+        let askedTheLAN = settings.values.localNetworkFirst
         let switched = await scanForLocalNetwork()
-        if !switched, connection == nil, activeEndpoint?.isLocalNetwork == true {
+        if askedTheLAN, !switched, connection == nil, activeEndpoint?.isLocalNetwork == true {
             // The scan just probed the local address and it did not answer, and
             // there is no socket to refresh. Dial the relay first rather than
             // making the refresh below spend another direct timeout on the
@@ -2371,6 +2387,25 @@ final class AppModel {
             _ = await reconnect(preferringRelay: true)
         }
         await refreshSessions()
+    }
+
+    /// Reconnect because the operator asked for it.
+    ///
+    /// The same route policy as a refresh: with local-network priority on, the
+    /// LAN question is asked first, and a hit *is* the reconnect -- the scan
+    /// dials the address it found. With it off, the button dials the stored
+    /// routes straight away, which is the fast path the transfer setting is
+    /// for.
+    ///
+    /// - Parameter patient: whether to keep trying long enough to outlast a
+    ///   phone that has lost its network.
+    /// - Returns: whether a connection is now open.
+    @discardableResult
+    func reconnectFromUser(patient: Bool = true) async -> Bool {
+        if settings.values.localNetworkFirst, await scanForLocalNetwork() {
+            return true
+        }
+        return await reconnect(patient: patient)
     }
 
     /// The app came back from the background.
@@ -2413,6 +2448,15 @@ final class AppModel {
     ///   over it.
     @discardableResult
     func scanForLocalNetwork() async -> Bool {
+        // The transfer switch is the budget decision. With LAN priority off
+        // there is no question to ask, and asking it would add a probe timeout
+        // to every reconnect for an answer the operator said they would rather
+        // not wait for. The one log line stays so the diagnosis can tell "the
+        // operator turned it off" from "the scan ran and found nothing".
+        guard settings.values.localNetworkFirst else {
+            log.add(.connection, "LAN scan: skipped (local network priority is off)")
+            return false
+        }
         guard let host else { return false }
         if connection != nil, activeEndpoint?.isLocalNetwork == true {
             log.add(.connection, "LAN scan: already on the local network")

@@ -274,17 +274,40 @@ public struct MizarSettings: Equatable, Sendable, Codable {
     /// Which pushes to show.
     public var notifications: NotificationPreferences
 
-    /// Everything at its default: notifications on, live activity on.
+    /// Whether reconnecting should look for the computer on the local network
+    /// before settling for the relay. 局域网优先.
+    ///
+    /// Off by default, and off is the fast path the report asked for: a
+    /// reconnect goes straight to the stored routes instead of probing the
+    /// local address first, so a phone that is on cellular -- or whose stored
+    /// LAN address is stale, which is most of them -- is not made to wait for a
+    /// scan that cannot find anything.
+    ///
+    /// On, every reconnect the operator can see asks the LAN question first:
+    /// manual refresh, returning to the app, the Reconnect button, and the
+    /// automatic failover after a local socket dies. A hit switches the pairing
+    /// to the direct address -- which is what unlocks the LAN-only features and
+    /// keeps traffic off the relay -- and a miss falls back to the relay, so
+    /// turning this on can make a reconnect slower but never unable to connect.
+    public var localNetworkFirst: Bool
+
+    /// Everything at its default: notifications on, live activity on, and the
+    /// local network looked for only when the operator asks for it.
     public init(
         liveActivitiesEnabled: Bool = true,
         notifications: NotificationPreferences = .allEnabled,
+        localNetworkFirst: Bool = false,
     ) {
         self.liveActivitiesEnabled = liveActivitiesEnabled
         self.notifications = notifications
+        self.localNetworkFirst = localNetworkFirst
     }
 
     /// The key the live activity switch is stored under.
     public static let liveActivitiesKey = "mizar.settings.liveActivity"
+
+    /// The key the LAN-priority switch is stored under.
+    public static let localNetworkFirstKey = "mizar.settings.localNetworkFirst"
 
     /// The key one notification kind is stored under.
     /// - Parameter kind: the kind.
@@ -316,6 +339,9 @@ public struct MizarSettings: Equatable, Sendable, Codable {
             // operator turned it off.
             liveActivitiesEnabled: storage.bool(forKey: liveActivitiesKey) ?? true,
             notifications: notifications,
+            // Off by default: the scan is a cost the operator opts into, and a
+            // fresh install should reconnect as fast as it can.
+            localNetworkFirst: storage.bool(forKey: localNetworkFirstKey) ?? false,
         )
     }
 
@@ -323,6 +349,7 @@ public struct MizarSettings: Equatable, Sendable, Codable {
     /// - Parameter storage: where to write.
     public func save(to storage: some SettingsStorage) {
         storage.set(liveActivitiesEnabled, forKey: Self.liveActivitiesKey)
+        storage.set(localNetworkFirst, forKey: Self.localNetworkFirstKey)
         for kind in NotificationKind.allCases {
             storage.set(notifications.isEnabled(kind), forKey: Self.notificationsKey(kind))
         }

@@ -40,7 +40,7 @@ struct ConnectionPanel: View {
                             // is also audible on this network is a connection the
                             // operator did not need to pay for, and the scan is
                             // what picks the direct link up.
-                            if await model.reconnect(patient: true) { await model.manualRefresh() }
+                            if await model.reconnectFromUser() { await model.manualRefresh() }
                         }
                     } label: {
                         HStack {

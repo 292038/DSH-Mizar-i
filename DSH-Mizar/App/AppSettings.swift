@@ -61,6 +61,9 @@ final class AppSettings {
     /// Whether the Live Activity may run.
     var liveActivitiesEnabled: Bool { values.liveActivitiesEnabled }
 
+    /// Whether a reconnect should ask the local network before the relay.
+    var localNetworkFirst: Bool { values.localNetworkFirst }
+
     /// Write a change to the log.
     ///
     /// One line per switch that moved, and none for the ones that did not: this
@@ -69,6 +72,12 @@ final class AppSettings {
     private func note(changeFrom old: MizarSettings) {
         if old.liveActivitiesEnabled != values.liveActivitiesEnabled {
             ActivityLog.shared.add(.settings, "live activity \(values.liveActivitiesEnabled ? "on" : "off")")
+        }
+        if old.localNetworkFirst != values.localNetworkFirst {
+            ActivityLog.shared.add(
+                .settings,
+                "local network first \(values.localNetworkFirst ? "on" : "off")",
+            )
         }
         for kind in NotificationKind.allCases
         where old.notifications.isEnabled(kind) != values.notifications.isEnabled(kind) {

@@ -49,6 +49,7 @@ struct SettingsView: View {
                 accountSection
                 notificationsSection
                 liveActivitySection
+                transferSection
                 feelSection
                 logsSection
                 aboutSection
@@ -263,6 +264,34 @@ struct SettingsView: View {
             Text(
                 String(
                     localized: "Shows a running turn on the Lock Screen. Switching it off takes an activity that is up down with it and stops a new one from starting; it does not touch the conversation.",
+                ),
+            )
+        }
+    }
+
+    // MARK: - 传输
+
+    /// How a reconnect chooses its route.
+    ///
+    /// Off is the fast path: no probe, straight to the stored route. On asks
+    /// the local network first and falls back to the relay, which is slower per
+    /// reconnect and is what makes a phone that is back on the same Wi-Fi take
+    /// the direct route (and its free LAN features) again.
+    private var transferSection: some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { model.settings.values.localNetworkFirst },
+                set: { model.settings.values.localNetworkFirst = $0 },
+            )) {
+                Label("Local network first", systemImage: "wifi")
+            }
+            .accessibilityIdentifier("settings.transfer.lanPriority")
+        } header: {
+            Text("Transfer")
+        } footer: {
+            Text(
+                String(
+                    localized: "When on, every reconnect first looks for the computer on your local network and falls back to the relay when it is not there. When off, the scan is skipped and reconnecting goes straight to the saved route, which is faster.",
                 ),
             )
         }

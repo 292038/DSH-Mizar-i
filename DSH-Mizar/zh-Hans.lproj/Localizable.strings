@@ -424,3 +424,8 @@
 "Show turn details" = "展开轮次详情";
 "Hide turn details" = "收起轮次详情";
 "Scroll up for earlier details" = "继续上滑加载更早的细节";
+
+/* Transfer settings */
+"Transfer" = "传输";
+"Local network first" = "局域网优先";
+"When on, every reconnect first looks for the computer on your local network and falls back to the relay when it is not there. When off, the scan is skipped and reconnecting goes straight to the saved route, which is faster." = "打开后，每次重连都会先在你的局域网里寻找电脑，找不到再回退到中继；关闭后跳过局域网扫描，直接使用已保存的通道重连，速度更快。";
