@@ -3868,10 +3868,21 @@ final class AppModel {
         // network and is metered by nobody, so it carries none: sending an
         // account hash to a host that does not need it would be a credential
         // derivative leaving the phone for no reason.
+        //
+        // The paid relay is the one host that also needs proof: it refuses to
+        // carry a session unless the account behind it is paying, and only the
+        // token can answer that. So the token goes there and nowhere else — a
+        // free relay would have nothing to verify it against.
         let relayHeaders: [String: String]
         switch endpoint {
-        case .direct: relayHeaders = [:]
-        case .relay: relayHeaders = account.identity.headers
+        case .direct:
+            relayHeaders = [:]
+        case .relay(let baseURL):
+            var headers = account.identity.headers
+            if AccountClient.isAccountHost(baseURL) {
+                headers.merge(account.identity.sessionHeaders) { _, new in new }
+            }
+            relayHeaders = headers
         }
 
         let configuration: MizarConnection.Configuration

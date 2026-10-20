@@ -17,7 +17,13 @@
 //  client id is not a secret either, for the same reason — it names an install,
 //  and the relay never treats it as proof of anything.
 //
-//  Both headers are stripped from the request before it is replayed upstream and
+//  The paid relay is the exception, and it is a narrow one: it has to know
+//  whether the account is paying, and only the token can answer that. So a third
+//  header — `x-mizar-session`, built by ``sessionHeaders`` — goes to that host
+//  and no other. It is stripped by the relay before replay, exactly like the
+//  other two, so the computer still never sees any of them.
+//
+//  All three are stripped from the request before it is replayed upstream and
 //  from the WebSocket upgrade headers, so a host never sees them. This type only
 //  produces them; where they are attached is the connection's business.
 //
@@ -31,6 +37,8 @@ public struct RelayIdentity: Sendable, Equatable {
     public static let clientIdHeader = "x-mizar-client-id"
     /// The header naming the account, as a token hash.
     public static let accountHeader = "x-mizar-account"
+    /// The header carrying the session token itself, for the paid relay's gate.
+    public static let sessionHeader = "x-mizar-session"
 
     /// Shortest client id the relay accepts.
     public static let minimumClientIdLength = 8
@@ -107,6 +115,22 @@ public struct RelayIdentity: Sendable, Equatable {
         return clientId.unicodeScalars.allSatisfy { scalar in
             scalar.isASCII && allowed.contains(scalar)
         }
+    }
+
+    /// The header that proves this phone may use the paid relay.
+    ///
+    /// Separate from ``headers`` on purpose. A hash is enough to bucket traffic,
+    /// but it cannot prove anything: only the token itself can be resolved
+    /// against the account store, and the paid relay refuses to carry a session
+    /// without it. Because it *is* a credential, it is attached only to a relay
+    /// that owns the account store — see `AccountClient.isAccountHost`. Sending
+    /// it to a free relay would hand a token to a host with nothing to verify it.
+    ///
+    /// Empty when signed out, which the paid relay reads as "no account" and
+    /// refuses (or allows, if it was configured to allow unaccounted phones).
+    public var sessionHeaders: [String: String] {
+        guard let accountToken, !accountToken.isEmpty else { return [:] }
+        return [Self.sessionHeader: accountToken]
     }
 
     /// SHA-256 of a token, as the relay computes it.

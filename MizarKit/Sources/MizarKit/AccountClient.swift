@@ -28,6 +28,23 @@ public struct AccountClient: Sendable {
     /// random relay would have a settings screen that never loads.
     public static let productionBaseURL = URL(string: "https://dshmizar-1.shirazu-nagisa.com/account/v1")!
 
+    /// Whether a relay is the host that owns the account store.
+    ///
+    /// This is the rule that decides where the session token may go. The paid
+    /// relay is the account relay, so it is the one host that can verify a
+    /// token; a free relay meters by the token's hash and has no store to check
+    /// anything against, so handing it the token would be handing out a
+    /// credential for no benefit.
+    ///
+    /// - Parameter baseURL: a relay origin, as the pairing or settings hold it.
+    /// - Returns: whether that origin is the account host.
+    public static func isAccountHost(_ baseURL: String) -> Bool {
+        guard let host = URL(string: baseURL)?.host?.lowercased(),
+              let accountHost = productionBaseURL.host?.lowercased()
+        else { return false }
+        return host == accountHost
+    }
+
     /// A network failure.
     ///
     /// Everything throwable from this type is an ``AccountError``; errors from
