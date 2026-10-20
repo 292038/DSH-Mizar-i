@@ -251,3 +251,31 @@ LanPriority 1、LANFailover 1、RunningDetail 1）。注意保留的都是重流
 | 快照套件 | 6 tests / 10 refs | 0.23–0.43 s（另一实例 1.019 s，1 fail） | 22–47 s（安装/启动占大头） |
 | 单测套件（当前 HEAD） | 504 tests / 63 suites | 0.202 s | 2 s（热构建） |
 | HTTP 回放测试 | 9 | ~0.01 s/条 | 随单测套件 |
+
+---
+
+## 9. 2026-10-21 凌晨：P0 + 阶段 2/3/4 执行结果（追加）
+
+数据表、贡献拆解与 token 代理：`docs/test-loop-metrics.md`；一页操作约定：`docs/test-loop-playbook.md`。
+本轮提交落在 feature/local-kernel 分支（从 main@`d1664e6` 切出，随分支回 main），与 LocalKernel WIP 无文件交集。
+
+- **P0 impact map**（`d1664e6`，main）：80/80 行；29 条 PASS 行映射 27 个 View 文件；dry-run 抽查
+  SettingsView→9、TurnIndex→29、RedeemInviteView→1；生成 69 min（`Mizar Runs` 独占）。生成器加了守卫：
+  merge 只信任 PASS 行覆盖（防部分覆盖漏测）。已知局限：51 行非 PASS（套件顺序依赖 + 长会话隔离退化），
+  相关文件按零漏测默认回退全量；后续项＝按类录制覆盖率（v2）。
+- **快照基准**（`b929e65`）：ComposerControls-labelled 于规范设备重录（实测 9.32%→0，套件回绿）。
+- **首批下推**（`ff82c1a`/`d4585ab`/`54a352b`/`296599e`）：#4、#1 全量下推（XCTSkip 占位）；
+  #2/#3/#5 部分下推（原用例保留，理由见 metrics）；快照套件 15 tests / 23 refs 全绿；
+  harness 新增 `locale:` 参数（zh/en goldens，zh/en 字节差异已验证）。
+- **阶段 3**：AppFlowTests 拆类（`97b08c2`，57→10/14/15/18 + 基类，串行全量验证新类名全部执行）；
+  mock 主端口按类隔离（`9ec559c`+`186fde6`；Account 暂留 19395＝唯一用户实际仍隔离；第二台机因
+  工作区写入守卫暂留共享 19396，受限的一行 env 改法见 metrics，由用户定夺）；`PARALLEL_WORKERS`
+  开关（`391a780`）；pre-merge 门禁（`a50741a`）。@testable 收敛未落地（internal memberwise init
+  依赖 + 两度被并行 WIP 编译破坏打断 + 工作区改动被并行会话清除，详见 metrics）。
+- **改造后串行全量**：80 条执行 **1756.2 s**（基线 1806.6 s），74 pass / 1 fail（＝既有
+  LANFailover 环境失败）/ 5 skip，零回归。
+- **并行实测受阻**：两次尝试均在 clone 阶段 wedge（零 clone/零输出，详见 metrics），未取得并行数据；
+  重试命令已写入 metrics，待环境恢复后补测。
+- **环境副作用**：6 个孤儿 mock-host 进程仍在（无害，下次运行按端口复用）；`Mizar Runs` 保持 Booted。
+  两处 fixture 口令字面量触发工作区写入守卫（mock-host.mjs / AccountUITests），对应编辑未落盘、
+  改由本报告与 metrics 说明，是否放行由用户定夺。
