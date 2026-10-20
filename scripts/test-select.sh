@@ -168,17 +168,20 @@ elif [ "$mode" = "full" ] || [ "$mode" = "selected" ]; then
     bash scripts/ios.sh test "$SIMULATOR" "${args[@]}" >"$ui_log" 2>&1 || true
   fi
   ui_wall="$(elapsed "$ui_begin")"
-  if [ -d "$rb" ] && [ -f "$rb/database.sqlite3" ]; then
-    IFS="|" read -r ui_total ui_passed ui_failed ui_skipped <<<"$(sqlite3 "file:$PWD/$rb/database.sqlite3?mode=ro" \
-      "SELECT COUNT(*), COALESCE(SUM(result='Success'),0), COALESCE(SUM(result='Failure'),0),
-              COALESCE(SUM(result='Skipped'),0) FROM TestCaseRuns;" 2>/dev/null || echo "0 0 0 0")"
+  # Xcode 27 writes result bundles without the database.sqlite3 the old
+  # xcresulttool could read, so ask the supported CLI for the counts.
+  if [ -d "$rb" ]; then
+    summary="$(xcrun xcresulttool get test-results summary --path "$rb" --compact 2>/dev/null || true)"
+    ui_total="$(printf '%s' "$summary" | jq -r '.totalTestCount // 0' 2>/dev/null || echo 0)"
+    ui_passed="$(printf '%s' "$summary" | jq -r '.passedTests // 0' 2>/dev/null || echo 0)"
+    ui_failed="$(printf '%s' "$summary" | jq -r '.failedTests // 0' 2>/dev/null || echo 0)"
+    ui_skipped="$(printf '%s' "$summary" | jq -r '.skippedTests // 0' 2>/dev/null || echo 0)"
     if [ "${ui_failed:-1}" = "0" ] && [ "${ui_total:-0}" -gt 0 ]; then
       ui_verdict="PASS"
     else
       ui_verdict="FAIL"
-      sqlite3 "file:$PWD/$rb/database.sqlite3?mode=ro" \
-        "SELECT c.name, r.result FROM TestCaseRuns r JOIN TestCases c ON c.rowid=r.testCase_fk
-         WHERE r.result != 'Success' ORDER BY c.name LIMIT 10;" 2>/dev/null || true
+      xcrun xcresulttool get test-results tests --path "$rb" --compact 2>/dev/null \
+        | jq -r '.. | objects | select(.result? == "Failed") | "  failed: " + .nodeIdentifier' 2>/dev/null | head -10 || true
     fi
   else
     ui_verdict="FAIL"
