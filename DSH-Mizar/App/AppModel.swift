@@ -1417,6 +1417,22 @@ final class AppModel {
         guard connection === closed else { return }
         connection = nil
         log.add(.connection, "the socket closed; the next read reconnects")
+
+        // A socket that dies on the operator's own network is the one close
+        // that cannot be left to the next read. Waiting for one would ask the
+        // lost address again and again -- the reported bug: the phone sat in a
+        // reconnect loop on the LAN it had left while the relay in the same
+        // pairing was never tried. The relay goes first here because the one
+        // fact this close carries is that the local network is gone; the direct
+        // address is still in the plan behind it, for a Wi-Fi blip.
+        guard activeEndpoint?.isLocalNetwork == true, appIsActive, !reconnecting else { return }
+        log.add(.connection, "the local link closed; failing over to the relay")
+        Task { [weak self] in
+            guard let self else { return }
+            guard await self.reconnect(preferringRelay: true) else { return }
+            await self.refreshSessions(reconnectingIfNeeded: false)
+            await self.refreshInteractions()
+        }
     }
 
     /// Write down that the host pushed something.
@@ -2302,7 +2318,14 @@ final class AppModel {
     /// when it finds nothing -- the read it precedes is the answer the operator
     /// actually asked for.
     func manualRefresh() async {
-        await scanForLocalNetwork()
+        let switched = await scanForLocalNetwork()
+        if !switched, connection == nil, activeEndpoint?.isLocalNetwork == true {
+            // The scan just probed the local address and it did not answer, and
+            // there is no socket to refresh. Dial the relay first rather than
+            // making the refresh below spend another direct timeout on the
+            // address the scan has already ruled out.
+            _ = await reconnect(preferringRelay: true)
+        }
         await refreshSessions()
     }
 
@@ -2425,7 +2448,11 @@ final class AppModel {
         try? await credentials.save(moved)
         activeEndpoint = .direct(authority: authority)
         log.add(.connection, "LAN scan: dialling \(authority)")
-        if await reconnect() {
+        // Exactly this address: a fallback that landed on the relay would be
+        // reported as "switched to the local network" while the phone was on
+        // the relay, and the stored credential would have been rewritten to an
+        // address that does not actually work.
+        if await reconnect(over: .direct(authority: authority)) {
             log.add(.connection, "LAN scan: switched to the local network at \(authority)")
             return true
         }
@@ -2434,7 +2461,7 @@ final class AppModel {
         if let index = hosts.firstIndex(where: { $0.hostId == host.hostId }) { hosts[index] = host }
         try? await credentials.save(host)
         activeEndpoint = previousEndpoint
-        if previousEndpoint != nil { _ = await reconnect() }
+        if let previousEndpoint { _ = await reconnect(over: previousEndpoint) }
         return false
     }
 
@@ -2696,18 +2723,34 @@ final class AppModel {
     /// from the phone that prompted this reads `-1009`, "not connected to the
     /// internet" -- no number of sub-second retries outlasts that.
     ///
+    /// The route that was working comes first and the rest of the pairing
+    /// follows it: a dropped request is asking to rebuild that socket, and a
+    /// route that has actually gone away must fall through to the other one
+    /// *inside this reconnect* rather than being retried until the next read.
+    /// That fall-through is the fix for the reported bug -- a phone connected
+    /// over the LAN kept dialling the lost local address while the relay in the
+    /// same pairing was never tried.
+    ///
     /// - Parameters:
     ///   - patient: whether to keep trying long enough to outlast a
     ///     phone that has lost its network.
-    ///   - tryingEveryRoute: whether to try every route the pairing knows
-    ///     instead of only the one that worked last. A foreground return uses
-    ///     this: the route that worked before the app went to sleep may be the
-    ///     one the phone has since walked away from, and the relay is exactly
-    ///     the fallback for that. An ordinary request retry does not, because
-    ///     its whole purpose is to recover the socket it was using.
+    ///   - tryingEveryRoute: whether to start from the pairing's own order
+    ///     instead of the route that worked last. A foreground return uses
+    ///     this: the network may have changed while the app slept.
+    ///   - preferringRelay: whether to put the relay in front. A local link
+    ///     that has just died uses this -- the one thing that failure says is
+    ///     that the network carrying it is gone.
+    ///   - exactRoute: dial exactly this route, no fallback. A LAN scan that is
+    ///     moving the pairing to a new address needs to know whether *that*
+    ///     address works, not whether some other route does.
     /// - Returns: whether a connection is now open.
     @discardableResult
-    func reconnect(patient: Bool = false, tryingEveryRoute: Bool = false) async -> Bool {
+    func reconnect(
+        patient: Bool = false,
+        tryingEveryRoute: Bool = false,
+        preferringRelay: Bool = false,
+        over exactRoute: PairedHost.Endpoint? = nil,
+    ) async -> Bool {
         guard let host else { return connection != nil }
         if reconnecting {
             // Someone else is already bringing the socket back; wait for them.
@@ -2759,31 +2802,31 @@ final class AppModel {
         await connection?.disconnect()
         connection = nil
 
-        // Which routes to dial, in order. The ordinary path is one route: the
-        // one that was working, because that is the one a dropped request is
-        // asking to rebuild. The foreground path asks for all of them -- the
-        // address that worked an hour ago may be a network the phone has left.
+        // Which routes to dial, in order, and how many attempts they get. Both
+        // decisions live in `ReconnectPlan` so they are tested without a socket:
+        // the last working route first, every other route behind it, and -- when
+        // a local link has just died -- the relay first, because the network the
+        // local address lives on is the thing that broke.
         let routes: [PairedHost.Endpoint]
-        if tryingEveryRoute, !host.endpoints.isEmpty {
-            routes = host.endpoints
-        } else if let activeEndpoint {
-            routes = [activeEndpoint]
+        if let exactRoute {
+            routes = [exactRoute]
         } else {
-            routes = Array(host.endpoints.prefix(1))
+            routes = ReconnectPlan.routes(
+                endpoints: host.endpoints,
+                active: activeEndpoint,
+                tryingEveryRoute: tryingEveryRoute,
+                preferringRelay: preferringRelay,
+            )
         }
         guard !routes.isEmpty else {
             log.add(.connection, "reconnect: this pairing has no route to dial")
             return false
         }
-        // A patient reconnect keeps trying for as long as the operator is
-        // watching; an ordinary one gets three attempts. Trying every route
-        // gets one attempt per route and, where there is only one route, one
-        // more -- the moment a backgrounded app becomes active is often before
-        // the network has finished coming back, and a single failed dial there
-        // leaves the phone on "Offline" for a return that had a real chance.
-        // Two failed routes are already two timeouts, so no route gets a third
-        // attempt.
-        let attempts = patient ? 8 : (tryingEveryRoute ? max(routes.count, 2) : 3)
+        let attempts = ReconnectPlan.attempts(routeCount: routes.count, patient: patient)
+        log.add(
+            .connection,
+            "routes: " + routes.map(Self.routeName).joined(separator: " -> "),
+        )
         for attempt in 0..<attempts {
             if attempt > 0 {
                 let pause = patient ? min(4_000, 400 << attempt) : 400 * attempt
@@ -2825,7 +2868,10 @@ final class AppModel {
                 return true
             } catch {
                 let message = Self.describe(error, authority: host.authority ?? host.baseURL)
-                log.add(.connection, "reconnect attempt \(attempt + 1)/\(attempts) failed: \(message)")
+                log.add(
+                    .connection,
+                    "reconnect attempt \(attempt + 1)/\(attempts) over \(Self.routeName(route)) failed: \(message)",
+                )
                 lastError = message.isEmpty ? nil : message
                 // Keep the screen's text current. A retry that fails for a new
                 // reason -- no internet rather than the computer being unreachable --

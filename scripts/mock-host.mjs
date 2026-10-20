@@ -22,6 +22,28 @@ const port = Number(process.argv[2] ?? 19395)
 const CODE = 'MOCK-CODE'
 
 /**
+ * The second listener: a stand-in for the relay, on `port + 2`.
+ *
+ * A real pairing can carry two routes to the same computer: the direct address
+ * (`h=`) and a reverse tunnel's base URL (`u=`), whose path names the room --
+ * `https://relay.example.com/r/ROOM`. The app turns the base into
+ * `wss://relay.example.com/r/ROOM/mizar/v1/ws`. Serving the same path from a
+ * second listener in this process is what makes "the LAN died and the relay is
+ * still reachable" a fixture: one pairing, one device token, one fixture, two
+ * sockets at two addresses.
+ *
+ * `port + 2` keeps the two fixture computers apart -- 19395's relay is 19397 and
+ * 19396's is 19398 -- so a test cannot fail over to the *other* mock's relay.
+ */
+const RELAY_PORT = port + 2
+/** The room this stand-in relay serves. */
+const RELAY_ROOM = 'mock-room'
+/** The path the app dials the computer at, directly. */
+const WS_PATH = '/mizar/v1/ws'
+/** The path the app dials the same computer at, through the relay. */
+const RELAY_WS_PATH = `/r/${RELAY_ROOM}${WS_PATH}`
+
+/**
  * Which machine this instance is pretending to be.
  *
  * A phone that is paired with two computers draws one computer's state under another's
@@ -77,6 +99,24 @@ let answerDelayMs = 0
  * does not take away what the phone already stored.
  */
 let offline = false
+
+/**
+ * Whether the LAN route is down: live sockets dropped, new ones refused.
+ *
+ * A different failure from ``offline``, and the one the reported bug is about.
+ * The phone is connected over the direct address when the operator walks out of
+ * Wi-Fi range: that socket dies, and the address stops answering, while the
+ * relay in the same pairing is still there and would work. The app used to keep
+ * dialling the lost address and never try the relay, so the phone sat in a
+ * reconnect loop.
+ *
+ * `/lan?off=1` destroys every live socket on the main listener and refuses new
+ * WebSocket upgrades on it. Ordinary HTTP stays up on purpose: `/lan?on=1`,
+ * `/reset` and the rest of the control surface are how a test (and the mock's
+ * own operator) gets the fixture back. The relay listener is untouched -- that
+ * is the whole point. `/reset` restores it.
+ */
+let lanOff = false
 
 /**
  * Whether the mock also lists a forked conversation and a delegated child.
@@ -188,8 +228,34 @@ const archivedSessionIds = new Set()
  * A reconnect is invisible from the app's screen -- the data looks the same
  * afterwards -- so the only way to assert that a failure did *not* cost a fresh
  * socket is to count them from the host's side.
+ *
+ * This is the **direct** listener's count: `GET /connections` on the main port.
+ * The relay stand-in keeps its own -- see ``relayConnections`` -- because "the
+ * phone is on the relay now" is the assertion, and one shared counter could not
+ * tell a direct socket from a relayed one.
  */
 let connections = 0
+
+/**
+ * How many WebSocket connections the relay stand-in has accepted since reset.
+ *
+ * Read from the *relay* port's `GET /connections`. Zero means nothing tried the
+ * relay; a number means the app dialled the fallback route, which is exactly the
+ * failover this fixture exists to observe.
+ */
+let relayConnections = 0
+
+/**
+ * How many pairing requests the main listener has answered since the last reset.
+ *
+ * A UI test launches the app with a pairing URI, and whether that launch really
+ * carried it is otherwise invisible: a launch the system performed on its own --
+ * restoring a Live Activity, say -- connects from the stored pairing and looks
+ * exactly like the one the test asked for. The pairing request is the fact that
+ * tells the two apart, so the test can relaunch until it is the one in charge.
+ * Reported on `/loads` as `pairings`.
+ */
+let pairingRequests = 0
 
 /**
  * How many frames the mock has answered, by method, since the last reset.
@@ -1959,6 +2025,10 @@ const server = createServer((request, response) => {
       // already there -- so this is the only place "the older history was
       // actually asked for" is a fact.
       activityPages: activityPageRequests,
+      // The pairing handshakes that reached the host. A test uses this to prove
+      // the app launched with the pairing URI it passed, rather than connecting
+      // from a stored pairing after a launch the system made on its own.
+      pairings: pairingRequests,
     }
     if ((request.url ?? '').includes('reset=1')) {
       messagesInFlight = 0
@@ -1993,6 +2063,33 @@ const server = createServer((request, response) => {
     offline = (request.url ?? '').includes('on=1')
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify({ ok: true, offline }))
+    return
+  }
+  if (request.url?.startsWith('/lan')) {
+    // The LAN route goes away while the relay stays up. See `lanOff`.
+    //
+    // `?off=1` is the failure being reproduced: every socket the phone has on
+    // the main listener is destroyed, and every new WebSocket upgrade on it is
+    // refused. The HTTP server itself stays up, so this endpoint (and `/reset`,
+    // and the whole account surface) keeps answering -- which is also what lets
+    // the test put the fixture back after an aborted run.
+    //
+    // `?on=1` puts the LAN back without a full reset, for a test that wants to
+    // watch it return.
+    lanOff = !(request.url ?? '').includes('on=1')
+    let dropped = 0
+    if (lanOff) {
+      for (const socket of wss.clients) {
+        // Terminated rather than closed politely: a phone that walked out of
+        // range does not get a close frame either, and a clean close would let
+        // the app treat this as the host saying goodbye rather than as a link
+        // that vanished.
+        socket.terminate()
+        dropped += 1
+      }
+    }
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ ok: true, lan: lanOff ? 'off' : 'on', dropped }))
     return
   }
   if (request.url?.startsWith('/forked')) {
@@ -2071,6 +2168,13 @@ const server = createServer((request, response) => {
     const limit = /pageLimit=(\d+)/.exec(request.url ?? '')
     pageLimit = limit === null ? Infinity : Number(limit[1])
     connections = 0
+    relayConnections = 0
+    pairingRequests = 0
+    // The LAN route goes back with everything else: a test that took it away
+    // must not hand the next test a computer that refuses its own address. The
+    // relay listener was never down, so `/lan?on=1` and this are the same
+    // restoration.
+    lanOff = false
     // `?running=0` reports the fixture's session as stopped, which is how a test
     // avoids posting a Live Activity at all -- the widget extension is a separate
     // process, and a suite that has to draw one is a suite that fails for reasons
@@ -2115,6 +2219,10 @@ const server = createServer((request, response) => {
         response.end(JSON.stringify({ code: 'BAD_CODE', message: 'wrong code' }))
         return
       }
+      // Counted only for a request the fixture accepted: a probe with the wrong
+      // code is not a pairing, and a test waiting for one would be waiting for
+      // the wrong fact.
+      pairingRequests += 1
       response.writeHead(200, { 'content-type': 'application/json' })
       response.end(JSON.stringify({
         deviceToken: 'mz_mock_token',
@@ -2130,9 +2238,24 @@ const server = createServer((request, response) => {
   response.writeHead(404).end()
 })
 
-const wss = new WebSocketServer({ server, path: '/mizar/v1/ws' })
-wss.on('connection', (socket) => {
-  connections += 1
+/** Refuse an upgrade, HTTP-style, and let the socket go. */
+function refuseUpgrade(socket, status, reason) {
+  socket.write(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
+  socket.destroy()
+}
+
+/**
+ * Serve one accepted WebSocket, whichever listener it arrived on.
+ *
+ * One handler for both, because the point of the relay stand-in is that the
+ * phone is talking to the *same host*: same fixture, same `answer()`, same
+ * counters, same device token. Anything that differed between the two listeners
+ * would be a difference the app would be right not to notice and this test would
+ * be wrong to depend on.
+ *
+ * - Parameter socket - the open WebSocket.
+ */
+function handleSocket(socket) {
   if (offline) {
     // Closed immediately rather than left hanging: a socket that opens and then
     // says nothing is what a network failure looks like from the app's side, and
@@ -2167,9 +2290,107 @@ wss.on('connection', (socket) => {
     if (delay === 0) finish()
     else setTimeout(finish, delay)
   })
+}
+
+// MARK: - The main listener (the computer's own address)
+
+// Upgrades are handled by hand rather than by passing `server` to the
+// `WebSocketServer`, because `/lan?off=1` has to refuse a socket *before* it is
+// accepted. A `WebSocketServer` handed the server would complete the handshake
+// on its own schedule, and the refusal would arrive as a close after an accepted
+// connection -- a different failure from an address that is not there.
+const wss = new WebSocketServer({ noServer: true })
+wss.on('connection', (socket) => {
+  connections += 1
+  handleSocket(socket)
+})
+
+server.on('upgrade', (request, socket, head) => {
+  const url = new URL(request.url ?? '/', `http://127.0.0.1:${port}`)
+  if (url.pathname !== WS_PATH) {
+    // The same refusal the library gives for an upgrade to a path this listener
+    // does not serve; nothing in this fixture dials any other path except the
+    // relay stand-in below, which has its own listener.
+    refuseUpgrade(socket, 400, 'Bad Request')
+    return
+  }
+  if (lanOff) {
+    // The reported failure: the LAN is gone. Refused at the upgrade so the
+    // phone's direct dial fails promptly, exactly as dialling a computer whose
+    // address has moved does. The HTTP surface -- `/lan?on=1`, `/reset`, the
+    // account routes -- stays up on the same listener.
+    refuseUpgrade(socket, 503, 'Service Unavailable')
+    return
+  }
+  wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request))
+})
+
+// MARK: - The relay stand-in (a second address for the same computer)
+
+/**
+ * The relay listener's plain HTTP surface.
+ *
+ * Only what a test needs to read and what a phone might ask before upgrading:
+ * its own connection count, and `hello` so the address identifies as the same
+ * machine. Pairing is deliberately not served here -- the real relay forwards
+ * pairing too, but this fixture pairs over the direct route and the phone only
+ * ever reaches the relay *after* the LAN is gone, which is the case under test.
+ */
+const relayServer = createServer((request, response) => {
+  const url = new URL(request.url ?? '/', `http://127.0.0.1:${RELAY_PORT}`)
+  if (url.pathname === '/connections') {
+    // The relay's own count. The main port's `/connections` counts direct
+    // sockets; this one counts relayed ones. Separate on purpose: the assertion
+    // "the phone failed over" is "this number went from zero to one".
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ connections: relayConnections }))
+    return
+  }
+  if (url.pathname === '/mizar/v1/hello') {
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({
+      protocolVersion: 1,
+      hostId: HOST_ID,
+      hostName: HOST_NAME,
+      paired: false,
+      pairingOpen: false,
+    }))
+    return
+  }
+  response.writeHead(404).end()
+})
+
+const relayWss = new WebSocketServer({ noServer: true })
+relayWss.on('connection', (socket) => {
+  relayConnections += 1
+  handleSocket(socket)
+})
+
+relayServer.on('upgrade', (request, socket, head) => {
+  const url = new URL(request.url ?? '/', `http://127.0.0.1:${RELAY_PORT}`)
+  if (url.pathname !== RELAY_WS_PATH) {
+    refuseUpgrade(socket, 404, 'Not Found')
+    return
+  }
+  relayWss.handleUpgrade(request, socket, head, (ws) => relayWss.emit('connection', ws, request))
 })
 
 server.listen(port, '127.0.0.1', () => {
   console.log(`mock host on 127.0.0.1:${port}, code ${CODE}`)
   console.log(`mizar://pair?h=127.0.0.1%3A${port}&c=${CODE}&n=Mock%20Mac&v=1`)
+  console.log(`relay base for this host: http://127.0.0.1:${RELAY_PORT}/r/${RELAY_ROOM}`)
 })
+
+relayServer.on('error', (error) => {
+  // The relay port is `port + 2`, so two mocks on adjacent fixture ports cannot
+  // collide -- but a stray process from an interrupted run can. Say so and stop:
+  // a host that answers direct and silently has no relay is a fixture that
+  // would make the failover test fail for the wrong reason.
+  console.error(
+    `mock: the relay listener on 127.0.0.1:${RELAY_PORT} could not start `
+    + `(${error.code ?? error.message}); another process may be using it`,
+  )
+  process.exit(1)
+})
+
+relayServer.listen(RELAY_PORT, '127.0.0.1')
