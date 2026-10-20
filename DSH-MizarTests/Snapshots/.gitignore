@@ -1,0 +1,3 @@
+# Mismatch artifacts written by SnapshotHarness. References only ever live one
+# level up in __Snapshots__/ and are committed deliberately after review.
+__Snapshots__/__Failures__/

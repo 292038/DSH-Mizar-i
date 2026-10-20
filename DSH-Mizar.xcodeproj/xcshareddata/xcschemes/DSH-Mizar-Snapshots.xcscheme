@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme
+   LastUpgradeVersion = "2700"
+   version = "1.7">
+   <BuildAction
+      parallelizeBuildables = "YES"
+      buildImplicitDependencies = "YES">
+      <BuildActionEntries>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AA0000000000000000000004"
+               BuildableName = "DSH-Mizar.app"
+               BlueprintName = "DSH-Mizar"
+               ReferencedContainer = "container:DSH-Mizar.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "BB0000000000000000000020"
+               BuildableName = "DSH-Mizar-LiveActivity.appex"
+               BlueprintName = "DSH-Mizar-LiveActivity"
+               ReferencedContainer = "container:DSH-Mizar.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+      </BuildActionEntries>
+   </BuildAction>
+   <TestAction
+      buildConfiguration = "Debug"
+      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
+      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+      shouldUseLaunchSchemeArgsEnv = "YES">
+      <Testables>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "CC0000000000000000000003"
+               BuildableName = "DSH-MizarTests.xctest"
+               BlueprintName = "DSH-MizarTests"
+               ReferencedContainer = "container:DSH-Mizar.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+      </Testables>
+   </TestAction>
+   <LaunchAction
+      buildConfiguration = "Debug"
+      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
+      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+      launchStyle = "0"
+      useCustomWorkingDirectory = "NO"
+      ignoresPersistentStateOnLaunch = "NO"
+      debugDocumentVersioning = "YES"
+      debugServiceExtension = "internal"
+      allowLocationSimulation = "YES">
+      <BuildableProductRunnable
+         runnableDebuggingMode = "0">
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "AA0000000000000000000004"
+            BuildableName = "DSH-Mizar.app"
+            BlueprintName = "DSH-Mizar"
+            ReferencedContainer = "container:DSH-Mizar.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
+      <!-- MIZAR_SNAPSHOT_RECORD is passed through from the build setting of the
+           same name, so a recorded run is opt-in per invocation:
+             xcodebuild test ... MIZAR_SNAPSHOT_RECORD=1
+           An ordinary run expands it to nothing, and SnapshotHarness then
+           compares instead of recording. -->
+      <EnvironmentVariables>
+         <EnvironmentVariable
+            key = "MIZAR_SNAPSHOT_RECORD"
+            value = "$(MIZAR_SNAPSHOT_RECORD)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+      </EnvironmentVariables>
+   </LaunchAction>
+   <ProfileAction
+      buildConfiguration = "Release"
+      shouldUseLaunchSchemeArgsEnv = "YES"
+      savedToolIdentifier = ""
+      useCustomWorkingDirectory = "NO"
+      debugDocumentVersioning = "YES">
+      <BuildableProductRunnable
+         runnableDebuggingMode = "0">
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "AA0000000000000000000004"
+            BuildableName = "DSH-Mizar.app"
+            BlueprintName = "DSH-Mizar"
+            ReferencedContainer = "container:DSH-Mizar.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
+   </ProfileAction>
+   <AnalyzeAction
+      buildConfiguration = "Debug">
+   </AnalyzeAction>
+   <ArchiveAction
+      buildConfiguration = "Release"
+      revealArchiveInOrganizer = "YES">
+   </ArchiveAction>
+</Scheme>
