@@ -188,7 +188,7 @@ final class ScreenshotTour: XCTestCase {
         let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.47))
         start.press(forDuration: 0.05, thenDragTo: finish)
         shoot("w10-turn-index")
-        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'turnIndex.row.'"))
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'turnIndex.entry.'"))
         if rows.count > 0 {
             rows.element(boundBy: 0).tap()
             shoot("w11-jumped", settle: 1.0)

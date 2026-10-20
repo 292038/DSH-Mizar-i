@@ -450,7 +450,7 @@ private struct TurnIndexRow: View {
         .animation(.mizarSmooth, value: onScreen)
         .accessibilityElement(children: .combine)
         .accessibilityHint(Text("Shows this turn in the conversation"))
-        .accessibilityIdentifier("turnIndex.row.\(turn.id)")
+        .accessibilityIdentifier("turnIndex.entry.\(turn.id)")
         // A row built while a drawer is moving waits for it to settle
         // before its bar grows. The stagger animates the bar's *width*,
         // which lays out every growing row on every frame -- and those

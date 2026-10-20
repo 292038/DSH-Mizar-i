@@ -2551,7 +2551,7 @@ final class AppFlowTests: XCTestCase {
         let indexFinish = CGVector(dx: 0.10, dy: 0.55)
         app.coordinate(withNormalizedOffset: indexStart)
             .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: indexFinish))
-        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "turnIndex.row."))
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "turnIndex.entry."))
         expect(rows.firstMatch, "a diagonal leftward drag did not open the turn index")
     }
 
@@ -3096,7 +3096,7 @@ final class AppFlowTests: XCTestCase {
         let finish = app.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.47))
         start.press(forDuration: 0.05, thenDragTo: finish)
 
-        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "turnIndex.row."))
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "turnIndex.entry."))
         let first = rows.firstMatch
         XCTAssertTrue(first.waitForExistence(timeout: Self.patience), "a leftward drag did not open the turn index")
         XCTAssertEqual(rows.count, 4, "the index does not list every turn of the session")
@@ -3119,7 +3119,7 @@ final class AppFlowTests: XCTestCase {
         expect(title, "the title is not a way to the turns")
         XCTAssertTrue(labelLands(title, containing: "4"), "the title does not say how many turns there are")
         title.tap()
-        let panel = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "turnIndex.row.")).firstMatch
+        let panel = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "turnIndex.entry.")).firstMatch
         XCTAssertTrue(panel.waitForExistence(timeout: Self.patience), "tapping the title did not open the turn index")
         let dismiss = app.buttons["shell.dismissSidebar"]
         expect(dismiss, "the conversation pushed aside cannot be tapped to come back")
