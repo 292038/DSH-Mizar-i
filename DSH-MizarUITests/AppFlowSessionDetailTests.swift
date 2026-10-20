@@ -1,0 +1,466 @@
+//
+//  AppFlowSessionDetailTests.swift
+//  DSH-MizarUITests
+//
+//  Methods moved verbatim from AppFlowTests.swift (session detail reads).
+//
+
+import XCTest
+
+final class AppFlowSessionDetailTests: AppFlowTestBase {
+    // MARK: - Session detail
+
+    func testOpeningASessionShowsTheComposer() {
+        let app = launch(pending: false)
+        let field = app.textFields["composer.field"]
+        expect(field, "the composer is missing")
+
+        // One button, two jobs. The running session starts with an empty field,
+        // which is the stop case -- the rule DSH uses, and the rule this follows.
+        expect(app.buttons["composer.stop"], "a running turn with an empty field does not offer stop")
+
+        // Typing turns it into send, and it is refused while empty -- so the one
+        // button cannot be tapped into a no-op.
+        field.tap()
+        field.typeText("hello")
+        let send = app.buttons["composer.send"]
+        expect(send, "typing did not turn the button into send")
+        XCTAssertTrue(send.isEnabled, "send is disabled with text in the field")
+    }
+
+    /// A session whose workspace the host has deleted is not drawn as a
+    /// workspace.
+    ///
+    /// The host reports two sessions: one in a workspace it has, and one in a
+    /// directory it does not -- which is what a deleted workspace looks like,
+    /// because deleting it removes the registry entry and leaves the session log
+    /// behind. Grouping on the working directory drew both, and the deleted one
+    /// was offered as somewhere to start new work.
+    ///
+    /// It is not gone, though, and that is deliberate: the conversation is
+    /// collected under one heading of its own, because the list is the only
+    /// screen that can open it. What changed is that it is no longer presented
+    /// as a workspace DSH has.
+    func testADeletedWorkspaceIsNotListed() {
+        let app = launch(session: nil)
+        expect(app.staticTexts["Mock Mac (fixture)"], "the host's name is missing")
+
+        // The workspace the host still has is there, with its one session.
+        let demo = app.buttons["workspace./Users/you/projects/demo"]
+        expect(demo, "the host's own workspace is missing")
+
+        // And the directory the host has no workspace for is not, even though a
+        // session still lives in it.
+        XCTAssertEqual(
+            app.buttons.matching(identifier: "workspace./Users/you/projects/deleted-workspace").count,
+            0,
+            "a session in a deleted workspace was listed as a workspace",
+        )
+        // The host's second workspace holds no sessions and is drawn anyway: it
+        // is on the computer's sidebar, so it is part of the count the operator is
+        // comparing.
+        expect(
+            app.buttons["workspace./Users/you/projects/fresh"],
+            "a workspace with no sessions was left out",
+        )
+        // One heading for what no workspace claims, and it says what it is.
+        expect(
+            app.buttons["workspace.not-in-a-workspace"],
+            "the session in a deleted workspace is unreachable",
+        )
+    }
+
+    /// The new-session picker offers the host's workspaces, and nothing else.
+    ///
+    /// This is the screen the report was about: "手机app中有许多电脑端dsh已经删除的
+    /// 工作区". The list below it was already filtered by the host's workspace
+    /// registry; the picker was not, because it was built from the working
+    /// directory of every session the host had ever listed -- and a deleted
+    /// workspace leaves its session log behind, so its directory stayed on offer
+    /// forever as somewhere to start new work.
+    func testTheNewSessionPickerDoesNotOfferADeletedWorkspace() {
+        let app = launch(session: nil)
+        expect(app.buttons["sessions.new"], "the new-session button is missing")
+        app.buttons["sessions.new"].tap()
+
+        expect(
+            app.staticTexts["/Users/you/projects/demo"],
+            "the host's own workspace is not offered",
+        )
+        XCTAssertFalse(
+            offersDirectory(app, "/Users/you/projects/deleted-workspace"),
+            "a deleted workspace was offered as somewhere to start a session",
+        )
+    }
+
+    /// A refresh reports the workspaces the host has, which is the number the
+    /// operator can check against their computer.
+    ///
+    /// The sheet used to say nothing about workspaces at all, so "the phone has
+    /// more of them than DSH does" could only be discovered by counting rows.
+    func testRefreshingReportsTheHostsWorkspaces() {
+        let app = launch(session: nil)
+        expect(app.buttons["sessions.refresh"], "the refresh button is missing")
+        app.buttons["sessions.refresh"].tap()
+
+        let count = app.staticTexts["sync.workspaces"]
+        expect(count, "the refresh sheet does not say how many workspaces there are")
+        // Two: the one holding the demo session, and the one holding none. The
+        // session in a deleted workspace is not a workspace.
+        XCTAssertTrue(
+            labelLands(count, containing: "Workspaces: 2"),
+            "the sheet reported \(count.label)",
+        )
+    }
+
+    /// The figures the screen already has are not erased by a read that fails.
+    ///
+    /// Reported from the phone: "刚点进去一个会话，然后该会话的标题、正在使用的
+    /// 模型、上下文用量显示全部消失", repaired by leaving the session and coming
+    /// back or by leaving the app and coming back -- both of which are another
+    /// read. What made them vanish was the *second* read of the same screen: the
+    /// cache drew the figures, and the host's answer was assigned over them
+    /// whether it had anything in it or not.
+    func testTheFiguresSurviveAReadThatFails() {
+        let app = launch(pending: false)
+        let model = app.buttons["composer.model"]
+        let context = app.buttons["composer.context"]
+        expect(model, "the model is not shown above the composer")
+        XCTAssertTrue(
+            labelLands(context, containing: "35"),
+            "the context figure never loaded: \(context.label)",
+        )
+        XCTAssertTrue(
+            labelLands(model, containing: "deepseek-flash"),
+            "the model never loaded: \(model.label)",
+        )
+
+        // The host stops answering `session.stats`, the way a phone link does.
+        Self.failMockHost("session.stats")
+        // Away and back, which is what the operator does to repair it and what
+        // makes this screen re-read everything.
+        XCUIDevice.shared.press(.home)
+        app.activate()
+
+        XCTAssertTrue(
+            labelLands(context, containing: "35"),
+            "the context figure was erased by a failed read: \(context.label)",
+        )
+        XCTAssertTrue(
+            labelLands(model, containing: "deepseek-flash"),
+            "the model was erased by a failed read: \(model.label)",
+        )
+        XCTAssertEqual(
+            app.navigationBars["Mock session"].exists,
+            true,
+            "the session's title was erased by a failed read",
+        )
+    }
+
+    /// An answer that carries less than the last one does not take anything away.
+    ///
+    /// The other half of the same report, and the likelier half: the host
+    /// answers every field from its own projection, so a session whose agent is
+    /// cold answers with a token meter and no title, no model and no context
+    /// pressure. That reply is delivered successfully, which is exactly why the
+    /// screen has to merge it rather than take it as the truth.
+    func testTheFiguresSurviveAColdAnswer() {
+        let app = launch(pending: false)
+        let model = app.buttons["composer.model"]
+        let context = app.buttons["composer.context"]
+        expect(model, "the model is not shown above the composer")
+        XCTAssertTrue(labelLands(context, containing: "35"), "the context figure never loaded")
+        XCTAssertEqual(app.navigationBars["Mock session"].exists, true, "the title never loaded")
+
+        // The session goes cold: the host still answers, with less.
+        Self.setMockStatsCold(true)
+        XCUIDevice.shared.press(.home)
+        app.activate()
+
+        XCTAssertTrue(
+            labelLands(context, containing: "35"),
+            "a colder answer took the context figure away: \(context.label)",
+        )
+        XCTAssertTrue(
+            labelLands(model, containing: "deepseek-flash"),
+            "a colder answer took the model away: \(model.label)",
+        )
+        XCTAssertEqual(
+            app.navigationBars["Mock session"].exists,
+            true,
+            "a colder answer took the session's title away",
+        )
+    }
+
+    /// The three figures above the field, each of which is a control.
+    func testTheComposerBarShowsTheModelContextAndCommands() {
+        let app = launch()
+        expect(app.buttons["composer.model"], "the model is not shown above the composer")
+        expect(app.buttons["composer.context"], "the context figure is not shown above the composer")
+        expect(app.buttons["composer.commands"], "the command button is not shown above the composer")
+
+        // The figure is the host's number, not a placeholder. Asserted on the
+        // button's label: setting one makes the button a single accessibility
+        // element, so its inner Text is not a queryable child.
+        let context = app.buttons["composer.context"]
+        XCTAssertTrue(
+            labelLands(context, containing: "35"),
+            "the context percentage is not the host's: \(context.label)",
+        )
+    }
+
+    func testTheConversationRendersMessagesAndFailures() {
+        // Nothing pending: the two interaction cards fill most of a phone screen,
+        // and this test is about the conversation underneath them.
+        let app = launch(pending: false)
+        expect(app.staticTexts["Refactor the parser and run the tests."], "the user's message is missing")
+        // The turn's one message is its answer, and it is on screen without a
+        // tap. The transport no longer sends the steps that led to it.
+        expect(
+            app.staticTexts["The parser is now two files."],
+            "the turn's answer is not on screen without a tap",
+        )
+        // A turn that ended badly still says so, on its own row: the state is the
+        // one thing a monitoring app exists to report, and the row carries it
+        // even when there is an answer under it.
+        XCTAssertTrue(
+            reveal(
+                app.descendants(matching: .any)
+                    .matching(NSPredicate(format: "label BEGINSWITH %@", "Unfinished after "))
+                    .firstMatch,
+                in: app,
+            ),
+            "a turn that ended badly was not reported as unfinished",
+        )
+        // The turn that ended with *nothing to show* is the one the failure card
+        // belongs to, and it is on screen: without it, that turn is a bare row
+        // saying "未完成" over an empty space, and the operator is left to guess
+        // whether the model ever ran.
+        expect(
+            app.staticTexts["The turn ended without a response"],
+            "a turn that ended without a response was not surfaced",
+        )
+        // And the turn that ended badly *after* answering keeps its answer: a
+        // notice drawn over it would take away the only thing that turn managed
+        // to say, and the row's own warning already reports the state.
+        expect(
+            app.staticTexts["Two files changed, and it still fails."],
+            "a failure notice replaced a turn's answer",
+        )
+    }
+
+    /// The step count comes from the markers, not from the messages.
+    ///
+    /// The reported shape, and the reason the count is derived rather than
+    /// counted off the items: the host sends one tiny `step/start` per step and
+    /// only the **last** `assistant/message` of a turn. Turn 1 below takes three
+    /// steps and arrives with one message, so a row that counted messages would
+    /// read "1 steps" over a turn that took three -- and the count is the only
+    /// part of a step the transport still sends.
+    func testATurnRowCountsItsStepsFromTheMarkers() {
+        let app = launch(pending: false)
+        // Waited for first: without this the assertions below pass on a screen
+        // that has not drawn yet, which is a test that proves nothing.
+        expect(app.staticTexts["Refactor the parser and run the tests."], "the conversation never arrived")
+
+        let count = app.staticTexts["3 steps"]
+        XCTAssertTrue(reveal(count, in: app), "the turn's step count does not match its markers")
+        // And the row is a finished one, not a failure and not still running.
+        XCTAssertTrue(
+            app.staticTexts["The parser is now two files."].exists,
+            "the counted turn's answer is missing",
+        )
+    }
+
+    /// A turn is not a disclosure any more, and tapping it reveals nothing.
+    ///
+    /// The old screen folded a turn's steps behind its summary bar, and the
+    /// transport change took the steps away: the host sends the prompt, the
+    /// turn's markers and the model's last message, and none of the narration in
+    /// between. There is nothing left to expand, so the row must not offer to.
+    ///
+    /// The text asserted on is a step of the running turn under the old
+    /// fixture, which was the shape of the thing that is no longer sent at all.
+    /// The row is tapped rather than merely inspected, because "the row is not
+    /// expandable" is a claim about what a tap does -- and a `DisclosureGroup`
+    /// looks exactly like a plain row until someone touches it.
+    func testATurnRowIsNotExpandable() {
+        let app = launch(pending: false)
+        // Waited for first: the row is looked up by identifier, and an identifier
+        // query finds nothing at all on a screen that has not drawn.
+        let row = turnRow(app, 1)
+        XCTAssertTrue(reveal(row, in: app), "the turn row is missing, so nothing can be tapped")
+
+        // The step's text is not there to begin with, and that is the first half
+        // of the claim: it is not merely hidden behind a tap.
+        XCTAssertFalse(
+            app.staticTexts["Running the tests now."].waitForExistence(timeout: 2),
+            "a step's text is in the tree, so the steps were not actually dropped",
+        )
+
+        // Tapped, as an operator would. A row that was still a `DisclosureGroup`
+        // would now be open.
+        row.tap()
+
+        XCTAssertFalse(
+            app.staticTexts["Running the tests now."].waitForExistence(timeout: 2),
+            "tapping the turn revealed a step, so the row is still expandable",
+        )
+        // And nothing else was revealed either: a row that still offered a
+        // disclosure would be a control, and this one is not one any more.
+        XCTAssertEqual(
+            app.buttons.matching(identifier: "turn.1").count,
+            0,
+            "the turn row is still a control",
+        )
+        // The answer that is there stays there, so the tap did not swap anything.
+        XCTAssertTrue(
+            app.staticTexts["The parser is now two files."].exists,
+            "tapping the turn row changed what is on screen",
+        )
+    }
+
+    /// A turn that is still working says so, and does not claim to have finished.
+    ///
+    /// The reported bug, exactly. A running turn has no `turn/end`, and the
+    /// reader invented an end time from its last record -- so a live turn was
+    /// drawn as "已完成，用时 10 秒", with the seconds measuring the age of the
+    /// newest message.
+    func testARunningTurnSaysItIsRunning() {
+        // With nothing pending, so the conversation has the screen. The two
+        // interaction cards take most of it, and they are asserted on by their
+        // own tests.
+        let app = launch(pending: false)
+
+        // The state is written on the row, found by its label: the identifier
+        // belongs to the row and the state belongs to the text inside it, which
+        // is where a reader finds it too.
+        let running = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "DeepSeeking for "))
+            .firstMatch
+        expect(running, "no turn is reported as running")
+
+        // Turn 1 did end, and still reads as finished -- so the fix is not just
+        // "everything says running".
+        let finished = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Completed in "))
+            .firstMatch
+        XCTAssertTrue(reveal(finished, in: app), "no turn is reported as completed")
+    }
+
+    /// The running wording, in the language it was asked for in.
+    ///
+    /// "深度求索中，用时 %@" is the operator's string, word for word, and the
+    /// running row is the one thing on this screen they want to read at a
+    /// glance. Asserted in Chinese because that is where it was asked for; the
+    /// English pass is asserted in the test above.
+    func testTheRunningRowIsWordedAsAskedInChinese() {
+        let app = launch(language: "zh-Hans", pending: false)
+        // The conversation has to have landed, or this passes on a screen with
+        // nothing on it.
+        XCTAssertTrue(
+            app.staticTexts["Refactor the parser and run the tests."]
+                .waitForExistence(timeout: Self.patience),
+            "the conversation never arrived",
+        )
+        XCTAssertTrue(
+            app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label BEGINSWITH %@", "深度求索中，用时 "))
+                .firstMatch
+                .waitForExistence(timeout: Self.patience),
+            "the running row does not read \"深度求索中，用时 \" in Chinese",
+        )
+        // And the finished row is the wording that was already correct.
+        XCTAssertTrue(
+            reveal(
+                app.descendants(matching: .any)
+                    .matching(NSPredicate(format: "label BEGINSWITH %@", "已完成，用时 "))
+                    .firstMatch,
+                in: app,
+            ),
+            "the finished row does not read \"已完成，用时 \" in Chinese",
+        )
+    }
+
+    /// The clock on a running turn moves.
+    ///
+    /// Separate from the assertion above because it is a different claim: that
+    /// the elapsed time is the turn's own start measured against now, rather
+    /// than a number computed once when the screen was drawn. The host is not
+    /// asked anything, so this is the only evidence that the phone is doing the
+    /// arithmetic itself.
+    func testARunningTurnsClockMoves() {
+        let app = launch(pending: false)
+        let running = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "DeepSeeking for "))
+            .firstMatch
+        expect(running, "no turn is reported as running")
+        let first = running.label
+
+        let moved = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label != %@", first),
+            object: running,
+        )
+        XCTAssertEqual(
+            XCTWaiter().wait(for: [moved], timeout: 10),
+            .completed,
+            "the running turn's clock did not move past \(first)",
+        )
+    }
+
+    /// A running turn shows no answer at all, and hides nothing.
+    ///
+    /// Both halves of the request, and they are opposites: a half-written answer
+    /// must not be presented as a conclusion, and nothing may be lost behind a
+    /// tap that no longer exists to reveal it.
+    ///
+    /// Since the transport change the two are the same fact -- the host does not
+    /// send a running turn's partial answer, so there is nothing to show and
+    /// nothing to fold -- but they are asserted separately because a view that
+    /// started drawing the partial answer again would fail one and pass the
+    /// other.
+    func testARunningTurnShowsNoAnswer() {
+        let app = launch(pending: false)
+        // Waited for first: without this the assertions below pass on a screen
+        // that has not drawn yet, which is a test that proves nothing.
+        expect(app.staticTexts["And run the whole suite."], "the running turn's prompt is missing")
+
+        let running = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "DeepSeeking for "))
+            .firstMatch
+        // Waited for: the row is what the next assertion measures against, and a
+        // query that matches nothing returns a frame of zeroes rather than
+        // failing.
+        expect(running, "the running turn is not reported as running")
+
+        // Its count is still shown, because the markers are still sent: a
+        // running turn with nothing on its row reads as a turn that has stalled.
+        XCTAssertTrue(
+            app.staticTexts["2 steps"].exists,
+            "the running turn's step count is missing",
+        )
+
+        // Nothing has leaked out under its row. The answer above it belongs to
+        // the turn that finished -- the prompt and the row are all the running
+        // turn has, because the transport does not send a partial answer -- and
+        // the narration of the old fixture is not here at all.
+        XCTAssertLessThan(
+            app.staticTexts["Two files changed, and it still fails."].frame.minY,
+            running.frame.minY,
+            "the running turn's row is not below the turn that came before it",
+        )
+        // The prompt is above the row, and the row is the last thing in the
+        // turn: nothing of the running turn's own is under it, because the
+        // transport sends nothing for a turn that has not ended.
+        XCTAssertLessThan(
+            app.staticTexts["And run the whole suite."].frame.minY,
+            running.frame.minY,
+            "the running turn's prompt is not above its row",
+        )
+        XCTAssertFalse(
+            app.staticTexts["Running the tests now."].exists,
+            "a step that the transport no longer sends is on screen",
+        )
+    }
+
+}
