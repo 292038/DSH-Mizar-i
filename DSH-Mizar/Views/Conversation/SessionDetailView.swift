@@ -23,6 +23,9 @@ struct SessionDetailView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Read in the body (the refresh spinner), so the drawer-motion holds
+    /// below track it.
+    @Environment(\.drawersStill) private var drawersStill
     @State private var stats: SessionStatsFrame?
     /// The session `stats` was read for.
     ///
@@ -339,7 +342,7 @@ struct SessionDetailView: View {
                     }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
-                        .symbolEffect(.rotate, options: .repeat(.continuous), isActive: refreshing)
+                        .symbolEffect(.rotate, options: .repeat(.continuous), isActive: refreshing && drawersStill)
                 }
                 .disabled(refreshing)
                 .accessibilityIdentifier("session.refresh")
@@ -822,6 +825,10 @@ struct SessionDetailView: View {
               !reloading,
               !model.isSyncing,
               model.selectedSessionId == sessionId,
+              // A drawer mid-flight owns the frames; this tick is skipped
+              // like any busy one, and the next asks again.
+              !shell.isDragging,
+              !shell.isSettling,
               claimConversationReadIfIdle()
         else { return }
         defer { conversationLoads -= 1 }

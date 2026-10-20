@@ -29,6 +29,8 @@ struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @Environment(ShellState.self) private var shell
     @Environment(\.horizontalSizeClass) private var sizeClass
+    /// Read in the body, so the sync spinner holds while a drawer moves.
+    @Environment(\.drawersStill) private var drawersStill
     @State private var query = ""
     @FocusState private var searching: Bool
     /// How many sessions each workspace shows before offering more.
@@ -118,7 +120,7 @@ struct SidebarView: View {
                 GlassCircleLabel(size: 38) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 15, weight: .semibold))
-                        .symbolEffect(.rotate, options: .repeat(.continuous), isActive: model.isSyncing)
+                        .symbolEffect(.rotate, options: .repeat(.continuous), isActive: model.isSyncing && drawersStill)
                 }
             }
             .buttonStyle(.plain)

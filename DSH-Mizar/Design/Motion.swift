@@ -55,6 +55,37 @@ func withMizarAnimation<Result>(_ animation: Animation = .mizarSmooth, _ body: (
     try withAnimation(Motion.pick(animation), body)
 }
 
+// MARK: - Drawer motion
+
+/// Whether the shell's drawers are still, for continuous motion that yields
+/// to them.
+///
+/// Decoration that animates for ever -- the shimmer over a running turn's
+/// headline, the twin star's orbit, a pulsing glyph -- redraws its layer on
+/// every frame it runs. While a drawer is being dragged or is settling,
+/// those frames belong to the card the finger is moving: the card carries a
+/// full-screen mask, a blurred shadow and glass, and content that changes
+/// under those effects cannot be served from cache. So the shell publishes
+/// this key, continuous effects read it and hold, and everything resumes the
+/// moment the drawers stop -- the same gate the turn index's bar growth
+/// already applies.
+///
+/// The default is `true`: motion is the ordinary state, and anything drawn
+/// outside the shell -- a snapshot, a popover that missed the injection --
+/// animates exactly as it did before.
+private struct DrawersStillKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Whether the shell's drawers are at rest. `false` while one is being
+    /// dragged or is still settling into place.
+    var drawersStill: Bool {
+        get { self[DrawersStillKey.self] }
+        set { self[DrawersStillKey.self] = newValue }
+    }
+}
+
 // MARK: - Transitions
 
 /// Rising into place: a few points of travel, a little blur, and the fade.

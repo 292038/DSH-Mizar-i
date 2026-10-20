@@ -42,6 +42,9 @@ struct InteractionsDock: View {
     var maxHeight: CGFloat = 320
 
     @Environment(AppModel.self) private var model
+    /// Read in the body, so the tucked pill's pulse holds while a drawer
+    /// moves: those frames belong to the card.
+    @Environment(\.drawersStill) private var drawersStill
     /// The card in front, by id.
     @State private var frontId: String?
     /// Brief "done" notes, one per answered card.
@@ -122,7 +125,7 @@ struct InteractionsDock: View {
             HStack(spacing: 8) {
                 Image(systemName: "hand.raised.fill")
                     .foregroundStyle(Theme.waiting)
-                    .symbolEffect(.pulse, options: .repeat(.continuous))
+                    .symbolEffect(.pulse, options: .repeat(.continuous), isActive: drawersStill)
                 Text(count == 1 ? String(localized: "1 request waiting") : String(format: String(localized: "%lld requests waiting"), count))
                     .font(.subheadline.weight(.semibold))
                 Image(systemName: "chevron.up")

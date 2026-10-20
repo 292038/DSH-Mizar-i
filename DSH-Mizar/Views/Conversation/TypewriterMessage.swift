@@ -58,6 +58,18 @@ struct TypewriterMessage: View {
     @State private var revealed: Int
     /// Whether the reveal is still running. Also the "draw only part" branch.
     @State private var running: Bool
+    /// Whether the shell's drawers are still, read in the body so the hold
+    /// tracks them.
+    @Environment(\.drawersStill) private var drawersStill
+    /// Whether the reveal is holding while a drawer moves.
+    ///
+    /// The count is derived from the clock, so a hold costs nothing but
+    /// time: when the drawers stop, the reveal jumps to where it now is
+    /// rather than resuming from where it was held. What the hold buys is
+    /// the frames it does not spend -- a drawer dragging the card re-renders
+    /// this row's blocks on every character, under the card's mask, shadow
+    /// and glass.
+    @State private var held = false
 
     init(text: String, typing: Bool, onStarted: @escaping () -> Void = {}) {
         self.text = text
@@ -95,6 +107,9 @@ struct TypewriterMessage: View {
             // cancelled with the view. `.task` runs once per appearance, so a
             // redraw of the parent cannot restart a reveal.
             await reveal()
+        }
+        .onChange(of: drawersStill, initial: true) { _, still in
+            held = !still
         }
     }
 
@@ -149,13 +164,15 @@ struct TypewriterMessage: View {
         let start = clock.now
         var last = -1
         while !Task.isCancelled {
-            let elapsed = clock.now - start
-            let count = plan.revealedCount(after: elapsed)
-            if count != last {
-                revealed = count
-                last = count
+            if !held {
+                let elapsed = clock.now - start
+                let count = plan.revealedCount(after: elapsed)
+                if count != last {
+                    revealed = count
+                    last = count
+                }
+                if plan.isFinished(after: elapsed) { break }
             }
-            if plan.isFinished(after: elapsed) { break }
             // Fourteen milliseconds: sixty-ish frames a second, and no more
             // precision than a phone display can show. The count is derived
             // from elapsed time, so a missed tick costs nothing but a redraw.

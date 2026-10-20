@@ -11,7 +11,10 @@
 //  quiet enough to sit in a list of twenty rows without the list shimmering.
 //
 //  Under Reduce Motion the companion stops where it is. Two dots side by side
-//  still say "running"; they just do not move.
+//  still say "running"; they just do not move. While a drawer is being dragged
+//  or settles, the companion parks the same way, for the same reason in
+//  miniature: the orbit redraws its layer on every frame it runs, and those
+//  frames belong to the card.
 //
 
 import SwiftUI
@@ -24,6 +27,10 @@ struct TwinStar: View {
     var period: Double = 2.4
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Whether the companion may orbit. The shell holds this while a drawer
+    /// is being dragged or settles; a held star parks where Reduce Motion
+    /// parks it, and picks the orbit back up when the drawers stop.
+    @Environment(\.drawersStill) private var drawersStill
 
     var body: some View {
         ZStack {
@@ -42,7 +49,7 @@ struct TwinStar: View {
             .fill(color.opacity(0.85))
             .frame(width: size * 0.24, height: size * 0.24)
             .offset(x: size * 0.4)
-        if reduceMotion {
+        if reduceMotion || !drawersStill {
             dot.rotationEffect(.degrees(-35))
         } else {
             dot.keyframeAnimator(initialValue: 0.0, repeating: true) { content, angle in

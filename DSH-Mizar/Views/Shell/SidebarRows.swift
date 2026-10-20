@@ -24,6 +24,8 @@ struct WorkspaceSection: View {
     let onNewHere: () -> Void
 
     @Environment(AppModel.self) private var model
+    /// Read in the body, so the pulse's hold tracks the drawers.
+    @Environment(\.drawersStill) private var drawersStill
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -112,10 +114,12 @@ struct WorkspaceSection: View {
                         .transition(.pop)
                 }
                 if waiting > 0 {
+                    // Pulses only while the drawers are still: the frames a
+                    // drawer is moving belong to the card.
                     Image(systemName: "hand.raised.fill")
                         .font(.caption)
                         .foregroundStyle(Theme.waiting)
-                        .symbolEffect(.pulse, options: .repeat(.continuous))
+                        .symbolEffect(.pulse, options: .repeat(.continuous), isActive: drawersStill)
                         .transition(.pop)
                 }
                 Text("\(group.sessions.count)")

@@ -65,6 +65,12 @@ struct MizarShell: View {
         }
         .environment(shell)
         .environment(turnIndex)
+        // Whether the drawers are moving, published to the motion that
+        // yields to it: the shimmer, the twin star, the typewriter --
+        // anything that redraws every frame it runs -- holds for the
+        // duration of a drag and its settle, so the frames that move the
+        // card are not spent redrawing the card's content.
+        .environment(\.drawersStill, !shell.isDragging && !shell.isSettling)
         .onAppear {
             guard !placed else { return }
             placed = true
@@ -175,7 +181,15 @@ struct MizarShell: View {
             pane(leading: leading, trailing: trailing, size: size, compact: compact, lead: lead, trail: trail)
 
             // The card, while it is pushed aside, is one big button back.
-            if compact && (lead > 0.02 || trail > 0.02) {
+            // Always mounted on a phone, rather than inserted at the first
+            // percent of a drag: a view arriving in the hierarchy is a
+            // structural diff and a fresh gesture recognizer installed into
+            // the very frames the drag begins in -- the hitch the first two
+            // frames of every swipe carried, together with the keyboard
+            // resign and the corner's arrival. At rest the button is clear,
+            // untouchable, and hidden from accessibility: a layer with
+            // nothing in it.
+            if compact {
                 let shift = lead > 0.02 ? leading * p : trailing * p
                 Button {
                     shell.close()
@@ -189,6 +203,7 @@ struct MizarShell: View {
                 .accessibilityLabel(Text(lead > 0.02 ? "Close sidebar" : "Close turns"))
                 .accessibilityIdentifier("shell.dismissSidebar")
                 .allowsHitTesting(lead > 0.5 || trail > 0.5)
+                .accessibilityHidden(!(lead > 0.5 || trail > 0.5))
             }
         }
         .accessibilityAction(.escape) {
@@ -276,16 +291,24 @@ struct MizarShell: View {
                 .opacity(compact ? reveal : 0)
                 .allowsHitTesting(false)
         }
-        // The shadow is the one effect here that must not follow the
-        // finger: a radius that changes every frame re-renders a
-        // full-screen blur on every frame of the drag. Fixed at its
-        // settled size, only its opacity moves -- a blend, not a blur --
-        // so the card still lifts as the drawer opens beside it.
-        .shadow(
-            color: .black.opacity((colorScheme == .dark ? 0.5 : 0.16) * (compact ? reveal : 0)),
-            radius: 30,
-            x: towardsTrailing ? 8 : -8,
-        )
+        // The shadow is a shape of its own rather than an effect on the
+        // card. A `.shadow` derives its blur from the layer's content, so
+        // every frame the content changes -- a shimmer sweeping, a
+        // typewriter character, a clock tick -- re-derives and re-blurs a
+        // full-screen Gaussian while the card is mid-drag. A blurred shape
+        // behind the card draws the same picture from a static input --
+        // measured against `.shadow` at these very numbers, a mean pixel
+        // difference of 0.3/255 -- and only its opacity moves, a blend the
+        // render server keeps. Fixed at its settled size and offset, as
+        // before.
+        .background {
+            shape
+                .fill(Color.black.opacity(colorScheme == .dark ? 0.5 : 0.16))
+                .blur(radius: 30)
+                .offset(x: towardsTrailing ? 8 : -8)
+                .opacity(compact ? reveal : 0)
+                .allowsHitTesting(false)
+        }
         // The shrink arrives early -- over the first third of the drawer's
         // travel, the way the corner does -- and then holds. From there the
         // card only translates, which the render server does to a cached

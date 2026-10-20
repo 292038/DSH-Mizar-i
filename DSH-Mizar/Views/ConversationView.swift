@@ -427,6 +427,9 @@ private struct TurnActivitySummary: View {
     let sessionId: String
 
     @Environment(AppModel.self) private var model
+    /// The shell, for the drawer-motion hold: a poll second that lands
+    /// mid-drag would re-render this row inside the card the finger moves.
+    @Environment(ShellState.self) private var shell
     /// Whether the detail is out. Reset when the turn ends, because there is
     /// nothing left for it to describe.
     @State private var expanded = false
@@ -538,12 +541,16 @@ private struct TurnActivitySummary: View {
     /// needs to land while it is still the thing being talked about; one second is the cadence the host's
     /// 256 KiB capped answer was sized for. A failed read changes nothing —
     /// ``AppModel/refreshActivity(for:)`` keeps the last answer on screen.
+    /// A second that lands while a drawer is moving is skipped -- the write
+    /// would redraw the row in the card mid-drag -- and the next asks again.
     private func poll() async {
         // A finished turn has nothing to read, and clearing is not this view's
         // job when it never started: the change that stopped it clears.
         guard pollKey != nil else { return }
         while !Task.isCancelled {
-            await model.refreshActivity(for: sessionId)
+            if !shell.isDragging, !shell.isSettling {
+                await model.refreshActivity(for: sessionId)
+            }
             do {
                 try await Task.sleep(for: .seconds(1))
             } catch {
@@ -742,7 +749,8 @@ extension View {
     /// A band of light sweeping across, for text that is still being worked on.
     ///
     /// Drawn over the content and masked by it, so the content itself -- and
-    /// what it says to VoiceOver -- is untouched.
+    /// what it says to VoiceOver -- is untouched. While the shell's drawers
+    /// move, the sweep holds: those frames belong to the card.
     func shimmering(active: Bool = true) -> some View {
         modifier(Shimmer(active: active))
     }
@@ -751,9 +759,13 @@ extension View {
 private struct Shimmer: ViewModifier {
     let active: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Held while a drawer is being dragged or settles: the sweep redraws
+    /// -- and re-masks -- every frame it runs, and those frames belong to
+    /// the card.
+    @Environment(\.drawersStill) private var drawersStill
 
     func body(content: Content) -> some View {
-        if active && !reduceMotion {
+        if active && !reduceMotion && drawersStill {
             content
                 .overlay {
                     GeometryReader { geometry in
