@@ -7,6 +7,7 @@
 #   scripts/test-select.sh --dry-run       # print the plan, run nothing
 #   scripts/test-select.sh --full          # ignore selection, run everything
 #   scripts/test-select.sh --files a.swift,b.swift   # verification hook
+#   scripts/test-select.sh --live                    # live layer (real host; not the default)
 #
 # The unit suite (MizarKit on the host, seconds) always runs whole: selecting
 # inside it costs more in risk than the run costs in time. Only the UI suite is
@@ -28,7 +29,7 @@ FILES=""
 FULL=0
 DRY_RUN=0
 KEEP_GOING=0
-UNIT_ONLY=0
+LIVE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -36,6 +37,7 @@ while [ $# -gt 0 ]; do
     --files) FILES="$2"; shift 2 ;;
     --simulator) SIMULATOR="$2"; shift 2 ;;
     --full) FULL=1; shift ;;
+    --live) LIVE=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --keep-going) KEEP_GOING=1; shift ;;
     --help|-h) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -105,6 +107,7 @@ echo "select: mode=$mode  changed=$(printf '%s\n' "$changed" | sed '/^$/d' | wc 
 printf '%s' "$plan" | jq -r '.reasons[] | "  fallback: " + .'
 printf '%s' "$plan" | jq -r '.notes[] | "  mapped:   " + .'
 echo "  unit: whole suite (by design); $( [ "$mode" = "none" ] && echo "ui: none" || echo "ui: $ui_selected/$ui_full tests in [${classes:-none}]" )"
+echo "  layer: $( [ "$LIVE" = "1" ] && echo "live (real network, explicit)" || echo "replay (default; live tests skip)" )"
 if [ "$mode" != "full" ] && [ -n "$skipped" ]; then
   echo "  not run:  $skipped"
 fi
@@ -116,6 +119,12 @@ fi
 # --- the runs ---------------------------------------------------------------
 
 start=$(timestamp)
+# The layer is exported before the unit suite too: the live layer's unit tests
+# read MIZAR_TEST_MODE the same way the UI tests do.
+layer="replay"
+if [ "$LIVE" = "1" ]; then layer="live"; fi
+export MIZAR_TEST_MODE="$layer"
+export TEST_RUNNER_MIZAR_TEST_MODE="$layer"
 unit_wall=""; unit_total=""; unit_verdict="SKIPPED"
 ui_wall=""; ui_total=""; ui_passed=""; ui_failed=""; ui_skipped=""; ui_verdict="SKIPPED"
 unit_log=.devcache/test-select/unit.log
@@ -148,8 +157,6 @@ if [ "$unit_verdict" = "FAIL" ] && [ "$KEEP_GOING" != "1" ]; then
   echo "  ui: not run (unit suite failed; use --keep-going to run anyway)"
   ui_verdict="NOT RUN"
 elif [ "$mode" = "full" ] || [ "$mode" = "selected" ]; then
-  export MIZAR_TEST_MODE=replay
-  export TEST_RUNNER_MIZAR_TEST_MODE=replay
   args=(-resultBundlePath "$rb")
   if [ "$mode" = "selected" ]; then
     while IFS= read -r test_id; do
@@ -187,9 +194,7 @@ total_wall="$(elapsed "$start")"
 echo "  unit:  ${unit_total:-?} tests  ${unit_verdict}  ${unit_wall}s"
 echo "  ui:    ${ui_total:-0} tests (${ui_passed:-0} passed, ${ui_failed:-0} failed, ${ui_skipped:-0} skipped)  ${ui_verdict}  ${ui_wall}s"
 echo "  wall:  ${total_wall}s"
-if [ "$mode" = "selected" ] || [ "$mode" = "full" ]; then
-  echo "  replay: MIZAR_TEST_MODE=replay (phase 2 hook; no live LLM call)"
-fi
+echo "  layer: ${layer:-none} (MIZAR_TEST_MODE)"
 
 if [ "$unit_verdict" = "FAIL" ] || [ "$ui_verdict" = "FAIL" ]; then
   echo "  logs: $unit_log $ui_log"
