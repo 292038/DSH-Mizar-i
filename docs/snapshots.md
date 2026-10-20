@@ -247,3 +247,5 @@ touches `DSH-Mizar.xcodeproj` or the new scheme still makes selection fall back
 to the whole UI suite. Wiring `DSH-MizarTests` into the selection script and
 giving the migrated UI tests an impact-map entry is a separate change, outside
 this target's files.
+
+2026-10-21 于规范设备 Mizar Runs 重录 ComposerControls-labelled 基准（跨实例文本栅格 ~1px/9.3% 差异，重录后套件全绿：7/7，第 7 项为当日并行会话新增的 SubagentPageContract 契约测试）。
