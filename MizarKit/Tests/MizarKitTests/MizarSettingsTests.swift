@@ -162,6 +162,10 @@ struct MizarSettingsTests {
         let settings = MizarSettings.load(from: MemoryStorage())
         #expect(settings.liveActivitiesEnabled)
         #expect(settings.notifications == .allEnabled)
+        // The transfer setting is the one default that is off: a phone that has
+        // never been asked should reconnect on the saved route, not spend a
+        // probe timeout finding out its LAN address is stale.
+        #expect(!settings.localNetworkFirst)
     }
 
     @Test("round-trips every switch through a store")
@@ -170,6 +174,7 @@ struct MizarSettingsTests {
         var settings = MizarSettings(liveActivitiesEnabled: false)
         settings.notifications.set(false, for: .approval)
         settings.notifications.set(false, for: .turnInterrupted)
+        settings.localNetworkFirst = true
         settings.save(to: storage)
 
         let reloaded = MizarSettings.load(from: storage)
@@ -178,6 +183,7 @@ struct MizarSettingsTests {
         #expect(!reloaded.notifications.isEnabled(.approval))
         #expect(!reloaded.notifications.isEnabled(.turnInterrupted))
         #expect(reloaded.notifications.isEnabled(.question))
+        #expect(reloaded.localNetworkFirst)
     }
 
     @Test("survives a relaunch, which is a second load of the same store")
@@ -203,6 +209,7 @@ struct MizarSettingsTests {
         #expect(storage.bool(forKey: MizarSettings.notificationsKey(.question)) == false)
         #expect(storage.bool(forKey: MizarSettings.notificationsKey(.approval)) == true)
         #expect(storage.bool(forKey: MizarSettings.liveActivitiesKey) == true)
+        #expect(storage.bool(forKey: MizarSettings.localNetworkFirstKey) == false)
     }
 
     @Test("writes and reads the real defaults, distinguishing absent from off")
@@ -227,5 +234,24 @@ struct MizarSettingsTests {
         #expect(!reloaded.liveActivitiesEnabled)
         #expect(!reloaded.notifications.isEnabled(.question))
         #expect(reloaded.notifications.isEnabled(.approval))
+    }
+
+    @Test("the LAN priority switch round-trips on its own")
+    func lanPriorityRoundTrip() {
+        // The screen writes exactly this and AppModel reads exactly this; the
+        // switch that decides whether a reconnect probes the LAN has to survive
+        // a relaunch or the fast path would come back on its own.
+        let storage = MemoryStorage()
+        var settings = MizarSettings()
+        settings.localNetworkFirst = true
+        settings.save(to: storage)
+
+        let reloaded = MizarSettings.load(from: storage)
+        #expect(reloaded.localNetworkFirst)
+        #expect(storage.bool(forKey: MizarSettings.localNetworkFirstKey) == true)
+
+        settings.localNetworkFirst = false
+        settings.save(to: storage)
+        #expect(!MizarSettings.load(from: storage).localNetworkFirst)
     }
 }

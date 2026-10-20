@@ -258,6 +258,24 @@ let relayConnections = 0
 let pairingRequests = 0
 
 /**
+ * How many unauthenticated `hello` probes have reached the host since the last
+ * reset.
+ *
+ * This is the LAN scan's observable footprint. `AppModel.scanForLocalNetwork`
+ * probes each candidate address with `GET /mizar/v1/hello` before it decides
+ * whether the local network answers, and whether that scan runs at all is the
+ * setting under test: with "Local network first" off, a manual refresh must do
+ * no probing; with it on, the refresh is allowed to ask.
+ *
+ * Read from `GET /hellos` on the main listener, as one number. Deliberately not
+ * folded into `/loads`: that endpoint reports frame counters, and this one is
+ * about plain HTTP requests the app made *before* it opened a socket. A probe is
+ * invisible on screen -- the scan either finds something or silently does not --
+ * so the host's count is the only place the difference is a fact.
+ */
+let hellos = 0
+
+/**
  * How many frames the mock has answered, by method, since the last reset.
  *
  * A second load on one socket is invisible from the app's side -- every request
@@ -1997,6 +2015,14 @@ const server = createServer((request, response) => {
     response.end(JSON.stringify({ connections }))
     return
   }
+  if (request.url?.startsWith('/hellos')) {
+    // How many LAN-scan probes have reached this process since the last reset.
+    // See `hellos`: the scan is silent from the screen, so its cost can only be
+    // counted here.
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ hellos }))
+    return
+  }
   if (request.url?.startsWith('/hold')) {
     // `?messages=1` holds every `session.messages` answer; `?messages=0`
     // releases what is waiting. The count is reported so a test can say it
@@ -2170,6 +2196,7 @@ const server = createServer((request, response) => {
     connections = 0
     relayConnections = 0
     pairingRequests = 0
+    hellos = 0
     // The LAN route goes back with everything else: a test that took it away
     // must not hand the next test a computer that refuses its own address. The
     // relay listener was never down, so `/lan?on=1` and this are the same
@@ -2198,6 +2225,7 @@ const server = createServer((request, response) => {
     return
   }
   if (request.url?.startsWith('/mizar/v1/hello')) {
+    if (request.method === 'GET') hellos += 1
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify({
       protocolVersion: 1,
@@ -2347,6 +2375,7 @@ const relayServer = createServer((request, response) => {
     return
   }
   if (url.pathname === '/mizar/v1/hello') {
+    if (request.method === 'GET') hellos += 1
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify({
       protocolVersion: 1,
