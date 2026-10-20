@@ -20,8 +20,10 @@ scripts/test-select.sh --files a,b  # selection hook for a synthetic diff (verif
   reach the changed file.
 - Anything that is not provably local to one screen falls back to the whole
   suite ("fallback:" lines in the output). Do not silence that.
-- The selected subset exports `MIZAR_TEST_MODE=replay` (phase 2: recorded LLM
-  responses). Never make tests hit a live model.
+- Layering: the default run is the replay layer (`MIZAR_TEST_MODE=replay`,
+  exported by `test-select.sh`). Live tests skip loudly unless the run is
+  explicitly live (`scripts/test-select.sh --live`). Never make a default run
+  hit a real host or a live model.
 - If the model picks a subset by hand, it must still list the tests it did not
   run in the reply. Never imply a subset was a full run.
 
@@ -33,6 +35,35 @@ Changes under: the Xcode project/schemes/test plans, `MizarKit/Sources`,
 storekit resources, the Live Activity target, or any unknown file. Also when the
 UI test count no longer matches `expectedUiTests` in `test/test-routing.json`
 (new or removed tests) or the impact map mentions tests that no longer exist.
+`DSH-MizarTests/` changes are not mapped by `test-select.sh` yet, so they hit the
+unknown-file full fallback until the snapshot target is wired in (phase 3).
+
+## Snapshot suite (layout/copy, no app launch)
+
+`DSH-MizarTests` (scheme `DSH-Mizar-Snapshots`, separate from `DSH-Mizar`) renders
+leaf SwiftUI views with `ImageRenderer` and compares reference PNGs in
+`DSH-MizarTests/Snapshots/__Snapshots__/`. Six tests / ten references execute in
+about 0.3 s, against 22.6 s per XCUITest. Record only deliberately with
+`MIZAR_SNAPSHOT_RECORD=1`; a missing reference fails and a mismatch never
+rewrites one. Command and limits: `docs/snapshots.md`. XCUITest keeps the key
+business flows; the migration plan (80 -> <=16 kept) is `docs/phase2-triage.md`.
+
+## Replay: no real network
+
+HTTP is replayed from HAR fixtures in `protocol/fixtures/http/` by
+`MizarKit`'s `HTTPReplayTransport` (`docs/http-replay.md`); regenerate
+deterministically with `scripts/record-http-fixtures.sh`. A miss throws — there
+is no network fallback. The app's default transport is still the real
+`URLSessionHTTPTransport`; selecting replay inside the app is opt-in and not
+wired yet. The UI suite talks to the local mock host on 127.0.0.1:19395/19396.
+
+## Live layer
+
+Preserved and explicitly triggerable: MizarKit's `LiveNetworkTests` (and future
+UI live tests) skip unless `MIZAR_TEST_MODE=live` plus the environment values
+(`MIZAR_LIVE_BASE_URL`; UI live tests would use `MIZAR_LIVE_PAIRING_URI`).
+`scripts/test-select.sh --live` sets both the runner variable and its
+`TEST_RUNNER_` copy. The default regression must never run the live layer.
 
 ## Adding coverage for a new screen
 
