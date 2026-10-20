@@ -131,6 +131,15 @@ struct SessionSidePlane: View {
         }
         .onAppear { alignWithDebugLaunchArgument() }
         .mizarFeedback(.selection, trigger: selection)
+        // The plane never paints outside its drawer. On the phone that is
+        // already true by occlusion -- the conversation card covers whatever
+        // slides past the drawer's leading edge, and the card's right edge is
+        // exactly that edge -- but on an iPad the column's left neighbour is
+        // the *sidebar*, which is drawn before this panel, and two pages of
+        // travel put the turn page across it in a visible strip. Clipped, the
+        // page ends at the drawer's edge on both devices, which is where the
+        // occluding surface sits on each.
+        .clipped()
     }
 
     /// The turns segment's title, which carries the live count.
