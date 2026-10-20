@@ -39,5 +39,15 @@
     "archive/**",
     "node_modules/**"
   ],
-  "routes": []
+  "routes": [
+    {
+      "paths": [
+        "DSH-Mizar/Views/Account/RedeemInviteView.swift"
+      ],
+      "select": [
+        "AccountUITests"
+      ],
+      "note": "verified 2026-10-20: intentional copy regression in the redeem result, full suite detects it only inside AccountUITests"
+    }
+  ]
 }
