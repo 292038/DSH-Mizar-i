@@ -88,6 +88,7 @@ echo "record-impact-map: resuming, $(wc -l < "$WORK/done.txt" | tr -d ' ') alrea
 
 started=$(date +%s)
 index=0
+launch_failures=0
 while IFS= read -r id; do
   [ -n "$id" ] || continue
   if grep -qxF "$id" "$WORK/done.txt"; then
@@ -100,8 +101,10 @@ while IFS= read -r id; do
   rm -rf "$bundle"
   status=PASS
   attempt=0
+  files=""
   while :; do
     attempt=$((attempt + 1))
+    rm -rf "$bundle"
     if xcb test \
           -collect-test-diagnostics never \
           -only-testing:"DSH-MizarUITests/$id" \
@@ -111,18 +114,37 @@ while IFS= read -r id; do
     else
       status=FAIL
     fi
-    if grep -qE "Test skipped|XCTSkip|Skipped" "$log" 2>/dev/null; then
-      status=SKIP
+    # A wedged simulator fails every launch in the same way; grinding through
+    # the remaining tests would record a map with no coverage at all.
+    if grep -qE "Failed to install or launch the test runner|failed preflight checks|hung before establishing connection" "$log" 2>/dev/null; then
+      launch_failures=$((launch_failures + 1))
+    else
+      launch_failures=0
     fi
-    if [ "$status" = "PASS" ] || [ "$attempt" -gt "${MIZAR_IMPACT_RETRIES:-1}" ]; then
+    if [ "$launch_failures" -ge 3 ]; then
+      echo "record-impact-map: the test runner cannot launch on $SIMULATOR (3 consecutive); reboot the simulator and rerun" >&2
+      exit 2
+    fi
+    files="$(python3 scripts/impact-map.py --repo-root "$ROOT" files "$bundle" 2>>"$WORK/coverage.err" | tr '\n' ' ' || true)"
+    files="${files% }"
+    if [ "$status" = "PASS" ] && [ -n "$files" ]; then
       break
     fi
-    echo "impact: retrying $id after $status"
-    rm -rf "$bundle"
+    # The screenshot tour is gated by MIZAR_SHOTS, so a green skip with no
+    # coverage is expected for it and only for it.
+    if [ "$status" = "PASS" ] && [ -z "$files" ] && [ "${id#ScreenshotTour/}" != "$id" ]; then
+      status=SKIP
+      break
+    fi
+    if [ "$attempt" -gt "${MIZAR_IMPACT_RETRIES:-1}" ]; then
+      if [ "$status" = "PASS" ]; then
+        status=NOCOVERAGE
+      fi
+      break
+    fi
+    echo "impact: retrying $id after $status (attempt $attempt)"
   done
-  files="$(python3 scripts/impact-map.py --repo-root "$ROOT" files "$bundle" 2>>"$WORK/coverage.err" | tr '\n' ' ' || true)"
   rm -rf "$bundle"
-  files="${files% }"
   printf '%s\t%s\t%s\n' "$id" "$status" "$files" >> "$WORK/runs.tsv"
   wall=$(( $(date +%s) - started ))
   printf 'impact: [%d/%d] %-58s %s files=%-2s +%ss\n' \
