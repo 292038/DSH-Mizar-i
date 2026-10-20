@@ -198,6 +198,7 @@ network-state machines counted at the host (:74,:102) plus activity paging (:70)
    pure copy; same per-locale goldens; est. ~50 s.
 3. `AccountUITests/testAttachmentsUnlockForPaidAccounts` (:247) — fresh-start + create +
    redeem + relaunch chain; gate-policy unit + locked/unlocked snapshots; est. ~40 s.
+   部分下推=双态快照+identifier 契约；gate 规则在 AppModel.advancedFeaturesUnlocked（app target），unit 半截待下沉，原用例保留，2026-10-21。
 4. `AppFlowTests/testAnUnpairedLaunchOffersPairing` (:890) — one existence assertion,
    launch-arg state; presenter test + pairing golden; est. ~20 s, lowest risk.
    已下推=快照+源码契约，原用例 XCTSkip 占位，2026-10-21。

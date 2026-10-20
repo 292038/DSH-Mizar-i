@@ -189,12 +189,16 @@ struct ComposerBar: View {
 }
 
 /// Which attachment picker a button wants.
-private enum AttachmentPickerKind {
+enum AttachmentPickerKind {
     case photo
     case file
 }
 
 /// The host's commands, and the two attachment buttons above them.
+///
+/// Internal rather than private so the snapshot suite can render both gate
+/// states from fixtures (`AttachmentGateSnapshotTests`); it takes the gate as
+/// a `Bool` and owns no environment, so the render is the app's own view.
 ///
 /// The attachments row is deliberately above the commands rather than beside the
 /// field: the field's leading edge is where the operator's thumb already is for
@@ -203,7 +207,7 @@ private enum AttachmentPickerKind {
 /// footer that says why, so the refusal explains itself. The footer's wording is
 /// the paid plan's, because that is the plan this feature is sold with, and the
 /// same buttons are open on a LAN link as well.
-private struct CommandList: View {
+struct CommandList: View {
     /// Whether the advanced feature set is available, so attachments may be
     /// added. True for a paid account and on a LAN link.
     let canAttach: Bool
