@@ -47,15 +47,11 @@ class AppFlowTestBase: XCTestCase {
     /// mock cannot show that: it answers every read with the same host id, the
     /// same sessions and the same providers, so a screen drawn from one computer's
     /// answer under another computer's name looks exactly like a screen drawn
-    /// correctly. The mock on 19396 has its own host id, its own name, its
-    /// own session ids, its own model catalogue, which is what makes "this
-    /// belongs to that computer" assertable.
-    ///
-    /// This stays on the historical 19396 for now: moving it to `mockPort + 1`
-    /// only works once mock-host.mjs reads `MOCK_SECONDARY_PORT`, because
-    /// mock-host.mjs still hard-codes its second-machine identity to port
-    /// 19396 (that edit is currently blocked by the workspace write guard).
-    /// When it lands, this becomes `mockPort + 1`.
+    /// correctly. The second machine stays on the historical 19396 for now:
+    /// mock-host.mjs hard-codes the second identity to that port, and the
+    /// one-line env-based change is blocked by the workspace secret guard
+    /// (reported to the user). Per-class secondaries land once that clears;
+    /// until then two parallel AppFlow classes share this one second host.
     class var secondMockPairingURI: String {
         "mizar://pair?h=127.0.0.1%3A19396&c=MOCK-CODE&n=Mock%20Mac%20(second)&v=1"
     }
@@ -140,7 +136,7 @@ class AppFlowTestBase: XCTestCase {
         // is where this test taps.
         var query = "?pending=0"
         if !running { query += "&running=0" }
-        // 19396, matching secondMockPairingURI's interim port (see its note).
+        // The shared second machine (19396) until per-class secondaries land.
         guard let url = URL(string: "http://127.0.0.1:19396/reset\(query)") else { return }
         let done = DispatchSemaphore(value: 0)
         var request = URLRequest(url: url)
@@ -543,7 +539,7 @@ class AppFlowTestBase: XCTestCase {
             // Resolved in the body on purpose: a default argument is bound to
             // the base class, so `mockPairingURI` there would never see the
             // subclass's port.
-            pairingURIs: pairingURIs ?? [mockPairingURI],
+            pairingURIs: pairingURIs ?? [Self.mockPairingURI],
         )
         app.launch()
         if naming { dismissNamingIfPresented(app) }

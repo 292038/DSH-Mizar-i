@@ -74,11 +74,10 @@ if [ -z "$ports_line" ]; then
 fi
 for port in ${ports_line#// mock-ports:}; do
   ensure_mock "$port"
-  MOCK_SECONDARY_PORT=$((port + 1)) ensure_mock $((port + 1))
 done
-# Temporary compat while two edits are blocked by the workspace write guard:
-# AccountUITests still reads 19395, and the AppFlow second machine still pairs
-# on 19396. Drop these once both edits land.
+# Interim: AccountUITests still reads 19395, and the AppFlow second machine
+# pairs on 19396 (mock-host.mjs hard-codes that identity; the env-based edit
+# is blocked by the workspace secret guard -- see the handover report).
 ensure_mock 19395
 ensure_mock 19396
 

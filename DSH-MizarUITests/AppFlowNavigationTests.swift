@@ -249,7 +249,7 @@ final class AppFlowNavigationTests: AppFlowTestBase {
     /// Two hosts, deliberately: one mock answers every read with the same
     /// providers, the same sessions and the same host id, so a screen drawn from
     /// the wrong computer's answer looks exactly like a screen drawn from the right
-    /// one. The mock on 19396 is a different machine.
+    /// one. The shared second-machine mock (19396) is a different machine.
     func testSwitchingcomputersDoesNotCarryTheFirstcomputersCatalog() {
         Self.resetSecondMockHost()
         let app = launch(

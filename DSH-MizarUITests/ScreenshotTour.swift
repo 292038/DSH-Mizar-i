@@ -32,7 +32,7 @@ final class ScreenshotTour: XCTestCase {
     }
 
     private func reset(pending: Bool) {
-        let url = URL(string: "http://127.0.0.1:\(mockPort)/reset?\(pending ? "" : "pending=0")")!
+        let url = URL(string: "http://127.0.0.1:\(MockPorts.port(for: String(describing: Self.self)))/reset?\(pending ? "" : "pending=0")")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         let done = expectation(description: "reset")
