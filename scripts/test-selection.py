@@ -96,7 +96,7 @@ def load_impact_map(root, relative):
     files = data.get("files")
     if not isinstance(files, dict):
         return None, "impact map has no files table"
-    return files, None
+    return files, data
 
 
 def main():
@@ -144,9 +144,8 @@ def main():
     expected = config.get("expectedUiTests")
     drift = expected is not None and ui_test_count != expected
 
-    impact_files, impact_note = load_impact_map(root, config.get("impactMap", ""))
-    if impact_files is not None and impact_files.get("__meta__"):
-        pass  # reserved for future metadata
+    impact_files, impact_meta = load_impact_map(root, config.get("impactMap", ""))
+    impact_note = impact_meta if isinstance(impact_meta, str) else None
 
     reasons = []
     notes = []
@@ -164,8 +163,14 @@ def main():
             "test/test-routing.json and regenerate the impact map"
             % (ui_test_count, expected))
     if impact_files is None:
-        notes.append(impact_note)
+        notes.append(impact_note or "impact map not present")
     if config.get("impactMap") and impact_files is not None:
+        mapped_count = impact_meta.get("uiTestCount") if isinstance(impact_meta, dict) else None
+        if mapped_count != ui_test_count:
+            full = True
+            reasons.append(
+                "impact map is incomplete (%s of %d UI tests recorded): rerun "
+                "scripts/record-impact-map.sh" % (mapped_count, ui_test_count))
         map_tests = set()
         for methods in impact_files.values():
             if isinstance(methods, list):

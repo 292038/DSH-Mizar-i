@@ -22,8 +22,9 @@ OUT="${2:-test/impact-map.json}"
 WORK="$ROOT/.devcache/impact"
 DERIVED="$ROOT/.devcache/DerivedData"
 mkdir -p "$WORK/logs"
-rm -f "$WORK/runs.tsv" "$WORK/coverage.err"
-: > "$WORK/runs.tsv"
+# Keep runs.tsv: a resumed run continues where the last one stopped. Only the
+# coverage stderr log is per-run.
+rm -f "$WORK/coverage.err"
 
 MOCK_PIDS=()
 cleanup() {
@@ -80,9 +81,10 @@ xcb build-for-testing -enableCodeCoverage YES > "$WORK/build.log" 2>&1 || {
 }
 
 # Resume: a run that was interrupted keeps the tests it already recorded.
-: > "$WORK/done.txt"
 if [ -s "$WORK/runs.tsv" ]; then
   cut -f1 "$WORK/runs.tsv" > "$WORK/done.txt"
+else
+  : > "$WORK/done.txt"
 fi
 echo "record-impact-map: resuming, $(wc -l < "$WORK/done.txt" | tr -d ' ') already recorded"
 
