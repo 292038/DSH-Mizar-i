@@ -3,7 +3,8 @@
 //  DSH-Mizar
 //
 //  The app, once a computer is paired: the workspaces on the left, the
-//  conversation, and the conversation's turns on the right.
+//  conversation, and the conversation's plane of pages on the right -- its
+//  turns, the subagents it has delegated to, and a preview page still to come.
 //
 //  On a phone the conversation is the screen and the two drawers are under it.
 //  Drag the conversation to the right, or tap the button at the top left, and
@@ -32,6 +33,12 @@ struct MizarShell: View {
     @State private var shell = ShellState()
     @State private var turnIndex = TurnIndex()
     @State private var placed = false
+    #if DEBUG
+    /// A debug launch asked for the right drawer; it is opened once a session
+    /// has arrived to show in it, since the drawer's own close rides the same
+    /// selection change.
+    @State private var debugOpenTrailingWanted = false
+    #endif
 
     var body: some View {
         GeometryReader { geometry in
@@ -66,6 +73,18 @@ struct MizarShell: View {
             // is a state, not a change.
             shell.place(open: model.selectedSessionId == nil)
             shell.trailingAvailable = model.selectedSessionId != nil
+            #if DEBUG
+            // A debug way into the right drawer, for screenshots and future
+            // drawer tests: the drawer otherwise belongs to a gesture, which
+            // `simctl` can launch but cannot make.
+            if ProcessInfo.processInfo.arguments.contains("-mizarOpenTurnIndex") {
+                debugOpenTrailingWanted = true
+                if model.selectedSessionId != nil {
+                    shell.trailingAvailable = true
+                    shell.openTrailing()
+                }
+            }
+            #endif
         }
         .onChange(of: model.selectedSessionId) { _, selected in
             shell.trailingAvailable = selected != nil
@@ -78,6 +97,15 @@ struct MizarShell: View {
             } else if !shell.settledOpen {
                 shell.open()
             }
+            #if DEBUG
+            // The debug open arrives after the close that rides the same
+            // selection, so the drawer ends the launch open rather than
+            // losing the race to it.
+            if debugOpenTrailingWanted, selected != nil {
+                shell.trailingAvailable = true
+                shell.openTrailing()
+            }
+            #endif
         }
         .onChange(of: turnIndex.jumpCount) { _, _ in
             // A turn chosen in the drawer: the card comes back to show it.
@@ -120,8 +148,11 @@ struct MizarShell: View {
                 .allowsHitTesting(lead > 0.5)
                 .gesture(SidebarPan(shell: shell, compact: compact))
 
-            // The mirror image, on the right.
-            TurnIndexPanel(onPick: {})
+            // The mirror image, on the right: one plane of three pages --
+            // turns, subagents, preview -- that the conversation card slides
+            // over. The card is drawn after this panel, which is what makes
+            // the plane's off-focus pages read as passing under it.
+            SessionSidePlane(onPick: {})
                 .safeAreaPadding(EdgeInsets(top: insets.top, leading: 0, bottom: insets.bottom, trailing: insets.trailing))
                 .frame(width: trailing, height: size.height)
                 .offset(x: size.width - trailing + (compact ? (1 - trail) * 44 : (1 - trail) * trailing))

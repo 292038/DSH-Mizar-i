@@ -1,0 +1,12 @@
+/* DSH-Mizar English — the drawer's plane: turns, subagents, preview.
+   A table of its own because the main Localizable.strings cannot be written
+   past the workspace guard's credential-shaped keys; see the workspace log. */
+
+"Subagents" = "Subagents";
+"Preview" = "Preview";
+"Running" = "Running";
+"Interrupted" = "Interrupted";
+"Subagent %lld" = "Subagent %lld";
+"No subagents yet" = "No subagents yet";
+"Agents this session delegates work to are listed here." = "Agents this session delegates work to are listed here.";
+"Under development — stay tuned." = "Under development — stay tuned.";

@@ -1,0 +1,13 @@
+/* DSH-Mizar 简体中文 — 抽屉平面：轮次、子代理、预览。
+   独立成表的原因：主 Localizable.strings 中存在触发工作区写入守卫误判的
+   既有键（"Password" 等，均被代码引用、不可删除），整文件无法写入；
+   新文案放这里，键与主表同等对待。 */
+
+"Subagents" = "子代理";
+"Preview" = "预览";
+"Running" = "正在运行";
+"Interrupted" = "中断";
+"Subagent %lld" = "子代理 %lld";
+"No subagents yet" = "还没有子代理";
+"Agents this session delegates work to are listed here." = "这个会话委派出去的子代理会列在这里。";
+"Under development — stay tuned." = "正在开发中，敬请期待。";

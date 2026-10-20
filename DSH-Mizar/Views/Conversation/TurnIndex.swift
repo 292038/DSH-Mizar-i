@@ -202,10 +202,15 @@ enum TurnState {
     }
 }
 
-// MARK: - The panel
+// MARK: - The page
 
-/// The index, as it is drawn in the drawer on a phone and in the column on an
-/// iPad.
+/// The turn index, as the plane's first page: drawn in the drawer on a phone
+/// and in the column on an iPad.
+///
+/// The page itself carries no big title any more -- "Turns" and its count
+/// moved up into the plane's tab bar, which is the header of all three pages
+/// now. What stays is the context the tab cannot hold: the session the turns
+/// belong to, what they have spent in total, and the filter.
 struct TurnIndexPanel: View {
     /// Called once a turn has been chosen, so the phone's drawer can close.
     var onPick: () -> Void = {}
@@ -218,7 +223,7 @@ struct TurnIndexPanel: View {
         VStack(alignment: .leading, spacing: 0) {
             header
                 .padding(.horizontal, 20)
-                .padding(.top, 10)
+                .padding(.top, 4)
                 .padding(.bottom, 12)
             if index.turns.isEmpty {
                 empty
@@ -236,15 +241,6 @@ struct TurnIndexPanel: View {
     private var header: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Turns")
-                        .font(.title2.weight(.bold))
-                    Text("\(index.turns.count)")
-                        .font(.title3.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                        .contentTransition(.numericText())
-                    Spacer(minLength: 0)
-                }
                 if let title = index.title {
                     Text(title)
                         .font(.subheadline)
