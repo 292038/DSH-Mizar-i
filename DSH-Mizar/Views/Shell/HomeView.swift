@@ -22,6 +22,7 @@ struct HomeView: View {
     @State private var choosingElsewhere = false
     @State private var draft = ""
     @State private var workspace: String?
+    @State private var showingModel = false
     @State private var sending = false
     @State private var sends = 0
     @FocusState private var focused: Bool
@@ -85,6 +86,7 @@ struct HomeView: View {
 
             HStack(spacing: 6) {
                 workspaceMenu
+                modelPill
                 Spacer(minLength: 4)
                 Button {
                     Task { await send() }
@@ -168,6 +170,45 @@ struct HomeView: View {
 
     private var workspaceTitle: String {
         model.workspaceChoices.first { $0.path == workspace }?.title ?? String(localized: "Choose a workspace")
+    }
+
+    /// Which model the session will start on.
+    ///
+    /// The choice this phone made for the next session first, then the host's
+    /// own default. The pill is never blank: "which model will answer" is the
+    /// question it exists to answer, and "Model" alone is only what it says
+    /// before the catalogue has been read.
+    private var modelLabel: String {
+        if let choice = model.newSessionModel {
+            return modelPillLabel(model: choice.model, effort: choice.effort)
+        }
+        guard let selection = model.modelCatalog?.defaultSelection else {
+            return String(localized: "Model")
+        }
+        return modelPillLabel(model: selection.model, effort: selection.reasoningEffort)
+    }
+
+    /// The model control, drawn exactly as the session composer draws it.
+    private var modelPill: some View {
+        ModelPill(label: modelLabel) { showingModel = true }
+            // The model name is the narrower fact of the two on this row, but it
+            // is the one that changes meaning when truncated to "deepseek…", so
+            // the workspace title gives way first.
+            .layoutPriority(1)
+            .mizarPopover(isPresented: $showingModel, arrowEdge: .bottom) {
+                // No session yet, so the sheet holds the choice rather than
+                // sending it: `startSession` applies it once the host has an id.
+                ModelPickerView(sessionId: nil, stats: nil) { choice in
+                    model.chooseNewSessionModel(
+                        provider: choice.provider,
+                        model: choice.model,
+                        effort: choice.effort,
+                    )
+                }
+                .frame(width: PopoverSize.list.width, height: PopoverSize.list.height)
+            }
+            .accessibilityLabel("Model, \(modelLabel)")
+            .accessibilityIdentifier("home.model")
     }
 
     private var canSend: Bool {

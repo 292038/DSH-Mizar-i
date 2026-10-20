@@ -14,13 +14,23 @@ import MizarKit
 
 /// Model and reasoning effort.
 struct ModelPickerView: View {
-    let sessionId: String
+    /// The session to switch, or `nil` when the choice is for the session the
+    /// home screen is about to start.
+    ///
+    /// There is no session to send `session.model.set` to in that case -- the
+    /// host creates one with its own default and only then accepts a switch --
+    /// so the choice is held on the phone until ``AppModel/startSession(cwd:prompt:)``
+    /// has an id to apply it to. The rows, the tick and the catalogue are the
+    /// same either way; only what a tap commits differs.
+    let sessionId: String?
     /// The host's last report for this session, when the screen has one.
     ///
     /// Passed in because it belongs to the session and is already read and
     /// tagged by the screen that owns it -- reaching for it here would be a
     /// second read of the same thing under a second set of tags.
     let stats: SessionStatsFrame?
+    /// What to do with a choice when there is no session yet.
+    var onChoose: ((AppModel.ModelChoice) -> Void)? = nil
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -48,7 +58,12 @@ struct ModelPickerView: View {
                 // refused: it is drawn from what the app and the host have agreed
                 // on, never from what was last tapped.
                 if let current = currentChoice {
-                    Section("In force") {
+                    // "In force" is a claim about a session that exists. On the
+                    // home screen there is nothing in force yet -- the choice is
+                    // for the session about to start -- and a heading that said
+                    // otherwise would be a small lie on the one screen that has
+                    // not asked the host anything.
+                    Section(sessionId == nil ? "Next session" : "In force") {
                         // One `Text` rather than a title with a caption under it,
                         // and that is what makes it readable by anything but a
                         // pair of eyes: SwiftUI exposes a stack of two texts as
@@ -109,7 +124,7 @@ struct ModelPickerView: View {
                 // the picker opened with nothing marked, so there was no way to
                 // tell which model was in force -- the row builder has always
                 // drawn a checkmark, it just never had anything to draw it on.
-                guard chosenModel == nil, let choice = model.modelChoice[sessionId] else { return }
+                guard chosenModel == nil, let choice = sessionChoice else { return }
                 chosenProvider = choice.provider
                 chosenModel = choice.model
                 chosenEffort = choice.effort
@@ -119,7 +134,7 @@ struct ModelPickerView: View {
             // and the tap that caused it is already a frame behind -- so without
             // this the tick and the segmented control would go on showing the
             // refused model, which is the same lie one screen in.
-            .onChange(of: model.modelChoice[sessionId]) { _, choice in
+            .onChange(of: sessionChoice) { _, choice in
                 guard let choice else { return }
                 chosenProvider = choice.provider
                 chosenModel = choice.model
@@ -142,11 +157,21 @@ struct ModelPickerView: View {
     /// what the host last reported, which is the same thing on a phone that has
     /// switched nothing.
     private var agreedSelection: (provider: String, model: String, effort: String?)? {
-        if let choice = model.modelChoice[sessionId] {
+        if let choice = sessionChoice {
             return (choice.provider, choice.model, choice.effort)
         }
         guard let selection = stats?.model?.next ?? stats?.model?.lastUsed else { return nil }
         return (selection.provider, selection.model, selection.reasoningEffort)
+    }
+
+    /// What this phone has chosen for whatever the picker is aiming at.
+    ///
+    /// The session's own last choice, or -- with no session yet -- the model the
+    /// home screen will start one with. One property rather than two branches in
+    /// four places, and it is what lets the same sheet serve both.
+    private var sessionChoice: AppModel.ModelChoice? {
+        guard let sessionId else { return model.newSessionModel }
+        return model.modelChoice[sessionId]
     }
 
     /// That route, with the names the catalogue spells it with.
@@ -248,6 +273,16 @@ struct ModelPickerView: View {
     ///   - model: the model id.
     ///   - effort: the reasoning level, or `nil` for the provider default.
     private func commit(provider: String, model: String, effort: String?) async {
+        guard let sessionId else {
+            // No session to ask. The choice is held for the one the home screen
+            // starts next and applied the moment it has an id -- so this sheet
+            // closes on a decision, the way the session's own sheet closes on an
+            // answer.
+            onChoose?(AppModel.ModelChoice(provider: provider, model: model, effort: effort))
+            switchError = nil
+            dismiss()
+            return
+        }
         let accepted = await self.model.setModel(
             provider: provider,
             model: model,

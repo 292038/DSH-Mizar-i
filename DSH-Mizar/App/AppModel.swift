@@ -353,6 +353,32 @@ final class AppModel {
         let effort: String?
     }
 
+    /// The model the next session started from the home screen will use.
+    ///
+    /// The home pane is where a session is aimed before it exists, and the host's
+    /// `session.create` takes no model -- so the choice is held here and applied
+    /// between the create and the first prompt. See ``startSession(cwd:prompt:)``.
+    ///
+    /// Not persisted, for the same reason ``modelChoice`` is not: after a
+    /// relaunch the plugin's own config is the truth. It does survive from one
+    /// session to the next, because choosing a model is a preference about the
+    /// work rather than about one conversation.
+    private(set) var newSessionModel: ModelChoice?
+
+    /// Choose the model for the next session.
+    ///
+    /// Nothing is sent. There is no session to send it to yet, and a call that
+    /// pretended otherwise would be a switch reported as taken before it could
+    /// be.
+    ///
+    /// - Parameters:
+    ///   - provider: the provider id.
+    ///   - model: the model id.
+    ///   - effort: the reasoning level, or `nil` for the provider default.
+    func chooseNewSessionModel(provider: String, model: String, effort: String?) {
+        newSessionModel = ModelChoice(provider: provider, model: model, effort: effort)
+    }
+
     /// The models this host offers, and which host said so.
     ///
     /// Read once per connection and kept, so the machine it was read from is
@@ -1070,6 +1096,9 @@ final class AppModel {
         permissionCatalogState.clear()
         pendingState.clear()
         recentHostEventState.clear()
+        // A choice about the next session on *that* machine, and the next machine
+        // may not offer the model at all.
+        newSessionModel = nil
         // A preset accepted here is a fact about a session on this computer.
         appliedPermissions = [:]
         phase = .launching
@@ -1755,6 +1784,20 @@ final class AppModel {
     @discardableResult
     func startSession(cwd: String, prompt: String) async -> String? {
         guard let sessionId = await createSession(cwd: cwd, select: false) else { return nil }
+        // The model chosen on the home screen, applied to the session it was
+        // chosen for. The host creates a session on its own default and only
+        // then accepts a switch, so this is the earliest it can happen -- and it
+        // is best effort: a refusal leaves the default in place, and the
+        // conversation's own bar then names what is actually answering rather
+        // than repeating a choice that did not take.
+        if let choice = newSessionModel {
+            _ = await setModel(
+                provider: choice.provider,
+                model: choice.model,
+                effort: choice.effort,
+                sessionId: sessionId,
+            )
+        }
         guard await sendPrompt(prompt, to: sessionId) else {
             // The session exists and is empty; open it so the operator can see
             // it and try again from there, with their words still to hand.
@@ -2166,6 +2209,7 @@ final class AppModel {
         // already nil, so none of these is readable any more -- dropping them is
         // what keeps them out of the next pairing's export.
         modelChoice = [:]
+        newSessionModel = nil
         modelCatalogState.clear()
         permissionCatalogState.clear()
         pendingState.clear()
