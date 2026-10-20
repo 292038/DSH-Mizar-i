@@ -30,10 +30,12 @@
 import XCTest
 
 final class LanPriorityUITests: XCTestCase {
+    /// This class's mock-host primary port; the table is `MockPorts`.
+    private static let mockPort = MockPorts.port(for: "LanPriorityUITests")
     /// The mock host this suite drives.
     private static let mockPairingURI =
-        "mizar://pair?h=127.0.0.1%3A19395&c=MOCK-CODE&n=Mock%20Mac&v=1"
-    private static let mockBaseURL = "http://127.0.0.1:19395"
+        "mizar://pair?h=127.0.0.1%3A\(mockPort)&c=MOCK-CODE&n=Mock%20Mac&v=1"
+    private static let mockBaseURL = "http://127.0.0.1:\(mockPort)"
 
     /// The switch under test.
     ///

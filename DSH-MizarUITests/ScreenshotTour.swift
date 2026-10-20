@@ -18,7 +18,9 @@ import XCTest
 
 final class ScreenshotTour: XCTestCase {
     private var folder: URL!
-    private static let pairing = "mizar://pair?h=127.0.0.1%3A19395&c=MOCK-CODE&n=Mock%20Mac&v=1"
+    /// This class's mock-host primary port; the table is `MockPorts`.
+    private static let mockPort = MockPorts.port(for: "ScreenshotTour")
+    private static let pairing = "mizar://pair?h=127.0.0.1%3A\(mockPort)&c=MOCK-CODE&n=Mock%20Mac&v=1"
 
     override func setUpWithError() throws {
         guard let path = ProcessInfo.processInfo.environment["MIZAR_SHOTS"], !path.isEmpty else {
@@ -30,7 +32,7 @@ final class ScreenshotTour: XCTestCase {
     }
 
     private func reset(pending: Bool) {
-        let url = URL(string: "http://127.0.0.1:19395/reset?\(pending ? "" : "pending=0")")!
+        let url = URL(string: "http://127.0.0.1:\(mockPort)/reset?\(pending ? "" : "pending=0")")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         let done = expectation(description: "reset")

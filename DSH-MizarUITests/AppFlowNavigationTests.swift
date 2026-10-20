@@ -8,6 +8,8 @@
 import XCTest
 
 final class AppFlowNavigationTests: AppFlowTestBase {
+    /// This class's own mock-host pair, from the MockPorts table.
+    override class var mockPort: Int { MockPorts.port(for: String(describing: self)) }
     /// The sidebar comes and goes: from the toggle, from a drag, from a tap on
     /// the conversation pushed aside, and by itself when a session is chosen.
     ///
@@ -247,7 +249,7 @@ final class AppFlowNavigationTests: AppFlowTestBase {
     /// Two hosts, deliberately: one mock answers every read with the same
     /// providers, the same sessions and the same host id, so a screen drawn from
     /// the wrong computer's answer looks exactly like a screen drawn from the right
-    /// one. `scripts/mock-host.mjs 19396` is a different machine.
+    /// one. The mock on 19396 is a different machine.
     func testSwitchingcomputersDoesNotCarryTheFirstcomputersCatalog() {
         Self.resetSecondMockHost()
         let app = launch(

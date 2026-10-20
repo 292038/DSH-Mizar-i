@@ -63,6 +63,22 @@ xcb() {
     "$@"
 }
 
+# One mock-host pair per UI test class; the primaries come from the
+# `// mock-ports:` line in DSH-MizarUITests/MockPorts.swift, the single source
+# of truth shared with the Swift side. MOCK_SECONDARY_PORT is meant to tell
+# the second machine of each pair its identity.
+ports_line="$(grep -m1 '// mock-ports:' "$ROOT/DSH-MizarUITests/MockPorts.swift" || true)"
+if [ -z "$ports_line" ]; then
+  echo "record-impact-map: no '// mock-ports:' line in DSH-MizarUITests/MockPorts.swift" >&2
+  exit 1
+fi
+for port in ${ports_line#// mock-ports:}; do
+  ensure_mock "$port"
+  MOCK_SECONDARY_PORT=$((port + 1)) ensure_mock $((port + 1))
+done
+# Temporary compat while two edits are blocked by the workspace write guard:
+# AccountUITests still reads 19395, and the AppFlow second machine still pairs
+# on 19396. Drop these once both edits land.
 ensure_mock 19395
 ensure_mock 19396
 

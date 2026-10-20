@@ -8,6 +8,8 @@
 import XCTest
 
 final class AppFlowSessionDetailTests: AppFlowTestBase {
+    /// This class's own mock-host pair, from the MockPorts table.
+    override class var mockPort: Int { MockPorts.port(for: String(describing: self)) }
     // MARK: - Session detail
 
     func testOpeningASessionShowsTheComposer() {

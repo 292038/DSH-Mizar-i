@@ -44,25 +44,27 @@
 import XCTest
 
 final class LANFailoverUITests: XCTestCase {
+    /// This class's mock-host primary port; the table is `MockPorts`.
+    private static let mockPort = MockPorts.port(for: "LANFailoverUITests")
     /// The mock host's main listener: the computer's own address.
-    private static let mockBaseURL = "http://127.0.0.1:19395"
+    private static let mockBaseURL = "http://127.0.0.1:\(mockPort)"
     /// The relay stand-in's listener, on `port + 2`, at the room the pairing URI
     /// names. Its `/connections` counts relayed sockets and nothing else.
-    private static let mockRelayBaseURL = "http://127.0.0.1:19397"
+    private static let mockRelayBaseURL = "http://127.0.0.1:\(mockPort + 2)"
 
     /// A pairing with both routes in one URI.
     ///
     /// `h` is the direct address (what the app dials first, and the route the
     /// app must *leave*), `u` is the relay base URL the app turns into
-    /// `ws://127.0.0.1:19397/r/mock-room/mizar/v1/ws` (the route it must fall
+    /// `ws://127.0.0.1:<mockPort + 2>/r/mock-room/mizar/v1/ws` (the route it must fall
     /// back to). One URI carrying both is the arrangement the bug is about: the
     /// fallback exists, and a reconnect that never names it is a route plan with
     /// one route in it.
     ///
     /// The two are percent-encoded exactly as a QR code carries them.
     private static let mockPairingURI =
-        "mizar://pair?h=127.0.0.1%3A19395&c=MOCK-CODE&n=Mock%20Mac&v=1"
-        + "&u=http%3A%2F%2F127.0.0.1%3A19397%2Fr%2Fmock-room"
+        "mizar://pair?h=127.0.0.1%3A\(mockPort)&c=MOCK-CODE&n=Mock%20Mac&v=1"
+        + "&u=http%3A%2F%2F127.0.0.1%3A\(mockPort + 2)%2Fr%2Fmock-room"
 
     /// How long the app gets to notice the LAN is gone and be back on the relay.
     ///

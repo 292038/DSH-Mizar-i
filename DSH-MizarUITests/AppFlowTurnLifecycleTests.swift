@@ -8,6 +8,8 @@
 import XCTest
 
 final class AppFlowTurnLifecycleTests: AppFlowTestBase {
+    /// This class's own mock-host pair, from the MockPorts table.
+    override class var mockPort: Int { MockPorts.port(for: String(describing: self)) }
     /// The refresh control in the conversation, which is the way back to a
     /// session that has gone quiet without hunting for a pull gesture.
     ///

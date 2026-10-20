@@ -20,17 +20,19 @@
 //  AccountUITests; this suite isolates the feed and its presentation.
 //
 //  Focused run (the mock host must be up):
-//    node scripts/mock-host.mjs 19395 &
+//    node scripts/mock-host.mjs 19420 &
 //    scripts/ios.sh test "iPhone 18 Pro" -only-testing:DSH-MizarUITests/ActivityUITests
 //
 
 import XCTest
 
 final class ActivityUITests: XCTestCase {
+    /// This class's mock-host primary port; the table is `MockPorts`.
+    private static let mockPort = MockPorts.port(for: "ActivityUITests")
     /// The mock host this suite drives.
     private static let mockPairingURI =
-        "mizar://pair?h=127.0.0.1%3A19395&c=MOCK-CODE&n=Mock%20Mac&v=1"
-    private static let mockAccountURL = "http://127.0.0.1:19395"
+        "mizar://pair?h=127.0.0.1%3A\(mockPort)&c=MOCK-CODE&n=Mock%20Mac&v=1"
+    private static let mockAccountURL = "http://127.0.0.1:\(mockPort)"
     private static let patience: TimeInterval = 20
 
     override func setUp() {
@@ -279,7 +281,7 @@ final class ActivityUITests: XCTestCase {
     /// - Parameter path: the path, starting with `/`.
     /// - Returns: the decoded object, or `nil`.
     private static func mockJSON(_ path: String) -> [String: Any]? {
-        guard let url = URL(string: "http://127.0.0.1:19395\(path)") else { return nil }
+        guard let url = URL(string: "http://127.0.0.1:\(mockPort)\(path)") else { return nil }
         let done = DispatchSemaphore(value: 0)
         let box = Box()
         var request = URLRequest(url: url)

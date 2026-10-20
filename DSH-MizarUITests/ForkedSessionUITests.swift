@@ -35,10 +35,12 @@
 import XCTest
 
 final class ForkedSessionUITests: XCTestCase {
+    /// This class's mock-host primary port; the table is `MockPorts`.
+    private static let mockPort = MockPorts.port(for: "ForkedSessionUITests")
     /// The mock host this suite drives.
     private static let mockPairingURI =
-        "mizar://pair?h=127.0.0.1%3A19395&c=MOCK-CODE&n=Mock%20Mac&v=1"
-    private static let mockBaseURL = "http://127.0.0.1:19395"
+        "mizar://pair?h=127.0.0.1%3A\(mockPort)&c=MOCK-CODE&n=Mock%20Mac&v=1"
+    private static let mockBaseURL = "http://127.0.0.1:\(mockPort)"
     /// How long to wait for the host (or a screen) to answer.
     private static let patience: TimeInterval = 20
     /// A naming prompt appears only on the first pairing; waiting the full

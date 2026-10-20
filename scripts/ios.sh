@@ -4,8 +4,16 @@
 #
 # Usage: scripts/ios.sh build|run|test|test-fast|screenshot [simulator name] [extra args]
 #
-# The UI tests need scripts/mock-host.mjs running on port 19395 first:
-#   node scripts/mock-host.mjs 19395 &
+# Each UI test class runs against its own mock-host pair (fixture machine on
+# its primary port, second machine on +1). prepare_ui_tests starts every pair
+# from the port table in DSH-MizarUITests/MockPorts.swift. To drive one pair
+# manually, e.g. AccountUITests would be:
+#   node scripts/mock-host.mjs 19416 &
+#   MOCK_SECONDARY_PORT=19417 node scripts/mock-host.mjs 19417 &
+#
+# Interim: mock-host.mjs still hard-codes its second-machine identity to port
+# 19396 (that edit is write-guard-blocked), so the AppFlow second machine
+# stays on 19396 and prepare_ui_tests also starts the legacy 19395/19396 pair.
 #
 # The project compiles MizarKit as an in-project framework target rather than as
 # a Swift package reference. That is not a style choice: Xcode resolves a package
@@ -85,6 +93,26 @@ prepare_ui_tests() {
   if [ "${MIZAR_NO_MOCK:-0}" = "1" ]; then
     return
   fi
+  # One mock-host pair per UI test class. The primaries come from the
+  # `// mock-ports:` line in DSH-MizarUITests/MockPorts.swift, the single
+  # source of truth shared with the Swift side. A secondary is meant to learn
+  # it is the second machine through MOCK_SECONDARY_PORT (mock-host.mjs); the
+  # relay stand-ins need no argument, they are always port + 2.
+  local ports_file="$ROOT/DSH-MizarUITests/MockPorts.swift"
+  local ports_line port
+  ports_line="$(grep -m1 '// mock-ports:' "$ports_file" || true)"
+  if [ -z "$ports_line" ]; then
+    echo "ios.sh: no '// mock-ports:' line in DSH-MizarUITests/MockPorts.swift" >&2
+    exit 1
+  fi
+  for port in ${ports_line#// mock-ports:}; do
+    ensure_mock_host "$port"
+    MOCK_SECONDARY_PORT=$((port + 1)) ensure_mock_host $((port + 1))
+  done
+  # Temporary compat while two edits are blocked by the workspace write guard:
+  # AccountUITests still reads 19395, and the AppFlow second machine still
+  # pairs on 19396 -- the one port where unchanged mock-host.mjs takes its
+  # second-machine identity. Drop these once both edits land.
   ensure_mock_host 19395
   ensure_mock_host 19396
 }
