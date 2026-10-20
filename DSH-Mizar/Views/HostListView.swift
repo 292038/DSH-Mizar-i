@@ -251,8 +251,21 @@ extension PairedHost: @retroactive Identifiable {
 /// the first-run experience: there is nothing else this app can usefully do
 /// without a machine on the other end. Drawn in the icon's own navy, with the
 /// mark sending its signal up and out -- looking for a computer to answer it.
-struct UnpairedView: View {
+///
+/// The mark is injectable so the snapshot suite can pin its resting state
+/// (`MizarMark(lit: 3)`, the state reduce motion rests on): the searching
+/// arcs animate on a repeating keyframe animator, which no render transaction
+/// stops, and `accessibilityReduceMotion` is a get-only environment key the
+/// harness cannot set. On screen it is always the searching mark; see the
+/// convenience initialiser.
+struct UnpairedView<Mark: View>: View {
     @State private var showingPairing = false
+    /// The mark above the copy. Always the searching mark on screen.
+    private let mark: Mark
+
+    init(mark: Mark) {
+        self.mark = mark
+    }
 
     var body: some View {
         ZStack {
@@ -272,7 +285,7 @@ struct UnpairedView: View {
 
             VStack(spacing: 0) {
                 Spacer()
-                MizarMarkSearching(accent: Color(red: 0.235, green: 0.796, blue: 0.957), ink: .white)
+                mark
                     .frame(width: 112)
                     .padding(.bottom, 36)
                 Text("No computer paired yet")
@@ -311,5 +324,13 @@ struct UnpairedView: View {
             }
         }
         .environment(\.colorScheme, .dark)
+    }
+}
+
+extension UnpairedView where Mark == MizarMarkSearching {
+    /// The screen as it ships: the searching mark, sending its pulse up and
+    /// out for as long as it is on screen.
+    init() {
+        self.init(mark: MizarMarkSearching(accent: Color(red: 0.235, green: 0.796, blue: 0.957), ink: .white))
     }
 }

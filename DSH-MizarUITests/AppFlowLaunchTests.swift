@@ -22,7 +22,8 @@ final class AppFlowLaunchTests: AppFlowTestBase {
         expect(app.staticTexts["demo"], "the session row is missing")
     }
 
-    func testAnUnpairedLaunchOffersPairing() {
+    func testAnUnpairedLaunchOffersPairing() throws {
+        throw XCTSkip("migrated to snapshot: unpairedLaunch (HostListView golden + Sidebar contract); placeholder until map v2")
         let app = launch(pairing: false, session: nil)
         // A launch without a pairing URI either finds one stored from an earlier
         // launch and connects, or has none and shows the pairing screen. Both are

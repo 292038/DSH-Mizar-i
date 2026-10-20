@@ -200,6 +200,7 @@ network-state machines counted at the host (:74,:102) plus activity paging (:70)
    redeem + relaunch chain; gate-policy unit + locked/unlocked snapshots; est. ~40 s.
 4. `AppFlowTests/testAnUnpairedLaunchOffersPairing` (:890) — one existence assertion,
    launch-arg state; presenter test + pairing golden; est. ~20 s, lowest risk.
+   已下推=快照+源码契约，原用例 XCTSkip 占位，2026-10-21。
 5. `AppFlowTests/testTheHomeScreenChoosesTheModelItsSessionStartsOn` (:3032) — selection
    flow; model-selection unit + home snapshot; est. ~30 s.
 
