@@ -437,6 +437,9 @@ final class AppFlowNavigationTests: AppFlowTestBase {
 
     // MARK: - Localisation
 
+    /// Composer titles and the failure card have zh/en goldens in snapshots;
+    /// the TextField placeholder is UIKit-backed (it does not follow the render
+    /// locale in ImageRenderer) so this test keeps asserting that half.
     func testInterfaceFollowsTheLanguageAndContentDoesNot() {
         let chinese = launch(language: "zh-Hans", pending: false)
         // Scrolled back to: the failure card belongs to the second turn, and the

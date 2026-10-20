@@ -700,7 +700,12 @@ private struct SystemNote: View {
 }
 
 /// A turn that produced nothing.
-private struct FailureCard: View {
+///
+/// Internal rather than private so the snapshot suite can render it from a
+/// fixture (`ComposerLanguageSnapshotTests`), the way `CommandList` is: it owns
+/// no environment, and a failure older than twenty seconds never arms the
+/// shake, so a fixture renders the resting card.
+struct FailureCard: View {
     let message: String
     /// When the turn failed. Only a failure that just happened shakes: one
     /// scrolled back into view is news nobody needs announced twice.

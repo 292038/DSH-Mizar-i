@@ -58,7 +58,7 @@ is **not** part of the suite; its 1 method is ignored here.
 | `:954` testANotificationSwitchSurvivesARelaunch | S | unit | Toggle persists across relaunch (:976-:980); UserDefaults logic unit (MizarSettings); relaunch itself kept at 1198. |
 | `:997` testTheLogExportMakesAZipAndOffersIt | S | snapshot+unit | Export writes a .zip and offers it (:1005-:1026); archive writer unit + settings-row snapshot; share-sheet presentation drops to manual (risk R4). |
 | `:1032` testTheAboutSectionShowsTheVersionAndBothCredits | L | snapshot | About version/credits copy (:1035-:1058); fixed screen + bundle-version unit assertion. |
-| `:1068` testTheSettingsScreenFollowsTheLanguage | L | snapshot+unit | zh/en settings copy across a relaunch (:1073-:1109); per-locale presenter/goldens; .strings keys already unit-checked. |
+| `:1068` testTheSettingsScreenFollowsTheLanguage | L | snapshot+unit | zh/en settings copy across a relaunch (:1073-:1109); per-locale presenter/goldens; .strings keys already unit-checked. → 2026-10-21 已下推：SettingsLanguage zh/en goldens + identifier 契约；原用例 XCTSkip 占位。 |
 | `:1119` testAFirstPairingShowsAFullScreenDownload | L | snapshot | First-pairing download screen in a fixed state (:1129-:1149); layout from a fixed model. |
 | `:1158` testRefreshingShowsAProgressWindow | S | snapshot+unit | Refresh progress window with counter/eta (:1175-:1188); progress model unit + syncing-state snapshot. |
 | `:1198` testAnUnreachableMacKeepsTheStoredSessions | S | keep | Offline host -> terminate/relaunch -> stored sessions -> pull-refresh (:1201-:1267); network state + relaunch. |
@@ -100,11 +100,11 @@ is **not** part of the suite; its 1 method is ignored here.
 | `:2730` testSwitchingcomputersDoesNotCarryTheFirstcomputersCatalog | S | snapshot+unit | Switching computers must not carry the first catalogue (:2749-:2790); per-host keying unit + list snapshot. |
 | `:2802` testTheLastOpenedMacIsTheOneReopened | S | unit | Last-opened Mac reopened after relaunch (:2813-:2846); defaults unit (MizarSettings). |
 | `:2863` testASendDuringAReloadDoesNotStartASecondLoad | S | keep | Send during reload must not start a second load (:2880-:2908); in-flight overlap. |
-| `:2917` testInterfaceFollowsTheLanguageAndContentDoesNot | L | snapshot+unit | Interface zh/en, content unchanged (:2921-:2958); per-locale presenter/goldens. |
+| `:2917` testInterfaceFollowsTheLanguageAndContentDoesNot | L | snapshot+unit | Interface zh/en, content unchanged (:2921-:2958); per-locale presenter/goldens. → 2026-10-21 部分下推：commands/failure-card zh/en goldens（locale 生效）；TextField placeholder 为 UIKit-backed 不跟随渲染 locale，原用例保留覆盖该半截。 |
 | `:2966` testTheDockTucksAwayWhileTyping | S | snapshot+unit | Dock tucks to a pill while typing (:2968-:2982); tuck rule unit + docked/tucked snapshots. |
 | `:2987` testTheOpenSessionsWorkspaceIsExpanded | L | snapshot | Open session's workspace auto-expanded in the sidebar (:2989-:2995). |
 | `:3002` testTheHomeScreenStartsASessionWithItsFirstPrompt | S | keep | Create a session from the home screen with its first prompt (:3004-:3022). |
-| `:3032` testTheHomeScreenChoosesTheModelItsSessionStartsOn | S | snapshot+unit | Home model choice applies to the created session (:3040-:3076); selection unit + home snapshot. |
+| `:3032` testTheHomeScreenChoosesTheModelItsSessionStartsOn | S | snapshot+unit | Home model choice applies to the created session (:3040-:3076); selection unit + home snapshot. → 2026-10-21 部分下推：HomeModelPill/PickerRow goldens + 契约；请求半截（mock 计数断言）保留原用例，待 AppModel 下沉。 |
 | `:3088` testTheTurnIndexOpensByADragAndJumps | S | keep | Turn index opens by a drag and jumps (:3095-:3112). |
 | `:3116` testTheTitleOpensTheTurnIndex | S | keep(merge->3088) | Title button opens the same index (:3118-:3128); fold count assertion into 3088. |
 | `:3133` testTheConnectionWindowMeasuresLatency | L | snapshot+unit | Latency class + poll copy (:3135-:3143); classification unit + panel snapshot. |

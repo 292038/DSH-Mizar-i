@@ -95,7 +95,23 @@ struct ModelPickerView: View {
                     ForEach(catalog.providers) { provider in
                         Section(provider.name) {
                             ForEach(provider.models) { option in
-                                modelRow(provider: provider, option: option)
+                                ModelPickerRow(
+                                    provider: provider,
+                                    option: option,
+                                    isChosen: chosenModel == option.id && chosenProvider == provider.id,
+                                    chosenEffort: $chosenEffort,
+                                    tick: tick,
+                                    onChoose: {
+                                        chosenProvider = provider.id
+                                        chosenModel = option.id
+                                        chosenEffort = option.defaultEffort
+                                    },
+                                    onCommit: { effort in
+                                        Task {
+                                            await commit(provider: provider.id, model: option.id, effort: effort)
+                                        }
+                                    },
+                                )
                             }
                         }
                     }
@@ -191,20 +207,74 @@ struct ModelPickerView: View {
         )
     }
 
-    @ViewBuilder
-    private func modelRow(provider: ProviderGroup, option: ModelOption) -> some View {
-        let isChosen = chosenModel == option.id && chosenProvider == provider.id
+    ///   - provider: the provider id.
+    ///   - model: the model id.
+    ///   - effort: the reasoning level, or `nil` for the provider default.
+    private func commit(provider: String, model: String, effort: String?) async {
+        guard let sessionId else {
+            // No session to ask. The choice is held for the one the home screen
+            // starts next and applied the moment it has an id -- so this sheet
+            // closes on a decision, the way the session's own sheet closes on an
+            // answer.
+            onChoose?(AppModel.ModelChoice(provider: provider, model: model, effort: effort))
+            switchError = nil
+            dismiss()
+            return
+        }
+        let accepted = await self.model.setModel(
+            provider: provider,
+            model: model,
+            effort: effort,
+            sessionId: sessionId,
+        )
+        guard accepted else {
+            switchError = self.model.problem ?? String(localized: "Could not switch model")
+            return
+        }
+        switchError = nil
+        dismiss()
+    }
+}
+
+/// One catalogue row in ``ModelPickerView``: the model, its tick, and -- once
+/// chosen -- its reasoning levels.
+///
+/// Extracted verbatim from the sheet so the snapshot suite can render a real
+/// row from fixture data (`HomeModelSnapshotTests`): the sheet reads its
+/// catalogue from the environment's ``AppModel`` -- a connection-scoped value a
+/// unit test has none of -- and draws it in a `List`, which draws nothing
+/// inside `ImageRenderer`. The row keeps everything the sheet drew for it, and
+/// the sheet decides what a tap means by handing closures in: ``onChoose``
+/// marks the row chosen, ``onCommit`` sends a level (or a model with none).
+struct ModelPickerRow: View {
+    /// The provider the row belongs to, for the chosen check.
+    let provider: ProviderGroup
+    /// The model the row draws.
+    let option: ModelOption
+    /// Whether this row is the one in force: semibold, ticked, and with its
+    /// levels revealed.
+    let isChosen: Bool
+    /// The level ticked inside the row, when it is chosen.
+    @Binding var chosenEffort: String?
+    /// The namespace the tick's matched geometry moves in. One per sheet, so
+    /// the tick travels between rows as the choice moves.
+    let tick: Namespace.ID
+    /// What a tap on the row marks.
+    let onChoose: () -> Void
+    /// What a level picked inside the row means, and what a model with no
+    /// levels means when it is tapped.
+    let onCommit: (String?) -> Void
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
                 withMizarAnimation(.mizarSmooth) {
-                    chosenProvider = provider.id
-                    chosenModel = option.id
-                    chosenEffort = option.defaultEffort
+                    onChoose()
                 }
                 // A model with no effort levels commits immediately: there is
                 // nothing else to choose, and an extra tap would be a formality.
                 if option.efforts.isEmpty {
-                    Task { await commit(provider: provider.id, model: option.id, effort: nil) }
+                    onCommit(nil)
                 }
             } label: {
                 HStack {
@@ -232,69 +302,27 @@ struct ModelPickerView: View {
             .accessibilityIdentifier("model.row.\(option.id)")
 
             if isChosen && !option.efforts.isEmpty {
-                effortPicker(provider: provider.id, option: option)
-                    .transition(.rise(distance: -6, blur: 4))
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func effortPicker(provider: String, option: ModelOption) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Thinking")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Picker("Thinking", selection: Binding(
-                get: { chosenEffort ?? "" },
-                set: { newValue in
-                    chosenEffort = newValue.isEmpty ? nil : newValue
-                    Task { await commit(provider: provider, model: option.id, effort: chosenEffort) }
-                },
-            )) {
-                ForEach(option.efforts) { effort in
-                    Text(effort.name).tag(effort.id)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Thinking")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Picker("Thinking", selection: Binding(
+                        get: { chosenEffort ?? "" },
+                        set: { newValue in
+                            chosenEffort = newValue.isEmpty ? nil : newValue
+                            onCommit(chosenEffort)
+                        },
+                    )) {
+                        ForEach(option.efforts) { effort in
+                            Text(effort.name).tag(effort.id)
+                        }
+                    }
+                    .pickerStyle(.segmented)
                 }
+                .padding(.leading, 4)
+                .transition(.rise(distance: -6, blur: 4))
             }
-            .pickerStyle(.segmented)
         }
-        .padding(.leading, 4)
-    }
-
-    /// Send a choice, and close only once the host has taken it.
-    ///
-    /// Closing on a refusal was the visible half of the bug: the sheet went away,
-    /// the bar behind it went on naming the model that had been refused, and
-    /// nothing anywhere said the switch had not happened. Staying open on a
-    /// refusal is what gives the reason somewhere to be read and the tick
-    /// somewhere to go back to.
-    ///
-    /// - Parameters:
-    ///   - provider: the provider id.
-    ///   - model: the model id.
-    ///   - effort: the reasoning level, or `nil` for the provider default.
-    private func commit(provider: String, model: String, effort: String?) async {
-        guard let sessionId else {
-            // No session to ask. The choice is held for the one the home screen
-            // starts next and applied the moment it has an id -- so this sheet
-            // closes on a decision, the way the session's own sheet closes on an
-            // answer.
-            onChoose?(AppModel.ModelChoice(provider: provider, model: model, effort: effort))
-            switchError = nil
-            dismiss()
-            return
-        }
-        let accepted = await self.model.setModel(
-            provider: provider,
-            model: model,
-            effort: effort,
-            sessionId: sessionId,
-        )
-        guard accepted else {
-            switchError = self.model.problem ?? String(localized: "Could not switch model")
-            return
-        }
-        switchError = nil
-        dismiss()
     }
 }
 
