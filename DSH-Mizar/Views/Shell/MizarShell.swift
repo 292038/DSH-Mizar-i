@@ -76,12 +76,18 @@ struct MizarShell: View {
             #if DEBUG
             // A debug way into the right drawer, for screenshots and future
             // drawer tests: the drawer otherwise belongs to a gesture, which
-            // `simctl` can launch but cannot make.
+            // `simctl` can launch but cannot make. On a regular width the
+            // drawer is a pinned column, so the same argument pins it instead
+            // of settling the phone's drawer spring.
             if ProcessInfo.processInfo.arguments.contains("-mizarOpenTurnIndex") {
                 debugOpenTrailingWanted = true
                 if model.selectedSessionId != nil {
                     shell.trailingAvailable = true
-                    shell.openTrailing()
+                    if sizeClass == .regular {
+                        shell.indexPinnedVisible = true
+                    } else {
+                        shell.openTrailing()
+                    }
                 }
             }
             #endif
@@ -100,10 +106,14 @@ struct MizarShell: View {
             #if DEBUG
             // The debug open arrives after the close that rides the same
             // selection, so the drawer ends the launch open rather than
-            // losing the race to it.
+            // losing the race to it. Same regular-width branch as above.
             if debugOpenTrailingWanted, selected != nil {
                 shell.trailingAvailable = true
-                shell.openTrailing()
+                if sizeClass == .regular {
+                    shell.indexPinnedVisible = true
+                } else {
+                    shell.openTrailing()
+                }
             }
             #endif
         }
