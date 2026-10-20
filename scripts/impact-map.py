@@ -97,6 +97,14 @@ def do_merge(args):
             test_id = parts[0]
             runs[test_id] = parts[1]
             covered = parts[2].split() if len(parts) > 2 else []
+            # Never attribute coverage from a non-passing run. An isolated
+            # run can fail before the test reaches the views a full-suite
+            # pass would cover; trusting that partial evidence under-maps
+            # files and lets a regression slip past a narrowed run. The row
+            # still counts toward uiTestCount, so the completeness check in
+            # test-selection.py is unaffected.
+            if parts[1] != "PASS":
+                covered = []
             for path in covered:
                 files.setdefault(path, []).append(test_id)
     commit = args.commit
