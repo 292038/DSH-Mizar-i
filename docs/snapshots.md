@@ -125,6 +125,12 @@ caught exactly; the default tolerance allows at most 0.1% of pixels to differ by
 more than 2/255 (antialiasing at text and shape edges), which is far below what a
 1-pt layout shift or a colour change produces.
 
+A second language's golden comes from passing `locale:` (for example
+`Locale(identifier: "zh-Hans")`) to the render and assert helpers; the default
+stays `en_US`, so every existing reference is unaffected. `Text(LocalizedStringKey)`
+follows that locale; fixture data does not translate itself — the test decides
+what the content says.
+
 ### What the tolerance is not a licence for
 
 - **Changing a fixed size** fails on dimensions before pixels are compared.
@@ -169,9 +175,10 @@ UIKit. Verified here rather than assumed:
   translation. The fixtures resolve English through the app bundle's `en.lproj`
   explicitly, so a reference recorded on a Chinese-language simulator says
   exactly what one recorded on an English-language simulator says. A view that
-  renders `Text("some key")` internally resolves against the *simulator's*
-  language; pin such a reference by running on an English-locale simulator (or
-  by injecting resolved strings, as the pilots do).
+  renders `Text("some key")` internally resolves against the render's *locale
+  environment*: the harness `locale:` parameter pins that directly, which is
+  how the zh/en language goldens are produced without touching the
+  simulator's language.
 - **The reference belongs to an OS.** Text rasterisation and SF Symbols change
   between iOS releases. An OS upgrade may require a deliberate re-record; a
   cross-runtime mismatch is expected, not a bug.

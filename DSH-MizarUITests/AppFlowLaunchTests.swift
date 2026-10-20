@@ -201,7 +201,8 @@ final class AppFlowLaunchTests: AppFlowTestBase {
     }
 
     /// Chinese-first: the settings screen follows the phone's language.
-    func testTheSettingsScreenFollowsTheLanguage() {
+    func testTheSettingsScreenFollowsTheLanguage() throws {
+        throw XCTSkip("migrated to snapshot: settings language (zh/en goldens + identifier contract); placeholder until map v2")
         // The section headers, which are interface copy, in Chinese.
         let chinese = launch(session: nil, language: "zh-Hans")
         openSettings(chinese)

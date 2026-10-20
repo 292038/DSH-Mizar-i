@@ -29,7 +29,10 @@
 //
 //  Determinism: a reference PNG belongs to a simulator runtime and a scale. The
 //  harness pins colour scheme, display scale, locale and dynamic type, because
-//  otherwise the same view renders differently depending on the machine. It
+//  otherwise the same view renders differently depending on the machine. The
+//  locale is a parameter rather than a law: `assertSnapshot(locale:)` overrides
+//  it for a view rendered in a second language, and `nil` keeps the pinned
+//  `en_US`, so existing references stay comparable byte for byte. It
 //  cannot pin Reduce Motion (the SwiftUI environment key is get-only), so a
 //  pilot must render a view whose static state does not depend on it. It cannot
 //  pin the OS's text rasteriser either: an iOS upgrade may require a deliberate
@@ -110,6 +113,10 @@ enum SnapshotHarness {
     ///     other size.
     ///   - scale: pixels per point. Changes only with a deliberate re-record.
     ///   - tolerance: see ``Tolerance``.
+    ///   - locale: the locale the view's localisable text resolves in. `nil`
+    ///     keeps the harness's pinned `en_US`; a test rendering a second
+    ///     language passes the locale it names, which is how one record run on
+    ///     the canonical English-locale simulator produces both goldens.
     /// - Returns: the render's pixel dimensions, for an explicit size assertion.
     static func assertSnapshot(
         of view: some View,
@@ -117,11 +124,12 @@ enum SnapshotHarness {
         size: CGSize,
         scale: CGFloat = SnapshotHarness.scale,
         tolerance: Tolerance = .default,
+        locale: Locale? = nil,
     ) throws -> Rendered {
         guard size.width > 0, size.height > 0 else {
             throw SnapshotFailure(description: "Snapshot \"\(name)\" was given a zero or negative size \(size).")
         }
-        let image = try render(view, size: size, scale: scale)
+        let image = try render(view, size: size, scale: scale, locale: locale)
         let actual = try pixels(of: image)
         let referenceURL = referenceDirectory.appendingPathComponent("\(name)@\(formatted(scale))x.png")
 
@@ -192,8 +200,10 @@ enum SnapshotHarness {
     /// Render one view through the deterministic environment every reference is
     /// recorded with. Keeping the pins here (rather than in each test) is what
     /// makes two snapshots of the same view comparable.
-    static func render(_ view: some View, size: CGSize, scale: CGFloat) throws -> UIImage {
-        let renderer = ImageRenderer(content: pinned(view, size: size, scale: scale))
+    ///
+    /// - Parameter locale: the locale override, or `nil` for the pinned `en_US`.
+    static func render(_ view: some View, size: CGSize, scale: CGFloat, locale: Locale? = nil) throws -> UIImage {
+        let renderer = ImageRenderer(content: pinned(view, size: size, scale: scale, locale: locale))
         renderer.scale = scale
         renderer.proposedSize = ProposedViewSize(width: size.width, height: size.height)
         // White underlay and an opaque render: no half-transparent PNGs whose
@@ -206,7 +216,7 @@ enum SnapshotHarness {
     }
 
     /// Everything that can move a pixel pinned to one value.
-    private static func pinned(_ view: some View, size: CGSize, scale: CGFloat) -> some View {
+    private static func pinned(_ view: some View, size: CGSize, scale: CGFloat, locale: Locale? = nil) -> some View {
         view
             .frame(width: size.width, height: size.height)
             .background(Color.white)
@@ -221,7 +231,7 @@ enum SnapshotHarness {
             }
             .environment(\.colorScheme, .light)
             .environment(\.dynamicTypeSize, .large)
-            .environment(\.locale, Locale(identifier: "en_US"))
+            .environment(\.locale, locale ?? Locale(identifier: "en_US"))
             .environment(\.displayScale, scale)
     }
 

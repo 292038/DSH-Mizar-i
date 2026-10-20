@@ -58,12 +58,15 @@ struct ComposerBar: View {
     var onLockedAttachment: () -> Void = {}
 
     /// DSH's own commands. The slash forms are what the host parses; the titles
-    /// are what the operator is choosing between, in their language.
-    static let commands: [(slash: String, title: String, symbol: String)] = [
-        ("/goal", String(localized: "Goal"), "target"),
-        ("/plan", String(localized: "Plan"), "list.bullet.rectangle"),
-        ("/compact", String(localized: "Compact"), "arrow.down.right.and.arrow.up.left"),
-        ("/model", String(localized: "Model"), "cpu"),
+    /// are what the operator is choosing between. They are catalogue keys
+    /// rather than strings resolved at construction, so `Text` localises them
+    /// wherever the list is drawn -- in the interface's language on screen, and
+    /// in the snapshot suite's chosen locale in the references.
+    static let commands: [(slash: String, title: LocalizedStringKey, symbol: String)] = [
+        ("/goal", "Goal", "target"),
+        ("/plan", "Plan", "list.bullet.rectangle"),
+        ("/compact", "Compact", "arrow.down.right.and.arrow.up.left"),
+        ("/model", "Model", "cpu"),
     ]
 
     var body: some View {
