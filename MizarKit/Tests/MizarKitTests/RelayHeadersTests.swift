@@ -71,8 +71,40 @@ struct RelayHeadersTests {
         #expect(!AccountClient.isAccountHost(""))
     }
 
-    @Test("attaches the identity headers to pairing requests")
-    func pairingHeaders() async throws {        let transport = ScriptedHTTPTransport()
+    @Test("attaches the identity headers to a relayed pairing request")
+    func relayedPairingHeaders() async throws {
+        let transport = ScriptedHTTPTransport()
+        await transport.on(
+            "pair",
+            body: #"{"deviceToken":"mz_t","deviceId":"d1","hostId":"h1","hostName":"mac","protocolVersion":1}"#,
+        )
+        let client = PairingClient(transport: transport, headers: Self.identity.headers)
+
+        _ = try await client.pair(
+            target: PairingTarget(
+                authority: nil,
+                code: "AB2C-D3EF",
+                baseURL: "https://relay.example.com/r/ROOM",
+            ),
+            deviceName: "iPhone",
+            deviceModel: "iPhone18,1",
+        )
+
+        let requests = await transport.recorded()
+        let request = try #require(requests.first)
+        #expect(requests.count == 1)
+        #expect(request.url?.absoluteString == "https://relay.example.com/r/ROOM/mizar/v1/pair")
+        #expect(request.value(forHTTPHeaderField: RelayIdentity.clientIdHeader) == "install-1234")
+        #expect(request.value(forHTTPHeaderField: RelayIdentity.accountHeader) == RelayIdentity.hash(of: "mza_abc"))
+    }
+
+    @Test("sends no identity headers over a direct route")
+    func directPairingHasNoHeaders() async throws {
+        // A direct request goes to the operator's own computer over their own
+        // network: nobody meters it, and an account hash is not something the
+        // computer has any use for. The route plan attaches the headers to relay
+        // attempts only.
+        let transport = ScriptedHTTPTransport()
         await transport.on(
             "hello",
             body: #"{"hostId":"h1","hostName":"mac","protocolVersion":1,"pairingOpen":true,"paired":false}"#,
@@ -85,8 +117,7 @@ struct RelayHeadersTests {
 
         _ = try await client.hello(authority: "127.0.0.1:19390")
         _ = try await client.pair(
-            authority: "127.0.0.1:19390",
-            code: "AB2C-D3EF",
+            target: PairingTarget(authority: "127.0.0.1:19390", code: "AB2C-D3EF"),
             deviceName: "iPhone",
             deviceModel: "iPhone18,1",
         )
@@ -94,8 +125,8 @@ struct RelayHeadersTests {
         let requests = await transport.recorded()
         #expect(requests.count == 2)
         for request in requests {
-            #expect(request.value(forHTTPHeaderField: RelayIdentity.clientIdHeader) == "install-1234")
-            #expect(request.value(forHTTPHeaderField: RelayIdentity.accountHeader) == RelayIdentity.hash(of: "mza_abc"))
+            #expect(request.value(forHTTPHeaderField: RelayIdentity.clientIdHeader) == nil)
+            #expect(request.value(forHTTPHeaderField: RelayIdentity.accountHeader) == nil)
         }
     }
 }

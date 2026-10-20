@@ -3787,6 +3787,16 @@ final class AppModel {
     }
 
     /// Complete pairing with a scanned target.
+    ///
+    /// A QR from plugin 0.8.5 on carries two routes to the same computer: the
+    /// direct address it is listening on, and the relay its room is reachable
+    /// through. Only one of them can answer for a given phone -- cellular, a
+    /// Wi-Fi that isolates clients, and a refused local-network permission all
+    /// rule out the direct one -- so pairing tries the whole plan and fails only
+    /// when no route gets an answer. ``PairingClient`` owns the fallback rule;
+    /// this method logs each route that failed, then opens the first socket over
+    /// the route that worked.
+    ///
     /// - Parameters:
     ///   - target: the decoded QR payload.
     ///   - deviceName: what to call this device in the host's roster.
@@ -3807,22 +3817,29 @@ final class AppModel {
             // this install rather than to an anonymous hash of the room. Signed
             // out this is only the client id, which is exactly right: the
             // pairing request creates the device, there is no account behind it
-            // yet. A direct pairing carries none: those headers are relay
-            // bookkeeping, and the computer has no use for them.
-            let relayOnly = target.authority == nil || (target.authority ?? "").isEmpty
-            let client = PairingClient(headers: relayOnly ? account.identity.headers : [:])
-            let paired = try await client.pair(
-                authority: target.authority,
-                code: target.code,
+            // yet. The client attaches them to relay attempts only -- a direct
+            // pairing goes to the operator's own computer, which meters nothing
+            // and has no use for an account hash.
+            //
+            // One transport per route, because the route carries the timeout:
+            // the direct attempt gets a short leash, which is what makes falling
+            // through to the relay a fallback rather than a second wait.
+            let client = PairingClient(
+                makeTransport: { URLSessionHTTPTransport(timeout: $0.timeout) },
+                headers: account.identity.headers,
+            )
+            let outcome = try await client.pair(
+                target: target,
                 deviceName: deviceName,
                 deviceModel: Self.deviceModel,
-                // Without this the pairing request goes to an address that does
-                // not exist, and the failure reads as "" not being dialable --
-                // which is what a simulator run against a relay-only QR found.
-                baseURL: target.baseURL,
             )
+            let paired = outcome.host
             try await credentials.save(paired)
-            log.add(.connection, "paired with \(paired.hostName) (\(paired.hostId))")
+            log.add(
+                .connection,
+                "paired with \(paired.hostName) (\(paired.hostId)) over "
+                    + Self.routeName(outcome.route.endpoint),
+            )
             hosts = try await credentials.loadAll().sorted { $0.pairedAt < $1.pairedAt }
             // Pairing a second machine is a change of machine like any other, and
             // it used to leave the first one's socket open: the new connection
@@ -3836,8 +3853,10 @@ final class AppModel {
             LastOpenedHostStore.store(paired.hostId)
             // Offered once, now, while the operator still knows which machine
             // they just scanned. The connection is opened first so the name is
-            // asked for over a working screen rather than a spinner.
-            try await connect(using: paired)
+            // asked for over a working screen rather than a spinner, and over the
+            // route that just paired so a working pairing does not spend the
+            // other route's timeout before using the one that answered.
+            try await connect(using: paired, preferring: outcome.route.endpoint)
             // The history comes down before anything else, and this time it is
             // the whole screen.
             //
@@ -3863,7 +3882,24 @@ final class AppModel {
             try? await Task.sleep(for: .milliseconds(700))
             pendingNameHostId = paired.hostId
         } catch {
-            let message = Self.describe(error, authority: target.authority ?? target.baseURL)
+            // One line per route that was tried, then the answer to act on. A
+            // pairing that fell through the LAN to the relay and then failed
+            // there is a different problem from one that never left the phone,
+            // and the log is the only place that difference is visible.
+            let failure = error as? PairingFailure
+            for attempt in failure?.attempts ?? [] {
+                log.add(
+                    .connection,
+                    "pairing route \(Self.routeName(attempt.route.endpoint)) failed: "
+                        + Self.describe(attempt.error, authority: attempt.route.address),
+                )
+            }
+            let answer = failure?.finalError ?? error
+            let message = Self.describe(
+                answer,
+                authority: failure?.attempts.last?.route.address
+                    ?? target.authority ?? target.baseURL,
+            )
             log.add(.connection, "pairing failed: \(message)")
             phase = .failed(message)
         }
@@ -3877,12 +3913,25 @@ final class AppModel {
     /// a computer on a network that blocks inbound traffic answers only through the
     /// relay. One QR code carries both, and this is what makes that useful.
     ///
+    /// A pairing that has just completed passes the route it paired over as
+    /// `preferred`, so the first socket is dialled where the pairing was just
+    /// answered rather than at the route that may be the one that cannot be
+    /// reached. ``ReconnectPlan`` still owns the order: the preferred route goes
+    /// first and the rest of the pairing follows, so the two routes remain each
+    /// other's fallback.
+    ///
     /// A failed attempt costs its own timeout, so the direct attempt is given a
     /// short one. Waiting the full default before falling back would make every
     /// connection on a hostile network feel broken.
     ///
-    /// - Parameter host: the pairing to connect with.
-    private func connect(using host: PairedHost) async throws {
+    /// - Parameters:
+    ///   - host: the pairing to connect with.
+    ///   - preferred: the route that just paired, when this connect follows a
+    ///     pairing; `nil` opens the pairing's own order.
+    private func connect(
+        using host: PairedHost,
+        preferring preferred: PairedHost.Endpoint? = nil,
+    ) async throws {
         phase = .connecting
         // Before the first request, not after it. Everything below waits on a
         // machine that may be asleep, and a session list that is empty until a
@@ -3890,7 +3939,9 @@ final class AppModel {
         // on a phone is how the operator spends the first several seconds of
         // every launch.
         await loadIndex(for: host.hostId)
-        let endpoints = host.endpoints
+        // The pairing's order when nothing is preferred; the route that just
+        // answered in front of it when something is.
+        let endpoints = ReconnectPlan.routes(endpoints: host.endpoints, active: preferred)
         guard !endpoints.isEmpty else {
             let error = MizarError(
                 code: "NO_ENDPOINT",
@@ -3901,16 +3952,18 @@ final class AppModel {
         }
 
         var lastError: (any Error)?
+        var lastEndpoint: PairedHost.Endpoint?
         for (index, endpoint) in endpoints.enumerated() {
             do {
                 try await open(host: host, endpoint: endpoint)
                 return
             } catch {
                 lastError = error
+                lastEndpoint = endpoint
                 log.add(
                     .connection,
                     "route \(Self.routeName(endpoint)) failed: "
-                        + Self.describe(error, authority: host.authority ?? host.baseURL),
+                        + Self.describe(error, authority: Self.routeDescription(endpoint).address),
                 )
                 // Nothing left to fall back to, so this is the answer.
                 guard index < endpoints.count - 1 else { break }
@@ -3923,7 +3976,11 @@ final class AppModel {
 
         let failure = lastError ?? MizarError(code: "UNREACHABLE", message: "the host did not answer")
         log.add(.connection, "no route reached \(host.hostName); \(endpoints.count) tried")
-        phase = .failed(Self.describe(failure, authority: host.authority ?? host.baseURL))
+        // The route that failed last, not the host's first address: with two
+        // routes the last one is the answer the operator needs explained.
+        let address = lastEndpoint.map { Self.routeDescription($0).address }
+            ?? host.authority ?? host.baseURL
+        phase = .failed(Self.describe(failure, authority: address))
         throw failure
     }
 
