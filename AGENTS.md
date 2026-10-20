@@ -1,7 +1,8 @@
 # DSH-Mizar iOS — notes for coding agents
 
 Read the project's `README.md` §四 for the plain commands. This file only lists
-rules that keep the test loop cheap and safe.
+rules that keep the test loop cheap and safe. Current state, measured numbers,
+blockers and rollback: `docs/test-pipeline-handover.md` (2026-10-20).
 
 ## Test loop
 
