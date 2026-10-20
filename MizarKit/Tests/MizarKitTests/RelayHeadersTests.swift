@@ -53,9 +53,26 @@ struct RelayHeadersTests {
         #expect(await transport.dialedHeaders.first?.isEmpty == true)
     }
 
+    @Test("keeps the session token out of the plain identity headers")
+    func sessionTokenIsSeparate() {
+        // The hash is what the free relay meters by; the token is what the paid
+        // relay verifies. Merging them would send a credential to every host.
+        #expect(Self.identity.headers[RelayIdentity.sessionHeader] == nil)
+        #expect(Self.identity.sessionHeaders[RelayIdentity.sessionHeader] == "mza_abc")
+        #expect(RelayIdentity(clientId: "install-1234").sessionHeaders.isEmpty)
+    }
+
+    @Test("only the account host is offered the session token")
+    func accountHostRecognition() {
+        #expect(AccountClient.isAccountHost("https://dshmizar-1.shirazu-nagisa.com"))
+        #expect(AccountClient.isAccountHost("https://DSHMIZAR-1.shirazu-nagisa.com/r/ABCD"))
+        #expect(!AccountClient.isAccountHost("https://dshmizar-0.example.com"))
+        #expect(!AccountClient.isAccountHost("http://127.0.0.1:8787"))
+        #expect(!AccountClient.isAccountHost(""))
+    }
+
     @Test("attaches the identity headers to pairing requests")
-    func pairingHeaders() async throws {
-        let transport = ScriptedHTTPTransport()
+    func pairingHeaders() async throws {        let transport = ScriptedHTTPTransport()
         await transport.on(
             "hello",
             body: #"{"hostId":"h1","hostName":"mac","protocolVersion":1,"pairingOpen":true,"paired":false}"#,
