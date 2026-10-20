@@ -306,6 +306,33 @@ final class AppFlowTests: XCTestCase {
         return box.methods
     }
 
+    /// The model switches the mock host has taken, in order.
+    ///
+    /// Read at the host rather than on the screen. The conversation's bar draws
+    /// what the host last *reported*, so a switch that was never sent and one
+    /// that is still waiting for its projection look identical for a moment --
+    /// and the claim this supports is "the model chosen on the home screen
+    /// reached the new session", which only the wire can settle.
+    ///
+    /// - Returns: one dictionary per switch, empty when the mock is not answering.
+    private static func mockModelSets() -> [[String: Any]] {
+        guard let url = URL(string: "http://127.0.0.1:19395/loads") else { return [] }
+        let done = DispatchSemaphore(value: 0)
+        let box = Box()
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            defer { done.signal() }
+            guard let data,
+                  let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let sets = parsed["modelSets"] as? [[String: Any]]
+            else { return }
+            box.modelSets = sets
+        }.resume()
+        _ = done.wait(timeout: .now() + 6)
+        return box.modelSets
+    }
+
     /// Wait until an element's label says something.
     ///
     /// The figures in the composer bar come from a read that lands after the
@@ -422,6 +449,8 @@ final class AppFlowTests: XCTestCase {
         var counts: (Int?, Int?)?
         /// What the mock host was asked, by method.
         var methods: [String: Int] = [:]
+        /// The `session.model.set` calls the mock host took, in order.
+        var modelSets: [[String: Any]] = []
     }
 
     /// How many sockets the mock host has accepted since the suite last reset it.
@@ -2991,6 +3020,64 @@ final class AppFlowTests: XCTestCase {
         expect(app.textFields["composer.field"], "sending from home did not open a conversation")
         let sent = app.staticTexts.matching(NSPredicate(format: "label == %@", "start something from the phone")).firstMatch
         XCTAssertTrue(sent.waitForExistence(timeout: Self.patience * 2), "the first prompt never reached the new conversation\nHIERARCHY-START\n\(app.debugDescription)\nHIERARCHY-END")
+    }
+
+    /// The home pane chooses the model its session will start on.
+    ///
+    /// The one decision a new session needs before it exists. The host's
+    /// `session.create` takes no model, so the choice is held on the phone and
+    /// applied between the create and the first prompt -- and the proof is at
+    /// the host, because a switch that was never sent and one still waiting for
+    /// its projection look the same on the conversation's bar.
+    func testTheHomeScreenChoosesTheModelItsSessionStartsOn() {
+        let app = launch(session: nil, pending: false, running: false)
+        expect(app.buttons["sessions.new"], "the sidebar never arrived")
+        let dismiss = app.buttons["shell.dismissSidebar"]
+        expect(dismiss, "the pane under the sidebar cannot be reached")
+        dismiss.tap()
+
+        expect(app.buttons["home.model"], "the home screen does not say which model will answer")
+        app.buttons["home.model"].tap()
+        let row = app.buttons["model.row.deepseek-v4-pro"]
+        XCTAssertTrue(
+            row.waitForExistence(timeout: Self.patience),
+            "the model picker did not open from the home screen",
+        )
+        row.tap()
+        // The row reveals its reasoning levels rather than committing, so a level
+        // is what commits. `Off`, not `High`: the row already seeded `High`, and a
+        // segmented control whose selection does not change calls nothing.
+        let off = app.buttons["Off"]
+        XCTAssertTrue(off.waitForExistence(timeout: Self.patience), "the reasoning levels were not revealed")
+        off.tap()
+
+        XCTAssertTrue(
+            waitForDisappearance(row, timeout: Self.patience),
+            "the picker stayed open over a choice for the next session",
+        )
+        XCTAssertTrue(
+            labelLands(app.buttons["home.model"], containing: "deepseek-v4-pro"),
+            "the home screen does not name the model it will start on",
+        )
+
+        let field = app.textFields["home.field"]
+        expect(field, "the home screen has no composer")
+        field.tap()
+        field.typeText("start on the chosen model")
+        app.buttons["home.send"].tap()
+        expect(app.textFields["composer.field"], "sending from home did not open a conversation")
+
+        let sets = Self.mockModelSets()
+        XCTAssertEqual(
+            sets.first?["model"] as? String,
+            "deepseek-v4-pro",
+            "the model chosen on the home screen never reached the new session: \(sets)",
+        )
+        XCTAssertEqual(
+            sets.first?["reasoningEffort"] as? String,
+            "off",
+            "the reasoning level chosen on the home screen was dropped: \(sets)",
+        )
     }
 
 
