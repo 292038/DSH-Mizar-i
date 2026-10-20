@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "uiTestDir": "DSH-MizarUITests",
+  "expectedUiTests": 80,
+  "impactMap": "test/impact-map.json",
+  "unitCommand": "scripts/swift.sh test",
+  "forceFull": [
+    "DSH-Mizar.xcodeproj/**",
+    "**/*.xcscheme",
+    "**/*.xctestplan",
+    "MizarKit/Package.swift",
+    "MizarKit/Sources/**",
+    "protocol/**",
+    "scripts/**",
+    "test/**",
+    "package.json",
+    "package-lock.json",
+    "DSH-Mizar/App/**",
+    "DSH-Mizar/Design/**",
+    "DSH-Mizar/**/*.strings",
+    "DSH-Mizar/**/*.plist",
+    "DSH-Mizar/**/Assets.xcassets/**",
+    "DSH-Mizar/**/*.entitlements",
+    "DSH-Mizar/**/*.storekit",
+    "DSH-Mizar-LiveActivity/**"
+  ],
+  "unitOnly": [
+    "MizarKit/Tests/**"
+  ],
+  "noTests": [
+    "README.md",
+    "AGENTS.md",
+    "docs/**",
+    "**/*.md",
+    "LICENSE",
+    "LICENSE-EXCEPTION",
+    ".gitignore",
+    ".devcache/**",
+    "archive/**",
+    "node_modules/**"
+  ],
+  "routes": []
+}

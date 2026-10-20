@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+#
+# Record test/impact-map.json: which app files each UI test executes.
+#
+# One xcodebuild test-without-building run per test with coverage on, then
+# xccov parses each bundle. This is a one-time generator (~30–40 min for the
+# current 80 tests); run it on a quiet machine, not on every change.
+#
+#   scripts/record-impact-map.sh ["iPhone 18 Pro"] [output-path]
+#
+# The output keeps every file under DSH-Mizar/Views/. Changes under App/ and
+# Design/ stay on the full suite by rule in test/test-routing.json, so mapping
+# them would only add noise.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+SIMULATOR="${1:-iPhone 18 Pro}"
+OUT="${2:-test/impact-map.json}"
+WORK="$ROOT/.devcache/impact"
+DERIVED="$ROOT/.devcache/DerivedData"
+mkdir -p "$WORK/logs"
+rm -f "$WORK/runs.tsv" "$WORK/coverage.err"
+: > "$WORK/runs.tsv"
+
+MOCK_PIDS=()
+cleanup() {
+  local pid
+  for pid in "${MOCK_PIDS[@]:-}"; do
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  done
+}
+trap cleanup EXIT INT TERM
+
+ensure_mock() {
+  local port="$1" attempt
+  if nc -z 127.0.0.1 "$port" 2>/dev/null; then
+    return
+  fi
+  ( cd "$ROOT" && exec node scripts/mock-host.mjs "$port" ) >"$WORK/mock-$port.log" 2>&1 &
+  MOCK_PIDS+=("$!")
+  for attempt in {1..60}; do
+    if nc -z 127.0.0.1 "$port" 2>/dev/null; then
+      return
+    fi
+    sleep 0.2
+  done
+  echo "record-impact-map: mock host on $port did not start" >&2
+  exit 1
+}
+
+xcb() {
+  xcodebuild -project "$ROOT/DSH-Mizar.xcodeproj" \
+    -scheme DSH-Mizar \
+    -destination "platform=iOS Simulator,name=$SIMULATOR" \
+    -derivedDataPath "$DERIVED" \
+    CODE_SIGN_IDENTITY="-" \
+    CODE_SIGNING_REQUIRED=NO \
+    CODE_SIGNING_ALLOWED=YES \
+    "$@"
+}
+
+ensure_mock 19395
+ensure_mock 19396
+
+python3 scripts/impact-map.py --repo-root "$ROOT" list-tests > "$WORK/tests.txt"
+total="$(wc -l < "$WORK/tests.txt" | tr -d ' ')"
+echo "record-impact-map: $total tests, simulator=$SIMULATOR"
+
+# Coverage has to be enabled on the test action: a build-for-testing pass with
+# the flag writes the instrumentation, but test-without-building then records
+# only the test bundle's own coverage. `xcodebuild test` costs ~5 s of
+# incremental build check per test and records the app's coverage too.
+xcb build-for-testing -enableCodeCoverage YES > "$WORK/build.log" 2>&1 || {
+  echo "record-impact-map: build-for-testing failed" >&2
+  tail -5 "$WORK/build.log" >&2
+  exit 1
+}
+
+# Resume: a run that was interrupted keeps the tests it already recorded.
+: > "$WORK/done.txt"
+if [ -s "$WORK/runs.tsv" ]; then
+  cut -f1 "$WORK/runs.tsv" > "$WORK/done.txt"
+fi
+echo "record-impact-map: resuming, $(wc -l < "$WORK/done.txt" | tr -d ' ') already recorded"
+
+started=$(date +%s)
+index=0
+while IFS= read -r id; do
+  [ -n "$id" ] || continue
+  if grep -qxF "$id" "$WORK/done.txt"; then
+    continue
+  fi
+  index=$((index + 1))
+  slug="${id//\//_}"
+  bundle="$WORK/$slug.xcresult"
+  log="$WORK/logs/$slug.log"
+  rm -rf "$bundle"
+  status=PASS
+  attempt=0
+  while :; do
+    attempt=$((attempt + 1))
+    if xcb test \
+          -collect-test-diagnostics never \
+          -only-testing:"DSH-MizarUITests/$id" \
+          -enableCodeCoverage YES \
+          -resultBundlePath "$bundle" >"$log" 2>&1; then
+      status=PASS
+    else
+      status=FAIL
+    fi
+    if grep -qE "Test skipped|XCTSkip|Skipped" "$log" 2>/dev/null; then
+      status=SKIP
+    fi
+    if [ "$status" = "PASS" ] || [ "$attempt" -gt "${MIZAR_IMPACT_RETRIES:-1}" ]; then
+      break
+    fi
+    echo "impact: retrying $id after $status"
+    rm -rf "$bundle"
+  done
+  files="$(python3 scripts/impact-map.py --repo-root "$ROOT" files "$bundle" 2>>"$WORK/coverage.err" | tr '\n' ' ' || true)"
+  rm -rf "$bundle"
+  files="${files% }"
+  printf '%s\t%s\t%s\n' "$id" "$status" "$files" >> "$WORK/runs.tsv"
+  wall=$(( $(date +%s) - started ))
+  printf 'impact: [%d/%d] %-58s %s files=%-2s +%ss\n' \
+    "$index" "$total" "$id" "$status" "$(printf '%s' "$files" | wc -w | tr -d ' ')" "$wall"
+done < "$WORK/tests.txt"
+
+python3 scripts/impact-map.py --repo-root "$ROOT" merge "$WORK/runs.tsv" --out "$OUT"
+echo "record-impact-map: wrote $OUT"
