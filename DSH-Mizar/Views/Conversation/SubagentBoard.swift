@@ -175,6 +175,10 @@ struct SubagentBoard: View {
         model.sessions.filter { $0.isSubagent && $0.parentSessionId == index.sessionId }
     }
 
+    /// Air between the drawer's floating control and the first row: the
+    /// control's top inset, its own height, and a beat of air after it.
+    private static let listContentTop: CGFloat = 58
+
     var body: some View {
         Group {
             if subagents.isEmpty {
@@ -223,12 +227,15 @@ struct SubagentBoard: View {
                     }
                 }
                 .padding(.horizontal, 12)
-                .padding(.top, 2)
                 .padding(.bottom, 24)
             }
         }
         .scrollIndicators(.hidden)
         .scrollEdgeEffectStyle(.soft, for: .vertical)
+        // The rows begin below the drawer's floating segmented control, and
+        // every row after the first travels beneath its glass on the way
+        // past -- the margin is content, not a bar the scroll stops at.
+        .contentMargins(.top, Self.listContentTop, for: .scrollContent)
     }
 
     private var empty: some View {
@@ -243,7 +250,7 @@ struct SubagentBoard: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 8)
+        .padding(.top, Self.listContentTop)
     }
 
     // MARK: Reading the children

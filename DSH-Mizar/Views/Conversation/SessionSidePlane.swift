@@ -5,12 +5,20 @@
 //  The drawer on the conversation's right, as one plane of three pages.
 //
 //  The pages -- turns, subagents, preview -- are laid out edge to edge on a
-//  single surface, the way a hand of cards sits on a table. Tapping a title
-//  does not swap content in place; it translates the whole plane sideways
-//  until the asked-for page fills the viewport. The difference is what the
-//  eye does with the move: content that slides in from a neighbouring
-//  position reads as one world being looked at from a different place, and
-//  content that fades out and back reads as two worlds.
+//  single surface, the way a hand of cards sits on a table. Tapping a segment
+//  of the control above them does not swap content in place; it translates
+//  the whole plane sideways until the asked-for page fills the viewport. The
+//  difference is what the eye does with the move: content that slides in from
+//  a neighbouring position reads as one world being looked at from a
+//  different place, and content that fades out and back reads as two worlds.
+//
+//  The control itself is the system's own segmented control -- Apple's
+//  component, on its Liquid Glass track, its selected segment ground in the
+//  accent -- and it **floats**: it is attached after the plane's offset, so it
+//  stays put while the pages travel beneath its glass, and the scrolling
+//  content passes under it the way content passes under any bar of glass.
+//  (`.offset` is a rendering transform; an overlay attached after it keys on
+//  the layout frame, which does not move.)
 //
 //  What the *other* pages look like while one is showing is decided by where
 //  they sit:
@@ -28,8 +36,8 @@
 //
 //  The scrub is driven by the plane's *presentation* offset, not by the page
 //  selection: a `@State` selection flips the moment the finger leaves the
-//  title, and an effect computed from it would snap to its final value while
-//  the plane was still travelling. ``PageFocus`` is animatable over the
+//  control, and an effect computed from it would snap to its final value
+//  while the plane was still travelling. ``PageFocus`` is animatable over the
 //  distance instead, so one spring moves the offset, the blur and the dim
 //  together and a second tap mid-flight retargets the whole trio without a
 //  jump.
@@ -37,7 +45,7 @@
 //  There is deliberately no drag gesture on the plane. The drawer's own pan
 //  owns horizontal drags -- a drag on the open drawer puts the conversation
 //  back -- and two claimants to the same axis would make every swipe a
-//  coin toss between "change page" and "close drawer". The titles are the
+//  coin toss between "change page" and "close drawer". The control is the
 //  way across.
 //
 
@@ -46,12 +54,12 @@ import MizarKit
 
 /// The new drawer pages' strings table.
 ///
-/// The eight strings this plane introduced live in their own
-/// `SidePlane.strings` rather than in the main `Localizable.strings`: the main
-/// file carries translation keys ("Password" among them, referenced by the
-/// account screen) whose shape the workspace's write guard mistakes for
-/// credentials, so the file as a whole cannot be written past them. Same
-/// lookup rules as the main table, just a second file.
+/// The strings this plane introduced live in their own `SidePlane.strings`
+/// rather than in the main `Localizable.strings`: the main file carries
+/// translation keys ("Password" among them, referenced by the account screen)
+/// whose shape the workspace's write guard mistakes for credentials, so the
+/// file as a whole cannot be written past them. Same lookup rules as the main
+/// table, just a second file.
 enum SidePlaneTable {
     static let name = "SidePlane"
 }
@@ -62,9 +70,9 @@ struct SessionSidePlane: View {
     var onPick: () -> Void = {}
 
     @Environment(TurnIndex.self) private var index
-    /// The page the operator asked for. Drives the underline and the plane's
-    /// destination; the plane's position itself is ``planeOffset``, which the
-    /// spring is still carrying whenever this has just changed.
+    /// The page the operator asked for. Drives the segmented control and the
+    /// plane's destination; the plane's position itself is ``planeOffset``,
+    /// which the spring is still carrying whenever this has just changed.
     @State private var selection: SidePage = .turns
     /// Where the plane is right now, in points. Animated to
     /// `-selection * pageWidth` on every switch, and read by every page's
@@ -74,18 +82,44 @@ struct SessionSidePlane: View {
     /// The viewport's width, measured, because the pages are exactly one
     /// viewport wide and the plane's travel is counted in them.
     @State private var pageWidth: CGFloat = 0
-    @Namespace private var underline
 
     enum SidePage: Int, CaseIterable {
         case turns, subagents, preview
     }
 
+    /// The floating control's geometry, shared with the pages that place
+    /// their own chrome below it. The control sizes itself; these numbers
+    /// place it, and tell a page where its own floating layer may begin.
+    enum FloatingTab {
+        /// Air above the control.
+        static let topInset: CGFloat = 10
+        /// Air at the drawer's edges.
+        static let horizontalInset: CGFloat = 12
+        /// Where a page's own floating chrome begins: below the control, with
+        /// a beat of air after it.
+        static let pageChromeTop: CGFloat = 54
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            tabBar
-            GeometryReader { geo in
-                plane(width: geo.size.width, height: geo.size.height)
-            }
+        GeometryReader { geo in
+            plane(width: geo.size.width, height: geo.size.height)
+        }
+        // The segmented control floats over the **viewport**, not over the
+        // plane. Attached to the travelling HStack instead, it centred on a
+        // frame three pages wide, and the drawer -- one page wide -- showed
+        // nothing but the middle of the first segment. Here its frame is the
+        // viewport, so all three segments show and the pages slide beneath
+        // its glass.
+        .overlay(alignment: .top) {
+            PageSwitcher(
+                selection: Binding(
+                    get: { selection },
+                    set: { select($0) },
+                ),
+                turnsTitle: turnsTitle,
+            )
+            .padding(.horizontal, FloatingTab.horizontalInset)
+            .padding(.top, FloatingTab.topInset)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
             pageWidth = width
@@ -99,10 +133,15 @@ struct SessionSidePlane: View {
         .mizarFeedback(.selection, trigger: selection)
     }
 
+    /// The turns segment's title, which carries the live count.
+    private var turnsTitle: String {
+        String(localized: "Turns \(index.turns.count)", table: SidePlaneTable.name)
+    }
+
     #if DEBUG
     /// A debug way to land on a page other than the first, for screenshots
     /// and future drawer tests: `simctl` can launch an app with arguments but
-    /// cannot tap a title. The same pattern as `-mizarTypewriterDemo`.
+    /// cannot tap a segment. The same pattern as `-mizarTypewriterDemo`.
     private func alignWithDebugLaunchArgument() {
         let arguments = ProcessInfo.processInfo.arguments
         let page: SidePage? = arguments.contains("-mizarSidePageSubagents")
@@ -148,87 +187,88 @@ struct SessionSidePlane: View {
         return CGFloat(page) + planeOffset / width
     }
 
-    // MARK: The titles
-
-    private var tabBar: some View {
-        HStack(spacing: 0) {
-            tab(.turns) {
-                HStack(spacing: 5) {
-                    Text("Turns")
-                    Text("\(index.turns.count)")
-                        .monospacedDigit()
-                        .foregroundStyle(.tertiary)
-                        .contentTransition(.numericText())
-                }
-            }
-            tab(.subagents) {
-                Text("Subagents", tableName: SidePlaneTable.name)
-            }
-            tab(.preview) {
-                Text("Preview", tableName: SidePlaneTable.name)
-            }
-        }
-        .padding(.top, 8)
-        .padding(.bottom, 2)
-        // The snappier spring is scoped to the titles on purpose: the plane's
-        // travel keeps the fuller one from the switch's own transaction, and
-        // without this scope the transaction would carry the underline too.
-        .animation(.mizarSnappy, value: selection)
-    }
-
-    private func tab<Label: View>(_ page: SidePage, @ViewBuilder label: () -> Label) -> some View {
-        let selected = selection == page
-        return Button {
-            select(page)
-        } label: {
-            VStack(spacing: 0) {
-                label()
-                    .font(.subheadline.weight(selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? Color.primary : Color.secondary)
-                    .padding(.top, 9)
-                    .padding(.bottom, 7)
-                // The slot the accent line lives in. It is the width of the
-                // title above it -- the VStack hugs the label -- so the line
-                // reads as drawn under the words rather than under a column.
-                ZStack {
-                    if selected {
-                        Capsule()
-                            .fill(Color.accentColor)
-                            .frame(height: 3)
-                            .matchedGeometryEffect(id: "side.plane.underline", in: underline)
-                    }
-                }
-                .frame(height: 3)
-            }
-            .frame(maxWidth: .infinity)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(labelText(page))
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
-        .accessibilityIdentifier("side.tab.\(page)")
-    }
-
-    private func labelText(_ page: SidePage) -> Text {
-        switch page {
-        case .turns: Text(String(format: String(localized: "Turns, %lld"), index.turns.count))
-        case .subagents: Text(String(localized: "Subagents", table: SidePlaneTable.name))
-        case .preview: Text(String(localized: "Preview", table: SidePlaneTable.name))
-        }
-    }
+    // MARK: The control
 
     /// Move the plane to a page.
     ///
     /// One transaction carries both halves of the switch: the selection (the
-    /// underline slides, the titles trade weight) and the offset (the plane
-    /// travels, and every page's focus scrub travels with it). The tab bar has
-    /// its own snappier spring scoped to it, so the small control answers
-    /// quickly while the large surface keeps the fuller one.
+    /// control's lens slides as UIKit animates it) and the offset (the
+    /// plane travels, and every page's focus scrub travels with it).
     private func select(_ page: SidePage) {
         guard page != selection, pageWidth > 0 else { return }
         withMizarAnimation(.mizarSmooth) {
             selection = page
             planeOffset = -CGFloat(page.rawValue) * pageWidth
+        }
+    }
+}
+
+// MARK: - The control
+
+/// The drawer's page switcher: Apple's own `UISegmentedControl`, configured
+/// on the instance so the chosen segment's ground is the accent.
+///
+/// A SwiftUI `Picker(.segmented)` would be less code, but its tint lands
+/// wherever the system decides this year -- on this OS the selection read as
+/// plain glass, not the accent the drawer calls for -- and the one hook that
+/// would reach it, `UISegmentedControl.appearance()`, is a global switch that
+/// would also repaint the model sheet's effort picker and the account mode
+/// switch. So this is the very control the Picker wraps, with its two colours
+/// set where only this one instance can see them. On iOS 26 it renders with
+/// the system's own Liquid Glass, like every other bar of it in the app.
+private struct PageSwitcher: UIViewRepresentable {
+    /// The page the plane is showing, written by the control and, from
+    /// outside it, by the debug launch argument.
+    @Binding var selection: SessionSidePlane.SidePage
+    /// The turns segment's title, which carries the live count.
+    let turnsTitle: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(selection: $selection)
+    }
+
+    func makeUIView(context: Context) -> UISegmentedControl {
+        let control = UISegmentedControl(items: [
+            turnsTitle,
+            String(localized: "Subagents", table: SidePlaneTable.name),
+            String(localized: "Preview", table: SidePlaneTable.name),
+        ])
+        // The chosen segment's ground is the accent, and its ink is whatever
+        // the theme says sits on the accent -- white in the light appearance,
+        // near-black in the dark one. The other two segments read as the
+        // system's secondary label.
+        control.selectedSegmentTintColor = UIColor(Color.accentColor)
+        control.setTitleTextAttributes([.foregroundColor: UIColor(Theme.onAccent)], for: .selected)
+        control.setTitleTextAttributes([.foregroundColor: UIColor.secondaryLabel], for: .normal)
+        control.selectedSegmentIndex = selection.rawValue
+        control.addTarget(context.coordinator, action: #selector(Coordinator.valueChanged(_:)), for: .valueChanged)
+        control.accessibilityIdentifier = "side.tab.bar"
+        return control
+    }
+
+    func updateUIView(_ control: UISegmentedControl, context: Context) {
+        // The count in the first title moves without the operator touching
+        // the control.
+        control.setTitle(turnsTitle, forSegmentAt: 0)
+        // The selection can also have moved from outside -- the debug launch
+        // argument lands here. Inside the control it is already right where
+        // the tap put it, so this is a no-op on the ordinary path.
+        if control.selectedSegmentIndex != selection.rawValue {
+            control.selectedSegmentIndex = selection.rawValue
+        }
+    }
+
+    @MainActor
+    final class Coordinator {
+        private let selection: Binding<SessionSidePlane.SidePage>
+
+        init(selection: Binding<SessionSidePlane.SidePage>) {
+            self.selection = selection
+        }
+
+        @objc func valueChanged(_ sender: UISegmentedControl) {
+            guard let page = SessionSidePlane.SidePage(rawValue: sender.selectedSegmentIndex) else { return }
+            selection.wrappedValue = page
         }
     }
 }
@@ -295,7 +335,8 @@ extension View {
 ///
 /// Built as a page of the plane rather than a hidden stub, so the plane is
 /// whole from the first build -- the travel across it is real today, and what
-/// arrives on it later is that page's business.
+/// arrives on it later is that page's business. Its centre sits below the
+/// floating control, in the space the eye reads as the page's own.
 private struct PreviewPage: View {
     var body: some View {
         VStack(spacing: 10) {
@@ -310,6 +351,7 @@ private struct PreviewPage: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
         }
+        .padding(.top, SessionSidePlane.FloatingTab.pageChromeTop)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .accessibilityIdentifier("side.preview")
     }

@@ -207,10 +207,12 @@ enum TurnState {
 /// The turn index, as the plane's first page: drawn in the drawer on a phone
 /// and in the column on an iPad.
 ///
-/// The page itself carries no big title any more -- "Turns" and its count
-/// moved up into the plane's tab bar, which is the header of all three pages
-/// now. What stays is the context the tab cannot hold: the session the turns
-/// belong to, what they have spent in total, and the filter.
+/// The page itself carries no title and no total -- "Turns" and its count
+/// moved up into the plane's segmented control, and neither the session's name
+/// nor its spent time said anything the conversation's own bar does not. What
+/// stays is the page's own floating chrome: the filter on the left and the
+/// running turn on the right, glass at the same layer as the control above
+/// them, with the timeline travelling beneath both.
 struct TurnIndexPanel: View {
     /// Called once a turn has been chosen, so the phone's drawer can close.
     var onPick: () -> Void = {}
@@ -219,80 +221,72 @@ struct TurnIndexPanel: View {
     @State private var onlyUnfinished = false
     @Namespace private var filter
 
+    /// How far the timeline's content begins below the page's top, so the
+    /// first row rests under the floating chrome with air to spare, and every
+    /// row after it is free to travel beneath the glass on the way past.
+    private static let chromeContentTop: CGFloat = 100
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-                .padding(.horizontal, 20)
-                .padding(.top, 4)
-                .padding(.bottom, 12)
-            if index.turns.isEmpty {
-                empty
-            } else {
-                timeline
+        ZStack(alignment: .top) {
+            Group {
+                if index.turns.isEmpty {
+                    empty
+                } else {
+                    timeline
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            chrome
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Theme.sidebarBackground)
         .accessibilityIdentifier("turnIndex.panel")
     }
 
-    // MARK: Header
+    // MARK: The floating chrome
 
-    private var header: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            VStack(alignment: .leading, spacing: 10) {
-                if let title = index.title {
-                    Text(title)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                stats(now: context.date)
-                if unfinishedCount > 0 {
-                    filterBar
-                        .transition(.rise)
-                }
+    /// The filter, on the left, and the running turn, on the right -- one row
+    /// of glass at the same layer as the drawer's segmented control above it.
+    /// The timeline scrolls beneath both; that is what the layer is for.
+    private var chrome: some View {
+        HStack(spacing: 10) {
+            filterBar
+            Spacer(minLength: 8)
+            if let running = index.turns.last(where: \.isRunning) {
+                runningChip(running)
+                    .transition(.rise)
             }
         }
-        .animation(.mizarSmooth, value: unfinishedCount)
+        .padding(.horizontal, 12)
+        .padding(.top, SessionSidePlane.FloatingTab.pageChromeTop)
+        .animation(.mizarSmooth, value: index.turns.contains(where: \.isRunning))
     }
 
-    private func stats(now: Date) -> some View {
-        let total = index.turns.compactMap { $0.spent(asOf: now) }.reduce(0, +)
-        return HStack(spacing: 14) {
-            Label {
-                Text(TurnIndexFormat.spell(total))
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-            } icon: {
-                Image(systemName: "clock")
+    /// The running turn, as a capsule of glass ground in the accent: the same
+    /// treatment the segmented control gives its chosen segment, and its ink
+    /// is the theme's on-accent colour for the same reason -- accent ink on an
+    /// accent ground is a chip with no words on it.
+    private func runningChip(_ turn: ConversationTurn) -> some View {
+        Button {
+            pick(turn)
+        } label: {
+            HStack(spacing: 5) {
+                TwinStar(size: 10, color: Theme.onAccent)
+                Text("Running now")
             }
-            if let running = index.turns.last(where: \.isRunning) {
-                Button {
-                    pick(running)
-                } label: {
-                    HStack(spacing: 5) {
-                        TwinStar(size: 10)
-                        Text("Running now")
-                    }
-                    .padding(.horizontal, 9)
-                    .frame(height: 24)
-                    .background(Color.accentColor.opacity(0.14), in: Capsule())
-                    .contentShape(.capsule)
-                }
-                .buttonStyle(.pressable)
-                .foregroundStyle(Color.accentColor)
-                .accessibilityIdentifier("turnIndex.running")
-            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(Theme.onAccent)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .contentShape(.capsule)
         }
-        .font(.caption.weight(.medium))
-        .foregroundStyle(.secondary)
-        .labelStyle(.titleAndIcon)
+        .buttonStyle(.plain)
+        .liquidSurface(in: Capsule(), tint: Color.accentColor, interactive: true)
+        .accessibilityIdentifier("turnIndex.running")
     }
 
     private var unfinishedCount: Int { index.turns.count { $0.state == .unfinished } }
 
-    /// Two choices in a capsule, with a highlight that slides between them.
+    /// Two choices on glass, with a highlight that slides between them.
     private var filterBar: some View {
         HStack(spacing: 2) {
             filterButton(String(localized: "All"), selected: !onlyUnfinished) { onlyUnfinished = false }
@@ -301,7 +295,7 @@ struct TurnIndexPanel: View {
             }
         }
         .padding(3)
-        .background(.fill.tertiary, in: Capsule())
+        .liquidCapsule()
     }
 
     private func filterButton(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -364,6 +358,10 @@ struct TurnIndexPanel: View {
             }
             .scrollIndicators(.hidden)
             .scrollEdgeEffectStyle(.soft, for: .vertical)
+            // The first row lands below the floating chrome with air to spare,
+            // and every row after it travels beneath the glass on the way
+            // past -- the margin is content, not a bar the scroll stops at.
+            .contentMargins(.top, Self.chromeContentTop, for: .scrollContent)
             // Opened, the index is already at the part of the session the
             // operator is reading -- not at the top of a list of forty turns.
             .onAppear { centre(proxy) }
@@ -402,7 +400,7 @@ struct TurnIndexPanel: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 8)
+        .padding(.top, Self.chromeContentTop)
     }
 }
 

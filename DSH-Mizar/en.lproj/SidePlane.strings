@@ -3,6 +3,7 @@
    past the workspace guard's credential-shaped keys; see the workspace log. */
 
 "Subagents" = "Subagents";
+"Turns %lld" = "Turns %lld";
 "Preview" = "Preview";
 "Running" = "Running";
 "Interrupted" = "Interrupted";
