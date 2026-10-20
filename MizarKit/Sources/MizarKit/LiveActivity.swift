@@ -146,9 +146,9 @@ extension RunningSession {
     ///     layer keeps the two longest-running rows -- it could push the session
     ///     the operator is actually watching off the card. The test is
     ///     ``SessionRow/isLiveActivityCandidate``, the same one the background
-    ///     refresh picks its reads with: the host marks a delegated child with
-    ///     either `parentSessionId` or `origin`, and a reading that honoured only
-    ///     one of them drew a row the other had decided never to refresh.
+    ///     refresh picks its reads with, and it keys on the host's `origin`
+    ///     alone: a forked conversation carries a parent without that origin and
+    ///     is a top-level session, so it belongs on the island like any other.
     ///   - **A session with nothing cached is seeded at zero.** The row says it is
     ///     running and the phone has not fetched its page yet, so there is no
     ///     figure to seed from; `RunningSession` says what to do about that, and
@@ -214,10 +214,9 @@ extension RunningSession {
 extension SessionRow {
     /// Whether the island has anything to draw for this row.
     ///
-    /// Running, and not a delegated child. The two marks of a subagent mean the
-    /// same thing -- `session.list` sets `parentSessionId`, and `origin` says
-    /// `"subagent"` in the host's own vocabulary -- so both are honoured here,
-    /// and a row the host marked in only one of the two ways is still left out.
+    /// Running, and not a delegated child. The host's `origin` is the marker --
+    /// a forked conversation has a parent but no subagent origin, and it is a
+    /// top-level conversation the app syncs, so its clock belongs on the island.
     /// The app has never synced a subagent's page, which is what makes a row for
     /// one a clock started at zero rather than the work it is doing.
     var isLiveActivityCandidate: Bool { running && !isSubagent }

@@ -2993,7 +2993,11 @@ final class AppModel {
             return
         }
 
-        let runnable = sessions.filter { $0.parentSessionId == nil }
+        // Every top-level conversation, and only those. A forked conversation
+        // ("branch in a new conversation") is a top-level one and its history
+        // belongs on the phone; only a delegated child has no page the operator
+        // would ever open here, and `isSubagent` is the host's own mark for it.
+        let runnable = sessions.filter { !$0.isSubagent }
         log.add(.sync, "history sync: \(runnable.count) sessions to fetch")
         syncProgress = SyncProgress(current: "", completed: 0, total: runnable.count, startedAt: startedAt)
 

@@ -128,18 +128,20 @@ struct BackgroundSyncTests {
         let sessions = [
             row("s-running", running: true),
             row("s-idle", running: false),
+            // A "branch in a new conversation" fork: a parent but no subagent
+            // origin. It is a top-level conversation, so its page is refreshed
+            // like any other.
             row("s-child", running: true, parent: "s-running"),
-            // A row the host did not give a parent for but called a subagent in
-            // its own `origin`. The two marks mean the same thing, and the app
-            // has never synced a subagent's page -- a row for one would count
-            // from zero for work that may have been going for ten minutes.
+            // A delegated child: the host's own `origin` says so, and the app has
+            // never synced a subagent's page -- a row for one would count from
+            // zero for work that may have been going for ten minutes.
             row("s-delegated", running: true, origin: "subagent"),
             row("s-also-running", running: true),
         ]
 
         #expect(
             BackgroundSync.conversationRefreshTargets(in: sessions)
-                == ["s-running", "s-also-running"],
+                == ["s-running", "s-child", "s-also-running"],
         )
         // Nothing left to do, and nothing invented for it.
         #expect(BackgroundSync.conversationRefreshTargets(in: []).isEmpty)
@@ -161,12 +163,14 @@ struct BackgroundSyncTests {
                 row("s-first"),
                 row("s-second"),
                 row("s-idle", running: false),
+                // A fork: a top-level conversation, refreshed by the background
+                // sync like any other, and drawn here from the cache it has (or
+                // seeded at zero when the phone has not fetched it yet).
                 row("s-child", parent: "s-first"),
-                // Marked a subagent only in the host's own `origin`. The two
-                // marks mean the same thing, and the reading that decides what
-                // to refresh already honours both -- a row drawn here and not
-                // refreshed there would be a clock on the card that the
-                // background sync deliberately never updates.
+                // A delegated child: only the host's own `origin` says so, and
+                // it must not reach the island -- a row drawn here and not
+                // refreshed by the background sync would be a clock the card
+                // deliberately never updates.
                 row("s-delegated", origin: "subagent"),
             ],
             conversations: cache,
@@ -177,11 +181,11 @@ struct BackgroundSyncTests {
         // The running top-level sessions, in the list's order, seeded from the
         // running turn's own clock: the island shows the two longest first, and
         // the sort is the decision layer's, not this reading's.
-        #expect(rows.map(\.id) == ["s-first", "s-second"])
-        #expect(rows.map(\.prompt) == ["fix the parser", "run the tests"])
-        #expect(rows.map(\.elapsedWhenSeeded) == [134, 60])
+        #expect(rows.map(\.id) == ["s-first", "s-second", "s-child"])
+        #expect(rows.map(\.prompt) == ["fix the parser", "run the tests", ""])
+        #expect(rows.map(\.elapsedWhenSeeded) == [134, 60, 0])
         #expect(rows.allSatisfy { $0.seededAt == t0 })
-        #expect(rows.map(\.countingSince) == [at(-134), at(-60)])
+        #expect(rows.map(\.countingSince) == [at(-134), at(-60), t0])
     }
 
     @Test("seeds a session the phone has no page for at zero, and claims no prompt")

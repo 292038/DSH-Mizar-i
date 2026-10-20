@@ -79,6 +79,25 @@ let answerDelayMs = 0
 let offline = false
 
 /**
+ * Whether the mock also lists a forked conversation and a delegated child.
+ *
+ * DSH's "branch in a new conversation" creates a *new top-level session* whose
+ * header keeps the source as its parent -- an ordinary conversation the
+ * operator asked for. Read off a real header on this machine it is
+ * `parentSession: <source>` and `isSeeded: true`, with no `origin` at all.
+ * A delegated child is the different thing: the same parent, plus
+ * `origin: "subagent"` and a delegation depth.
+ *
+ * The phone's sidebar used to treat *any* parent as the subagent mark, so the
+ * fork was filtered out of the list forever -- refresh included. Both rows
+ * exist here so the two can be told apart: the fork has to be drawn, the
+ * delegated child has to stay hidden. They are absent unless `/forked?on=1`
+ * asks for them, so the default fixture -- which every other suite measures --
+ * is exactly what it was.
+ */
+let forkedSessionPresent = false
+
+/**
  * A method whose answers should fail from now on, until `/reset`.
  *
  * For the screens that read the same thing more than once. `session.stats` is
@@ -297,6 +316,59 @@ const ORPHANED_SESSION = {
 }
 
 /**
+ * A conversation "branched" out of the fixture's session, as DSH creates it.
+ *
+ * The shape that was missing from every fixture, and the whole reason for the
+ * report: the host copies the source into a new session and records the source
+ * as that session's `parentSession`, while `origin` stays empty. It is the
+ * operator's own conversation -- the host's session list draws it, and DSH's
+ * desktop sidebar shows it -- so the phone has to draw it too.
+ *
+ * Newest activity in the list on purpose: it belongs at the top of its
+ * workspace, where a missing row is hardest to explain away as "below the
+ * fold". `updatedAt` is offset from the fixture session's rather than from
+ * `Date.now()` at answer time, so its position cannot change under a refresh.
+ */
+const FORKED_SESSION = {
+  sessionId: SECOND_IDENTITY ? 'mock-forked-session-second-0001' : 'mock-forked-session-0001',
+  cwd: SESSION.cwd,
+  updatedAt: SESSION.updatedAt + 60_000,
+  running: false,
+  blank: false,
+  agentAvailable: true,
+  parentSessionId: SESSION.sessionId,
+  origin: null,
+}
+
+/**
+ * The delegated child that must *not* be drawn, told apart by the host's mark.
+ *
+ * The same parent as the fork and the same working directory -- so nothing but
+ * `origin` can separate them. If a reading of the list keys on the parent, it
+ * shows this row and hides the fork; the fixture asks for both behaviours at
+ * once so which one happened is visible in one screen.
+ *
+ * Deliberately given no title (its `session.stats` answer has none) so a row
+ * that leaked would read as `<dir> · <id prefix>` rather than pretend to be a
+ * conversation; the sidebar query for a leaked row names that id prefix.
+ */
+const SUBAGENT_SESSION = {
+  sessionId: SECOND_IDENTITY ? 'mock-subagent-session-second-0001' : 'mock-subagent-session-0001',
+  cwd: SESSION.cwd,
+  updatedAt: SESSION.updatedAt + 120_000,
+  running: false,
+  blank: false,
+  agentAvailable: true,
+  parentSessionId: SESSION.sessionId,
+  origin: 'subagent',
+}
+
+/** The extra sessions the list reports while `/forked?on=1` is set. */
+function forkedSessions() {
+  return forkedSessionPresent ? [FORKED_SESSION, SUBAGENT_SESSION] : []
+}
+
+/**
  * The second session's conversation, which says different things.
  *
  * One view draws every session, so every value it holds has to belong to the
@@ -373,6 +445,64 @@ function orphanMessages(beforeSeq) {
         },
       }),
       record('turn/end', { turn: 2, reason: { kind: 'completed' } }),
+    ],
+  }
+}
+
+/**
+ * A forked conversation's history: one finished turn, and nothing behind it.
+ *
+ * Small on purpose. What the test has to see is that the row opens and its
+ * history syncs -- a user message and the answer it got, in the shape the host
+ * sends them (the prompt inside its turn, after `turn/start` and `step/start`,
+ * and a summary assistant message). There is no older page: `hasMore: false`
+ * says the walk is over, and a `beforeSeq` read is answered the way the host
+ * answers one -- nothing older.
+ *
+ * - Parameter beforeSeq: the position the client is paging back from, or `null`
+ *   for the newest page.
+ * - Returns: one page, in the shape `session.messages` answers with.
+ */
+function forkedMessages(beforeSeq) {
+  const now = Date.now()
+  if (beforeSeq !== null) {
+    return {
+      sessionId: FORKED_SESSION.sessionId,
+      asOfSeq: 5,
+      hasMore: false,
+      records: [],
+    }
+  }
+  let counter = 0
+  const record = (type, data) => {
+    counter += 1
+    return {
+      type: 'event',
+      event: { type, seq: counter, time: now + clockSkewMs - (5 - counter) * 1000, data },
+    }
+  }
+  return {
+    sessionId: FORKED_SESSION.sessionId,
+    asOfSeq: 5,
+    hasMore: false,
+    records: [
+      record('turn/start', { turn: 1 }),
+      record('step/start', { turn: 1, step: 1 }),
+      record('user/message', {
+        content: [{ type: 'text', text: 'A branch of the parser work.' }],
+        source: { kind: 'user' },
+        role: 'user',
+        id: 'fork-m1',
+      }),
+      record('assistant/message', {
+        turn: 1,
+        step: 1,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'The branch kept the parser tests.' }],
+        },
+      }),
+      record('turn/end', { turn: 1, reason: { kind: 'completed' } }),
     ],
   }
 }
@@ -574,6 +704,12 @@ function answer(frame) {
               sessionIds: [
                 SESSION.sessionId,
                 ...createdSessions.filter((c) => c.cwd === SESSION.cwd).map((c) => c.sessionId),
+                // Both extra rows are members of the workspace on the host:
+                // the operator's fork belongs there, and the delegated child is
+                // filed under it too. The phone has to draw exactly one of
+                // them, which makes "filtered by membership" wrong and
+                // "filtered by origin" the only reading that fits.
+                ...forkedSessions().map((session) => session.sessionId),
               ].filter((id) => !archivedSessionIds.has(id)),
             },
             { workspaceId: 'ws-fresh', path: '/Users/you/projects/fresh', title: 'fresh', sessionIds: [] },
@@ -598,6 +734,12 @@ function answer(frame) {
             // one is gone from the workspace that held it.
             ...(archivedSessionIds.has(SESSION.sessionId) ? [] : [{ ...SESSION, running: sessionRunning }]),
             ...(archivedSessionIds.has(ORPHANED_SESSION.sessionId) ? [] : [ORPHANED_SESSION]),
+            // A forked conversation and a delegated child, both optional. The
+            // fork is a top-level session with a parent and no `origin`; the
+            // subagent is the same parent *with* the host's mark. They are
+            // absent by default so every other suite measures exactly the
+            // fixture it measured before.
+            ...forkedSessions().filter((session) => !archivedSessionIds.has(session.sessionId)),
           ],
         },
       }
@@ -644,6 +786,54 @@ function answer(frame) {
             asOfSeq: 910,
             stats: {
               title: 'Orphan session',
+              tokenUsage: null,
+              cacheHit: null,
+              context: null,
+              stats: null,
+              model: null,
+              permissionPreset: null,
+            },
+          },
+        }
+      }
+      // The forked conversation's title. This is what makes the row findable
+      // by a name rather than by a directory-and-id fallback: the phone learns
+      // a session's title from this frame, one request per drawn row, so the
+      // title arriving is itself evidence the row was built and drawn.
+      if (frame.payload?.sessionId === FORKED_SESSION.sessionId) {
+        return {
+          v: 1,
+          type: 'ok',
+          id,
+          result: {
+            sessionId: FORKED_SESSION.sessionId,
+            asOfSeq: 5,
+            stats: {
+              title: 'Forked session',
+              tokenUsage: null,
+              cacheHit: null,
+              context: null,
+              stats: null,
+              model: null,
+              permissionPreset: null,
+            },
+          },
+        }
+      }
+      // The delegated child answers without a title. It should never be asked:
+      // a row the sidebar filters out is never drawn, and titles are fetched
+      // for drawn rows. Answering anyway keeps a fixture that leaked one from
+      // pretending it is a conversation with a name.
+      if (frame.payload?.sessionId === SUBAGENT_SESSION.sessionId) {
+        return {
+          v: 1,
+          type: 'ok',
+          id,
+          result: {
+            sessionId: SUBAGENT_SESSION.sessionId,
+            asOfSeq: 1,
+            stats: {
+              title: null,
               tokenUsage: null,
               cacheHit: null,
               context: null,
@@ -1120,6 +1310,15 @@ function answer(frame) {
               }),
             ]),
           },
+        }
+      }
+      if (frame.payload?.sessionId === FORKED_SESSION.sessionId) {
+        console.log('mock: messages for', FORKED_SESSION.sessionId, JSON.stringify(frame.payload))
+        return {
+          v: 1,
+          type: 'ok',
+          id,
+          result: forkedMessages(frame.payload?.beforeSeq ?? null),
         }
       }
       if (frame.payload?.sessionId === ORPHANED_SESSION.sessionId) {
@@ -1796,6 +1995,16 @@ const server = createServer((request, response) => {
     response.end(JSON.stringify({ ok: true, offline }))
     return
   }
+  if (request.url?.startsWith('/forked')) {
+    // Whether the list also reports a "branch in a new conversation" and a
+    // delegated child, from now on. See `forkedSessionPresent`. Off is the
+    // default and what `/reset` puts back, so the fixture every other suite
+    // measures is the one it measured before.
+    forkedSessionPresent = (request.url ?? '').includes('on=1')
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ ok: true, forked: forkedSessionPresent }))
+    return
+  }
   if (request.url?.startsWith('/stats')) {
     statsVariant = /variant=(\w+)/.exec(request.url ?? '')?.[1] ?? 'full'
     response.writeHead(200, { 'content-type': 'application/json' })
@@ -1842,6 +2051,9 @@ const server = createServer((request, response) => {
     // list missing a row.
     permissionPreset = 'workspace-write'
     archivedSessionIds.clear()
+    // The fork fixture goes back with everything else: a test that asked for
+    // it must not hand the next test a list with two extra sessions in it.
+    forkedSessionPresent = false
     // The account fixture goes back with everything else: a test that signs in
     // must not inherit the previous test's paid plan or its session tokens.
     resetAccounts()

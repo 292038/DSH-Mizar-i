@@ -162,9 +162,17 @@ public struct SessionRow: Codable, Sendable, Equatable, Identifiable {
     /// Whether an agent can be resolved for it.
     public let agentAvailable: Bool
     public let cwd: String?
-    /// Present when this row is a subagent.
+    /// The session this one was forked from, when it has one.
+    ///
+    /// **Not a subagent marker.** DSH's "branch in a new conversation" copies a
+    /// turn's history into a new session whose header carries its source as
+    /// `parentSession` (this field) with no `origin` -- a real header from this
+    /// machine: `parentSession: session-31e3…`, `isSeeded: true`, no origin. That
+    /// is an ordinary conversation the operator asked for, and treating it as a
+    /// delegated child is what kept forked conversations off the phone entirely.
+    /// Subagents are marked by ``origin``, the host's own classification.
     public let parentSessionId: String?
-    /// `"subagent"` for delegated children.
+    /// `"subagent"` for delegated children, exactly as the host classifies them.
     public let origin: String?
 
     public var id: String { sessionId }
@@ -173,7 +181,24 @@ public struct SessionRow: Codable, Sendable, Equatable, Identifiable {
     public var updatedDate: Date { Date(timeIntervalSince1970: updatedAt / 1000) }
 
     /// Whether this row is a delegated child session.
-    public var isSubagent: Bool { origin == "subagent" || parentSessionId != nil }
+    ///
+    /// The host's `origin` is the classification, and it is the only one: a
+    /// session created by the agent to do part of the work carries
+    /// `origin: "subagent"` (and a parent, and a delegation depth > 0). A fork
+    /// made by "branch in a new conversation" carries the parent without the
+    /// origin, because it is the operator's conversation, not the agent's
+    /// bookkeeping. Honouring `parentSessionId` here as well -- which the app
+    /// used to do, on the belief that the two marks meant the same thing --
+    /// hid every forked conversation from the list, the history sync and the
+    /// Live Activity.
+    public var isSubagent: Bool { origin == "subagent" }
+
+    /// Whether this row was forked from another session.
+    ///
+    /// A fork is a top-level conversation: it is drawn, synced and allowed on
+    /// the island like any other. This property exists so the distinction can be
+    /// named where it matters rather than re-derived from the two fields.
+    public var isFork: Bool { parentSessionId != nil && !isSubagent }
 }
 
 // MARK: - Usage

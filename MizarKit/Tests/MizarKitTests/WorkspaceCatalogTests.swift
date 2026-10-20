@@ -29,6 +29,7 @@ struct WorkspaceCatalogTests {
     ///   - updatedAt: last activity, for ordering.
     ///   - blank: whether nobody has typed into it yet.
     ///   - subagent: whether it is a delegated child.
+    ///   - forked: whether it is a "branch in a new conversation" fork.
     /// - Returns: the row.
     private func session(
         _ id: String,
@@ -36,6 +37,7 @@ struct WorkspaceCatalogTests {
         updatedAt: Double = 0,
         blank: Bool = false,
         subagent: Bool = false,
+        forked: Bool = false,
     ) -> SessionRow {
         SessionRow(
             sessionId: id,
@@ -44,7 +46,9 @@ struct WorkspaceCatalogTests {
             blank: blank,
             agentAvailable: true,
             cwd: cwd,
-            parentSessionId: subagent ? "parent" : nil,
+            // A fork carries the source session as its parent and no subagent
+            // origin; a delegated child carries the host's `origin`.
+            parentSessionId: (subagent || forked) ? "parent" : nil,
             origin: subagent ? "subagent" : nil,
         )
     }
@@ -341,6 +345,28 @@ struct WorkspaceCatalogTests {
             selectedSessionId: nil,
         )
         #expect(groups.map(\.title) == ["~/oss/api", "~/work/api"])
+    }
+
+    @Test("a conversation forked by \"branch in a new conversation\" is drawn")
+    func forkedConversationsAreDrawn() {
+        // The reported bug: DSH's fork button creates a session whose header has
+        // a `parentSession` and no subagent origin. The app treated every parent
+        // as a delegated child and hid the fork for ever -- the session existed
+        // on the computer and never appeared on the phone, refresh included.
+        let sessions = [
+            session("s1", updatedAt: 3),
+            session("s-fork", updatedAt: 2, forked: true),
+            session("s-subagent", updatedAt: 1, subagent: true),
+        ]
+        let workspaces = [workspace("w1", "/Users/you/projects/demo", sessionIds: ["s1", "s-fork", "s-subagent"])]
+
+        #expect(
+            WorkspaceCatalog.groups(sessions: sessions, workspaces: workspaces, selectedSessionId: nil)
+                .first?.sessions.map(\.sessionId) == ["s1", "s-fork"],
+        )
+        #expect(!sessions[1].isSubagent, "a forked conversation was treated as a delegated child")
+        #expect(sessions[1].isFork)
+        #expect(sessions[2].isSubagent)
     }
 
     @Test("subagents and blank sessions are left out, except the one being looked at")

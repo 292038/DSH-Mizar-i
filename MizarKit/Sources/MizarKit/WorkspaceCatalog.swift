@@ -248,7 +248,10 @@ public enum WorkspaceCatalog {
     ///
     /// Subagents are left out. They are real sessions, but they are the agent's
     /// bookkeeping rather than the operator's work, and a list where half the
-    /// rows are delegated children is a list nobody can scan.
+    /// rows are delegated children is a list nobody can scan. A **forked**
+    /// conversation is not a subagent: DSH's "branch in a new conversation"
+    /// carries the source session as its parent without the host's subagent
+    /// `origin`, and it is the operator's conversation, so it is drawn.
     ///
     /// `blank` is a session nobody has typed into yet. It has no title, no turns
     /// and no messages, so as a row it reads as ``<dir> · session-`` with a
