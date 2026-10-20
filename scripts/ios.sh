@@ -34,6 +34,16 @@ DERIVED="$ROOT/.devcache/DerivedData"
 # diagnostics. Set MIZAR_TEST_DIAGNOSTICS=on-failure (or always) in CI.
 TEST_DIAGNOSTICS="${MIZAR_TEST_DIAGNOSTICS:-never}"
 
+# Class-parallel UI runs. Empty or "1" keeps the serial behaviour; any other
+# number asks xcodebuild to spread test classes over that many simulator
+# workers. Safe only because each class owns its mock host pair (MockPorts).
+PARALLEL_WORKERS="${PARALLEL_WORKERS:-}"
+parallel_args=()
+if [ -n "$PARALLEL_WORKERS" ] && [ "$PARALLEL_WORKERS" != "1" ]; then
+  parallel_args=(-parallel-testing-enabled YES -parallel-testing-worker-count "$PARALLEL_WORKERS")
+  echo "ios.sh: class-parallel UI run with $PARALLEL_WORKERS workers"
+fi
+
 # Simulator builds are signed ad-hoc. That is not cosmetic: an unsigned app has
 # no keychain entitlement, and the app stores its device token in the keychain,
 # so it would launch and then fail to read its own credential (errSecMissingEntitlement,
@@ -143,7 +153,7 @@ case "${1:-build}" in
     # spent on -destination, so passing it through as well handed xcodebuild
     # "iPhone 18 Pro" as a build action -- which it rejected, so a single test
     # could not be run by name.
-    xcb test -collect-test-diagnostics "$TEST_DIAGNOSTICS" "${@:3}" 2>&1 | grep -E "Test Case .*(passed|failed)|Executed .* tests|error:|TEST (SUCCEEDED|FAILED)" || true
+    xcb test -collect-test-diagnostics "$TEST_DIAGNOSTICS" ${parallel_args[@]+"${parallel_args[@]}"} "${@:3}" 2>&1 | grep -E "Test Case .*(passed|failed)|Executed .* tests|error:|TEST (SUCCEEDED|FAILED)" || true
     ;;
   test-fast)
     prepare_ui_tests
@@ -157,7 +167,7 @@ case "${1:-build}" in
       extra=(-only-testing:DSH-MizarUITests/AccountUITests)
     fi
     xcb build-for-testing >/dev/null 2>&1 || { echo "ios.sh: build-for-testing failed"; exit 1; }
-    xcb test-without-building -collect-test-diagnostics "$TEST_DIAGNOSTICS" "${extra[@]}" 2>&1 | grep -E "Test Case .*(passed|failed)|Executed .* tests|error:|TEST (SUCCEEDED|FAILED)" || true
+    xcb test-without-building -collect-test-diagnostics "$TEST_DIAGNOSTICS" ${parallel_args[@]+"${parallel_args[@]}"} "${extra[@]}" 2>&1 | grep -E "Test Case .*(passed|failed)|Executed .* tests|error:|TEST (SUCCEEDED|FAILED)" || true
     ;;
   screenshot)
     OUT="${3:-/tmp/dsh-mizar.png}"
