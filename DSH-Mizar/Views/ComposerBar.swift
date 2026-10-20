@@ -82,11 +82,7 @@ struct ComposerBar: View {
         guard let selection = stats?.model?.next ?? stats?.model?.lastUsed ?? fallbackSelection else {
             return String(localized: "Model")
         }
-        var text = selection.model
-        if let effort = selection.reasoningEffort, !effort.isEmpty {
-            text += " · \(effort.capitalized)"
-        }
-        return text
+        return modelPillLabel(model: selection.model, effort: selection.reasoningEffort)
     }
 
     /// The route a new turn would take, when this session has not chosen one.
@@ -96,36 +92,15 @@ struct ComposerBar: View {
     }
 
     private var modelPill: some View {
-        Button { showingModel = true } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "cpu")
-                    .font(.system(size: 12, weight: .semibold))
-                if !focused {
-                    Text(modelLabel)
-                        .font(.caption.weight(.medium))
-                        .lineLimit(1)
-                        // Tail, not middle: "deepseek-fl…" still names the family.
-                        .truncationMode(.tail)
-                        .transition(.blurReplace)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.tertiary)
-                        .transition(.blurReplace)
-                }
+        ModelPill(label: modelLabel, compact: focused) { showingModel = true }
+            .layoutPriority(1)
+            // Each panel is a small window out of the control that opened it.
+            .mizarPopover(isPresented: $showingModel, arrowEdge: .bottom) {
+                ModelPickerView(sessionId: sessionId, stats: stats)
+                    .frame(width: PopoverSize.list.width, height: PopoverSize.list.height)
             }
-            .padding(.horizontal, focused ? 0 : 11)
-            .frame(width: focused ? 32 : nil, height: 32)
-            .background(.fill.tertiary, in: Capsule())
-            .contentShape(.capsule)
-        }
-        .buttonStyle(.pressable)
-        // Each panel is a small window out of the control that opened it.
-        .mizarPopover(isPresented: $showingModel, arrowEdge: .bottom) {
-            ModelPickerView(sessionId: sessionId, stats: stats)
-                .frame(width: PopoverSize.list.width, height: PopoverSize.list.height)
-        }
-        .accessibilityLabel("Model, \(modelLabel)")
-        .accessibilityIdentifier("composer.model")
+            .accessibilityLabel("Model, \(modelLabel)")
+            .accessibilityIdentifier("composer.model")
     }
 
     // MARK: - Context
