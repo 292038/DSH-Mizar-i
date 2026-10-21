@@ -40,6 +40,10 @@ struct ComposerView: View {
     /// Whether the field holds the keyboard. Owned by the screen so a tap on the
     /// conversation can put it away.
     @FocusState.Binding var focused: Bool
+    /// Whether the composer is opened out into its tall, focused-input form.
+    /// Owned by the screen: the room the conversation reserves and the dock's
+    /// presence both answer to it.
+    @Binding var expanded: Bool
     @Binding var showingModel: Bool
     @Binding var showingContext: Bool
     @Binding var showingCommands: Bool
@@ -80,10 +84,18 @@ struct ComposerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // The key, not the Chinese: this string is already in the catalogue.
+            //
+            // Expanded, the field is the composer: it takes every point between
+            // the top edge and the controls, so a long prompt is read whole
+            // instead of through an eight-line letterbox. It is one field with
+            // two limits, never two fields: a second branch would be a second
+            // view, and focus does not survive the swap -- the keyboard dropped
+            // on every expand and collapse until this was one TextField.
             TextField("Ask your agent…", text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
-                .lineLimit(1...8)
+                .lineLimit(expanded ? nil : 8)
                 .focused($focused)
+                .frame(maxWidth: .infinity, maxHeight: expanded ? .infinity : nil, alignment: .topLeading)
                 .padding(.horizontal, 16)
                 .padding(.top, 13)
                 .padding(.bottom, 6)
@@ -122,6 +134,14 @@ struct ComposerView: View {
                     onLockedAttachment: { showingPaywall = true },
                 )
                 Spacer(minLength: 4)
+                // Put the keyboard away. Only there while the keyboard is up:
+                // with it down the button has nothing to do, and a control
+                // that does nothing reads as a broken one.
+                if focused {
+                    dismissKeyboardButton
+                        .transition(.pop)
+                }
+                expandButton
                 primaryButton
             }
             .padding(.horizontal, 8)
@@ -132,6 +152,11 @@ struct ComposerView: View {
         .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: Self.corner, style: .continuous))
         .animation(.mizarSmooth, value: text.isEmpty)
         .animation(.mizarSmooth, value: attachments.count)
+        // Drives the keyboard button's arrival when the field is tapped into.
+        // `expanded` is deliberately not animated here: the expand button
+        // already wraps its change in a transaction, and a second implicit
+        // animation over the same change double-drove the layout.
+        .animation(.mizarSmooth, value: focused)
         .padding(.horizontal, 10)
         .padding(.bottom, 6)
         .mizarFeedback(.impact(weight: .light), trigger: sends)
@@ -207,6 +232,79 @@ struct ComposerView: View {
         .animation(.mizarBouncy, value: mode)
         .accessibilityLabel(showsStop ? "Stop" : "Send")
         .accessibilityIdentifier(showsStop ? "composer.stop" : "composer.send")
+    }
+
+    /// Put the keyboard away, one tap -- and with it the expanded composer:
+    /// the tall field exists for typing, and with no keyboard up it is a
+    /// screenful of nothing to type into. Sits at the left of the expand
+    /// button, and only exists while the keyboard is up -- see the call site.
+    private var dismissKeyboardButton: some View {
+        Button {
+            withMizarAnimation(.mizarSmooth) {
+                focused = false
+                expanded = false
+            }
+        } label: {
+            // A chevron, not an arrow: next to the send button's arrow.up the
+            // two stems read as the same glyph, and these keys are not send.
+            //
+            // A solid circle, like the send button it sits beside -- not glass.
+            // A glass circle nested inside the composer's own glass is morphed
+            // by the glass engine whenever the slab changes shape, so the
+            // button wandered with the expansion and snapped back after;
+            // opaque fills are not morphable, which is why the other keys on
+            // this row never moved.
+            Image(systemName: "chevron.down")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: Self.buttonSize, height: Self.buttonSize)
+                .background {
+                    Circle()
+                        .fill(Color(.tertiarySystemFill))
+                }
+                .contentShape(.circle)
+        }
+        .buttonStyle(.pressable(scale: 0.88))
+        .accessibilityLabel(Text("Hide keyboard"))
+        .accessibilityIdentifier("composer.dismissKeyboard")
+    }
+
+    /// Open the composer out to the height of the screen, and back.
+    ///
+    /// At rest a grey circle with an up chevron -- the field will grow
+    /// upwards; open, it takes on the send button's blue, and the same tap
+    /// puts the composer back to rest. The expansion itself is laid out by
+    /// the screen, which owns the space above; this button only decides.
+    private var expandButton: some View {
+        Button {
+            // One transaction for both: the expansion animates the shape, and
+            // the keyboard rises with it, so the first character can follow
+            // the tap immediately. Animated separately they drove the layout
+            // twice, and the row shuddered.
+            withMizarAnimation(.mizarSmooth) {
+                expanded.toggle()
+                if expanded {
+                    focused = true
+                }
+            }
+        } label: {
+            Image(systemName: "chevron.up")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(expanded ? Theme.onAccent : .secondary)
+                .frame(width: Self.buttonSize, height: Self.buttonSize)
+                .background {
+                    Circle()
+                        .fill(expanded ? Color.accentColor : Color(.tertiarySystemFill))
+                        .shadow(
+                            color: expanded ? Color.accentColor.opacity(0.4) : .clear,
+                            radius: 8, y: 3,
+                        )
+                }
+                .contentShape(.circle)
+        }
+        .buttonStyle(.pressable(scale: 0.88))
+        .accessibilityLabel(Text(expanded ? "Collapse the composer" : "Expand the composer"))
+        .accessibilityIdentifier("composer.expand")
     }
 
     private var fill: Color {

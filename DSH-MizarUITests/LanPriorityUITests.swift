@@ -217,7 +217,7 @@ final class LanPriorityUITests: XCTestCase {
         let arguments = [
             "-mizarPairURI", Self.mockPairingURI,
             "-mizarFreshStart",
-            "-mizarSkipPermissionPrompts",
+            "-mizarSkipPermissionPrompts", "-mizarSkipLoginGate", "-mizarCreditsFixture",
             "-mizarAccountFreshStart",
             "-mizarAccountURL", Self.mockBaseURL,
             "-AppleLanguages", "(en)",

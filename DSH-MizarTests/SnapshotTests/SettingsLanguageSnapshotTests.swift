@@ -47,9 +47,12 @@ struct SettingsLanguageSnapshotTests {
         // queried on the credits row, the section headers, the rows' copy keys,
         // and the wire-named notification identifier built from the kind's raw
         // value.
-        try AppSourceContract.expectIdentifiers(
-            ["settings.credits.shirazu"],
+        try AppSourceContract.expectFragments(
+            [
+                #".accessibilityIdentifier("settings.credits.row.\(contributor.login)")"#,
+            ],
             in: "DSH-Mizar/Views/SettingsView.swift",
+            describing: "the credits row identifier the language UI test asserted",
         )
         try AppSourceContract.expectFragments(
             [
@@ -59,7 +62,7 @@ struct SettingsLanguageSnapshotTests {
                 #"String(localized: "Task complete")"#,
                 #"Label("Live Activity", systemImage: "bolt.horizontal.circle")"#,
                 #"Label("Source code", systemImage: "chevron.left.forwardslash.chevron.right")"#,
-                #"Label("ShirazuNagisa", systemImage: "person.crop.circle")"#,
+                #"localized: "Turn this on if you use the app on the same local network; turning it off makes every reconnect faster.""#,
                 #""settings.notify.\(kind.rawValue)""#,
             ],
             in: "DSH-Mizar/Views/SettingsView.swift",
@@ -69,11 +72,11 @@ struct SettingsLanguageSnapshotTests {
         let snapshot = try SnapshotHarness.assertSnapshot(
             of: sections,
             named: "SettingsLanguage-\(language.rawValue)",
-            size: CGSize(width: 390, height: 440),
+            size: CGSize(width: 390, height: 520),
             locale: language.locale,
         )
         #expect(snapshot.pixelWidth == 780)
-        #expect(snapshot.pixelHeight == 880)
+        #expect(snapshot.pixelHeight == 1040)
     }
 
     /// `SettingsView`'s notifications, Live Activity and credits sections,
@@ -114,11 +117,27 @@ struct SettingsLanguageSnapshotTests {
                     }
                 }
                 row {
-                    Label("ShirazuNagisa", systemImage: "person.crop.circle")
-                        .accessibilityIdentifier("settings.credits.shirazu")
+                    ContributorRow(
+                        contributor: Contributor(
+                            login: "ShirazuNagisa",
+                            profileURL: URL(string: "https://github.com/ShirazuNagisa")!,
+                            commits: 255,
+                            repositories: ["DSH-Mizar", "DSH-Mizar-iOS"],
+                        ),
+                        avatar: nil,
+                    )
+                    .accessibilityIdentifier("settings.credits.row.ShirazuNagisa")
                 }
                 row {
-                    Label("Arowey", systemImage: "person.crop.circle")
+                    ContributorRow(
+                        contributor: Contributor(
+                            login: "Arowey",
+                            profileURL: URL(string: "https://github.com/Arowey")!,
+                            commits: 147,
+                            repositories: ["DSH-Mizar-Android"],
+                        ),
+                        avatar: nil,
+                    )
                 }
             }
         }

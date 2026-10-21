@@ -283,45 +283,54 @@ struct UnpairedView<Mark: View>: View {
             )
             .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                Spacer()
-                mark
-                    .frame(width: 112)
-                    .padding(.bottom, 36)
-                Text("No computer paired yet")
-                    .font(.largeTitle.weight(.bold))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                Text("Open DSH on your computer, find the DSH-Mizar panel in the sidebar, and scan the code it shows.")
-                    .font(.body)
-                    .foregroundStyle(.white.opacity(0.7))
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 12)
-                    .padding(.horizontal, 36)
-                Spacer()
-                Button {
-                    showingPairing = true
-                } label: {
-                    Label("Scan the code", systemImage: "qrcode.viewfinder")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
+                VStack(spacing: 0) {
+                    Spacer()
+                    mark
+                        .frame(width: 112)
+                        .padding(.bottom, 36)
+                    Text("Install the plugin, then scan")
+                        .font(.largeTitle.weight(.bold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                    Text("In DSH's plugin panel, enter dsh-mizar to install the plugin, then restart DSH. When the panel shows a code, come back here and scan it.")
+                        .font(.body)
+                        .foregroundStyle(.white.opacity(0.7))
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 12)
+                        .padding(.horizontal, 30)
+                    Text("dsh plugin --profile desktop add dsh-mizar")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.white.opacity(0.62))
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.white.opacity(0.08), in: Capsule())
+                        .padding(.top, 14)
+                    Spacer()
+                    Button {
+                        showingPairing = true
+                    } label: {
+                        Label("Scan the code", systemImage: "qrcode.viewfinder")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.extraLarge)
+                    .accessibilityIdentifier("unpaired.scan")
+                    // The pairing window grows out of the button, over the navy.
+                    .mizarPopover(isPresented: $showingPairing, arrowEdge: .bottom) {
+                        PairingView()
+                            .frame(width: 360, height: 540)
+                    }
+                    .padding(.horizontal, 28)
+                    Text("Once it is installed, there is nothing else to set up.")
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.5))
+                        .padding(.top, 14)
+                        .padding(.bottom, 12)
                 }
-                .buttonStyle(.glassProminent)
-                .controlSize(.extraLarge)
-                .accessibilityIdentifier("unpaired.scan")
-                // The pairing window grows out of the button, over the navy.
-                .mizarPopover(isPresented: $showingPairing, arrowEdge: .bottom) {
-                    PairingView()
-                        .frame(width: 360, height: 540)
-                }
-                .padding(.horizontal, 28)
-                Text("There are no other steps.")
-                    .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.5))
-                    .padding(.top, 14)
-                    .padding(.bottom, 12)
-            }
         }
         .environment(\.colorScheme, .dark)
     }

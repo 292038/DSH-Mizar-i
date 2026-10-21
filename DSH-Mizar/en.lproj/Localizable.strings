@@ -429,3 +429,48 @@
 "Transfer" = "Transfer";
 "Local network first" = "Local network first";
 "When on, every reconnect first looks for the computer on your local network and falls back to the relay when it is not there. When off, the scan is skipped and reconnecting goes straight to the saved route, which is faster." = "When on, every reconnect first looks for the computer on your local network and falls back to the relay when it is not there. When off, the scan is skipped and reconnecting goes straight to the saved route, which is faster.";
+
+/* 0.9.5 — mail, gate, credits */
+"Mizar Paid exists to provide what a high-bandwidth server can do: carrying a session's execution as it happens, attachments, and so on. Payment only shares the server cost and can barely be profitable. Free users can still use most features and the free server. Thank you for using it." = "Mizar Paid exists to provide what a high-bandwidth server can do: carrying a session's execution as it happens, attachments, and so on. Payment only shares the server cost and can barely be profitable. Free users can still use most features and the free server. Thank you for using it.";
+"A Mizar account is required to use the app." = "A Mizar account is required to use the app.";
+"A Mizar account is required to use the app. It keeps every relay session attributable to one person." = "A Mizar account is required to use the app. It keeps every relay session attributable to one person.";
+"A high-bandwidth relay, paid for by the people who need it. The free server stays free." = "A high-bandwidth relay, paid for by the people who need it. The free server stays free.";
+"Collected from the four GitHub repositories and refreshed every 24 hours. Tap a name to open their GitHub profile." = "Collected from the four GitHub repositories and refreshed every 24 hours. Tap a name to open their GitHub profile.";
+"Updated %@." = "Updated %@.";
+"GitHub could not be reached; this is the saved list." = "GitHub could not be reached; this is the saved list.";
+"Loading contributors…" = "Loading contributors…";
+"No contributors to show yet." = "No contributors to show yet.";
+"Details" = "Details";
+"Enter the code" = "Enter the code";
+"Reset your password" = "Reset your password";
+"Verify and create account" = "Verify and create account";
+"Verify and set password" = "Verify and set password";
+"We sent a 6-digit code to %@. It expires in 10 minutes." = "We sent a 6-digit code to %@. It expires in 10 minutes.";
+"6-digit code" = "6-digit code";
+"Resend in %lld s" = "Resend in %lld s";
+"Resend code" = "Resend code";
+"That code is not right. Try again." = "That code is not right. Try again.";
+"That code has expired. Send a new one." = "That code has expired. Send a new one.";
+"Too many attempts. Send a new code." = "Too many attempts. Send a new code.";
+"Email is unavailable right now. Try again shortly." = "Email is unavailable right now. Try again shortly.";
+"The code could not be sent. Try again shortly." = "The code could not be sent. Try again shortly.";
+"Forgot password?" = "Forgot password?";
+"Send code" = "Send code";
+"New password" = "New password";
+"This account has been banned." = "This account has been banned.";
+"This account has been banned" = "This account has been banned";
+"Contact %@ if you believe this is a mistake." = "Contact %@ if you believe this is a mistake.";
+"Traffic allowance spent" = "Traffic allowance spent";
+"This account has carried its whole daily allowance on the relay. It resets at 00:00 UTC; connecting directly over the local network still works." = "This account has carried its whole daily allowance on the relay. It resets at 00:00 UTC; connecting directly over the local network still works.";
+"Not available yet" = "Not available yet";
+"The TestFlight build does not support this yet. Stay tuned." = "The TestFlight build does not support this yet. Stay tuned.";
+"We will email a 6-digit code to the address on your account." = "We will email a 6-digit code to the address on your account.";
+"Sign in to get started" = "Sign in to get started";
+"DSH-Mizar's conversations travel through a relay. Once you sign in, every byte belongs to an account, so abnormal traffic can be recognised and stopped — that is what keeps the free server running." = "DSH-Mizar's conversations travel through a relay. Once you sign in, every byte belongs to an account, so abnormal traffic can be recognised and stopped — that is what keeps the free server running.";
+"Signing in is only for the account and traffic safety; conversations never pass through the account server." = "Signing in is only for the account and traffic safety; conversations never pass through the account server.";
+"Install the plugin, then scan" = "Install the plugin, then scan";
+"In DSH's plugin panel, enter dsh-mizar to install the plugin, then restart DSH. When the panel shows a code, come back here and scan it." = "In DSH's plugin panel, enter dsh-mizar to install the plugin, then restart DSH. When the panel shows a code, come back here and scan it.";
+"Once it is installed, there is nothing else to set up." = "Once it is installed, there is nothing else to set up.";
+
+/* 0.9.5 */
+"Turn this on if you use the app on the same local network; turning it off makes every reconnect faster." = "Turn this on if you use the app on the same local network; turning it off makes every reconnect faster.";

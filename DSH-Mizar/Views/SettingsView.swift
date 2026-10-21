@@ -25,6 +25,7 @@
 
 import MizarKit
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
@@ -41,12 +42,15 @@ struct SettingsView: View {
     var onDone: (() -> Void)?
     /// The one switch every haptic in the app answers to.
     @AppStorage(Haptics.storageKey) private var hapticsEnabled = true
+    /// The paid-plan explanation, from either this screen or the account screen.
+    @State private var showingPlanDetail = false
 
     var body: some View {
         NavigationStack {
             List {
                 header
                 accountSection
+                planSection
                 notificationsSection
                 liveActivitySection
                 transferSection
@@ -65,14 +69,21 @@ struct SettingsView: View {
                     }
                 }
             }
+            .refreshable {
+                await model.credits.refresh()
+            }
             .task {
                 // Asked here rather than at launch: this is the screen where the
                 // answer is meaningful, and reading it is a call into the
                 // notification centre that nothing else needs.
                 permission = await NotificationPermission.current()
+                await model.credits.start()
             }
             .sheet(item: $sharing) { archive in
                 ShareSheet(items: [archive.url])
+            }
+            .sheet(isPresented: $showingPlanDetail) {
+                MizarPaidDetailView()
             }
         }
     }
@@ -139,10 +150,33 @@ struct SettingsView: View {
             Text("Account")
         } footer: {
             if !model.account.isLoggedIn {
-                Text("An account is optional. It is needed for attachments and the paid plan, and for keeping your plan on more than one device.")
+                Text("A Mizar account is required to use the app. It keeps every relay session attributable to one person.")
             } else if let notice = model.account.noticeMessage {
                 Text(notice)
             }
+        }
+    }
+
+    // MARK: - 付费版
+
+    /// The plan row, and the one honest paragraph about what it pays for.
+    ///
+    /// It sits directly under the account because "what am I on" and "what would
+    /// paying change" are the same question asked twice.
+    private var planSection: some View {
+        Section {
+            LabeledContent {
+                Button("Details") { showingPlanDetail = true }
+                    .font(.footnote.weight(.medium))
+                    .accessibilityIdentifier("settings.plan.detail")
+            } label: {
+                Label("Mizar Paid", systemImage: "star.circle")
+            }
+            .accessibilityIdentifier("settings.plan")
+        } header: {
+            Text("Plan")
+        } footer: {
+            Text("A high-bandwidth relay, paid for by the people who need it. The free server stays free.")
         }
     }
 
@@ -291,7 +325,7 @@ struct SettingsView: View {
         } footer: {
             Text(
                 String(
-                    localized: "When on, every reconnect first looks for the computer on your local network and falls back to the relay when it is not there. When off, the scan is skipped and reconnecting goes straight to the saved route, which is faster.",
+                    localized: "Turn this on if you use the app on the same local network; turning it off makes every reconnect faster.",
                 ),
             )
         }
@@ -396,25 +430,53 @@ struct SettingsView: View {
             .accessibilityIdentifier("settings.about.version")
         } header: {
             Text("About")
-        } footer: {
-            Text(
-                String(
-                    localized: "Monitor and guide a DSH agent from a phone. The computer decides; this app shows and answers.",
-                ),
-            )
         }
 
-        // 开发者鸣谢 — one name per row, as native list rows. Not one text block
-        // with a line break in it: a paragraph is not a credit, it is a
-        // paragraph, and it reads as one to VoiceOver.
+        // 开发者鸣谢 — one person per row, as native list rows, fetched from
+        // GitHub and cached for a day. Not a text block: a paragraph is not a
+        // credit, it is a paragraph, and it reads as one to VoiceOver.
+        creditsSection
+        }
+    }
+
+    // MARK: - 鸣谢
+
+    /// The contributors, one row each, tappable to their GitHub profile.
+    private var creditsSection: some View {
         Section {
-            Label("ShirazuNagisa", systemImage: "person.crop.circle")
-                .accessibilityIdentifier("settings.credits.shirazu")
-            Label("Arowey", systemImage: "person.crop.circle")
-                .accessibilityIdentifier("settings.credits.arowey")
+            if model.credits.contributors.isEmpty {
+                HStack(spacing: 10) {
+                    if case .loading = model.credits.state {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(creditsEmptyText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("settings.credits.empty")
+                }
+                .padding(.vertical, 4)
+            } else {
+                ForEach(model.credits.contributors) { contributor in
+                    Link(destination: contributor.profileURL) {
+                        ContributorRow(
+                            contributor: contributor,
+                            avatar: model.credits.avatar(for: contributor.login),
+                        )
+                    }
+                    .accessibilityIdentifier("settings.credits.row.\(contributor.login)")
+                }
+            }
         } header: {
             Text("Credits")
         }
+    }
+
+    /// What an empty list says, by state.
+    private var creditsEmptyText: String {
+        switch model.credits.state {
+        case .failed(let message): message
+        case .loading: String(localized: "Loading contributors…")
+        default: String(localized: "No contributors to show yet.")
         }
     }
 
@@ -429,4 +491,49 @@ struct SettingsView: View {
 
 #Preview {
     SettingsView().environment(AppModel())
+}
+
+/// One contributor: avatar, name, what they did, and the way to their profile.
+struct ContributorRow: View {
+    let contributor: Contributor
+    let avatar: UIImage?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            avatarView
+                .frame(width: 32, height: 32)
+                .clipShape(Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(contributor.name ?? contributor.login)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(contributor.name == nil
+                    ? contributor.detail
+                    : "@\(contributor.login) · \(contributor.detail)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Image(systemName: "arrow.up.right")
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private var avatarView: some View {
+        if let avatar {
+            Image(uiImage: avatar).resizable().scaledToFill()
+        } else {
+            ZStack {
+                Circle().fill(.fill.tertiary)
+                Image(systemName: "person.fill")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
 }

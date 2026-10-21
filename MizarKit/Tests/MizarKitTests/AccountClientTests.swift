@@ -52,6 +52,7 @@ struct AccountClientTests {
             username: "shirazu",
             email: "A@B.com",
             password: "correct horse",
+            code: "123456",
             device: device,
         )
         #expect(auth.token == "mza_new")
@@ -250,7 +251,7 @@ struct AccountClientTests {
         await transport.on("register", status: 503, body: "not json")
         let client = makeClient(transport)
         do {
-            _ = try await client.register(username: "u", email: "e", password: "p", device: device)
+            _ = try await client.register(username: "u", email: "e", password: "p", code: "123456", device: device)
             Issue.record("expected a failure")
         } catch let error as AccountError {
             #expect(error.code == AccountErrorCode.internalError)

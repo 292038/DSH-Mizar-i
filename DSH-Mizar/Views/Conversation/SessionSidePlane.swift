@@ -31,16 +31,16 @@
 //      card's edge instead of passing under it.
 //    - A page to the **right** is still in view -- fully inside it mid-slide,
 //      hanging off the screen's edge at rest -- and reads as the one not being
-//      looked at: dimmed and blurred, in proportion to how far off focus it
-//      is. See ``PageFocus``.
+//      looked at: a small blur, in proportion to how far off focus it is. See
+//      ``PageFocus``. There is no dark veil over it: the veil read as a
+//      different surface and made the three tabs feel like three screens.
 //
 //  The scrub is driven by the plane's *presentation* offset, not by the page
 //  selection: a `@State` selection flips the moment the finger leaves the
 //  control, and an effect computed from it would snap to its final value
 //  while the plane was still travelling. ``PageFocus`` is animatable over the
-//  distance instead, so one spring moves the offset, the blur and the dim
-//  together and a second tap mid-flight retargets the whole trio without a
-//  jump.
+//  distance instead, so one spring moves the offset and the blur together and
+//  a second tap mid-flight retargets both without a jump.
 //
 //  There is deliberately no drag gesture on the plane. The drawer's own pan
 //  owns horizontal drags -- a drag on the open drawer puts the conversation
@@ -293,13 +293,17 @@ private struct PageSwitcher: UIViewRepresentable {
 /// What a page looks like when it is not the one being read.
 ///
 /// Animatable over the signed distance from focus, so the spring that carries
-/// the plane carries this too -- blur and dim arrive and leave as part of the
+/// the plane carries this too -- the blur arrives and leaves as part of the
 /// travel rather than as a step at either end of it.
 ///
 /// Only the **right** side is treated. A page to the left is on its way under
 /// the conversation card, and the card is the effect there: occlusion, by
-/// z-order, in the shell. Dimming it as well would read as the page glowing
-/// through the card's shadow, which is the one thing it must not do.
+/// z-order, in the shell.
+///
+/// There is deliberately no dimming. A black veil over the neighbouring page
+/// read as a different surface rather than as the same one further away, and it
+/// made the three tabs feel like three screens instead of one plane; the small
+/// blur is the only focus cue left.
 struct PageFocus: ViewModifier {
     /// Signed distance from focus, in page widths.
     var distance: CGFloat
@@ -315,8 +319,6 @@ struct PageFocus: ViewModifier {
     /// a neighbour sliding past, not a background, and a heavy blur would turn
     /// the drawer's edge into fog.
     private static let maximumBlur: CGFloat = 3
-    /// The dim laid over a page at a full page off focus.
-    private static let maximumDim: Double = 0.26
 
     func body(content: Content) -> some View {
         // Clamped: the third page sits two widths from the first, and a blur
@@ -325,12 +327,6 @@ struct PageFocus: ViewModifier {
         let beyond = max(0, min(1, distance))
         content
             .blur(radius: reduceMotion ? 0 : Self.maximumBlur * beyond)
-            .overlay {
-                Rectangle()
-                    .fill(Color.black.opacity(Self.maximumDim * beyond))
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            }
             // A page the operator is not reading takes no taps. Half a page is
             // the midpoint of the flight: past it, the incoming page is the
             // one under the finger.

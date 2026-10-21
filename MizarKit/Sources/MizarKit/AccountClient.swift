@@ -66,24 +66,79 @@ public struct AccountClient: Sendable {
 
     // MARK: - Sign-in
 
-    /// Create an account.
+    /// Ask the server to mail a code, without creating the account yet.
     ///
     /// - Parameters:
-    ///   - username: 2–32 characters, no whitespace, `@`, or control characters.
-    ///   - email: the address; normalised to lowercase by the server.
-    ///   - password: 8–128 characters.
-    ///   - device: this install, for the device roster.
-    /// - Returns: the token and profile.
-    /// - Throws: ``AccountError`` with `USERNAME_TAKEN` or `EMAIL_TAKEN` when
-    ///   the account cannot be created.
-    public func register(
+    ///   - username: the display name the account will have.
+    ///   - email: where the code goes.
+    ///   - password: the password that will be set, checked for shape now.
+    ///   - device: this install.
+    /// - Returns: where the code went and how long it lives.
+    public func registerStart(
         username: String,
         email: String,
         password: String,
         device: AccountDevicePayload,
+    ) async throws -> RegistrationChallenge {
+        let body = RegisterBody(username: username, email: email, password: password, code: nil, device: device)
+        return try await post("register/start", body: body, as: RegistrationChallenge.self)
+    }
+
+    /// Create an account with the code from `registerStart`.
+    ///
+    /// - Parameters:
+    ///   - username: the display name.
+    ///   - email: the address the code went to.
+    ///   - password: the password.
+    ///   - code: the six digits.
+    ///   - device: this install, for the device roster.
+    /// - Returns: the token and profile.
+    /// - Throws: ``AccountError`` with `USERNAME_TAKEN`, `EMAIL_TAKEN`,
+    ///   `VERIFICATION_INVALID`, `VERIFICATION_EXPIRED` or `VERIFICATION_ATTEMPTS`.
+    public func register(
+        username: String,
+        email: String,
+        password: String,
+        code: String,
+        device: AccountDevicePayload,
     ) async throws -> AccountAuth {
-        let body = RegisterBody(username: username, email: email, password: password, device: device)
+        let body = RegisterBody(username: username, email: email, password: password, code: code, device: device)
         return try await post("register", body: body, as: AccountAuth.self)
+    }
+
+    /// Ask for a password-reset code.
+    ///
+    /// The server answers the same way for an unknown address, so this cannot be
+    /// used to find out whether an account exists.
+    ///
+    /// - Parameter email: the account's address.
+    /// - Returns: the lifetime of the code.
+    public func resetPasswordStart(email: String) async throws -> RegistrationChallenge {
+        let body = EmailBody(email: email)
+        let envelope = try await post("password/reset/start", body: body, as: ResetStartEnvelope.self)
+        return RegistrationChallenge(
+            email: email,
+            expiresAt: envelope.expiresAt,
+            resendAfterSeconds: envelope.resendAfterSeconds,
+        )
+    }
+
+    /// Finish a password reset and sign the device in.
+    ///
+    /// - Parameters:
+    ///   - email: the address the code went to.
+    ///   - code: the six digits.
+    ///   - password: the new password.
+    ///   - device: this install.
+    /// - Returns: the token and profile.
+    public func resetPassword(
+        email: String,
+        code: String,
+        password: String,
+        device: AccountDevicePayload,
+    ) async throws -> AccountAuth {
+        let body = ResetBody(email: email, code: code, password: password, device: device)
+        return try await post("password/reset/complete", body: body, as: AccountAuth.self)
     }
 
     /// Sign in with a username or an email.
@@ -232,7 +287,25 @@ public struct AccountClient: Sendable {
         let username: String
         let email: String
         let password: String
+        /// The code from `/register/start`; omitted on the start call.
+        let code: String?
         let device: AccountDevicePayload
+    }
+
+    struct EmailBody: Codable, Sendable {
+        let email: String
+    }
+
+    struct ResetBody: Codable, Sendable {
+        let email: String
+        let code: String
+        let password: String
+        let device: AccountDevicePayload
+    }
+
+    struct ResetStartEnvelope: Codable, Sendable {
+        let expiresAt: Date
+        let resendAfterSeconds: Int
     }
 
     struct LoginBody: Codable, Sendable {
@@ -273,6 +346,8 @@ public struct AccountClient: Sendable {
     struct ErrorBody: Codable, Sendable {
         let error: String
         let message: String?
+        /// An appeal address, sent with `ACCOUNT_DISABLED`.
+        let contact: String?
     }
 
     /// A POST with a JSON body.
@@ -384,6 +459,7 @@ public struct AccountClient: Sendable {
             status: status,
             message: message,
             retryable: isRetryable(code: code, status: status),
+            contact: reported?.contact,
         )
     }
 
@@ -424,6 +500,11 @@ public struct AccountClient: Sendable {
         case AccountErrorCode.usernameTaken: "That username is already taken."
         case AccountErrorCode.emailTaken: "That email already has an account."
         case AccountErrorCode.rateLimited: "Too many attempts. Wait a moment and try again."
+        case AccountErrorCode.emailVerificationRequired: "Enter the code that was emailed to you."
+        case AccountErrorCode.verificationInvalid: "That code is not right."
+        case AccountErrorCode.verificationExpired: "That code has expired. Send a new one."
+        case AccountErrorCode.verificationAttempts: "Too many attempts. Send a new code."
+        case AccountErrorCode.mailUnavailable: "The mail service is unavailable right now."
         case AccountErrorCode.appleTokenInvalid: "Apple could not verify this sign-in. Try again."
         case AccountErrorCode.appleUnavailable: "Sign in with Apple is unavailable right now."
         case AccountErrorCode.inviteInvalid: "That invite code is not valid."

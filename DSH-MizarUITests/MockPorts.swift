@@ -18,7 +18,7 @@
 //  every host. A port changes here, and nowhere else.
 //
 
-// mock-ports: 19400 19404 19408 19412 19416 19420 19424 19428 19432 19436 19440 19444
+// mock-ports: 19400 19404 19408 19412 19416 19420 19424 19428 19432 19436 19440 19444 19448
 
 enum MockPorts {
     /// Primary mock-host port per UI test class. The keys are class names,
@@ -37,6 +37,7 @@ enum MockPorts {
         "LanPriorityUITests": 19436,
         "RunningDetailUITests": 19440,
         "ScreenshotTour": 19444,
+        "WelcomeGateUITests": 19448,
     ]
 
     /// The primary mock port for `className`; the second machine answers on

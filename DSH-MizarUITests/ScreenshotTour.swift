@@ -43,7 +43,7 @@ final class ScreenshotTour: XCTestCase {
     private func launch(session: String?, language: String, pending: Bool) -> XCUIApplication {
         reset(pending: pending)
         let app = XCUIApplication()
-        var arguments = ["-mizarPairURI", Self.pairing, "-mizarFreshStart", "-mizarSkipPermissionPrompts",
+        var arguments = ["-mizarPairURI", Self.pairing, "-mizarFreshStart", "-mizarSkipPermissionPrompts", "-mizarSkipLoginGate", "-mizarCreditsFixture",
                          "-AppleLanguages", "(\(language))"]
         if let session { arguments += ["-mizarSelectSession", session] }
         app.launchArguments = arguments

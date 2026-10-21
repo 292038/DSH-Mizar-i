@@ -105,6 +105,12 @@ final class AccountUITests: XCTestCase {
         expect(submit, "the register form has no submit button")
         submit.tap()
 
+        // The account is not created until the code from the email is accepted:
+        // the sheet is the whole point of the flow.
+        let code = element("verify.code", in: app)
+        expect(code, "the verification sheet did not open after asking to register")
+        type("123456", into: "verify.code", in: app)
+
         let username = element("account.username", in: app)
         expect(username, "the account screen did not switch to a profile after registering")
         XCTAssertTrue(username.label.contains(newUsername), "the profile shows the wrong username")
@@ -277,7 +283,7 @@ final class AccountUITests: XCTestCase {
         var arguments: [String] = [
             "-mizarPairURI", Self.mockPairingURI,
             "-mizarFreshStart",
-            "-mizarSkipPermissionPrompts",
+            "-mizarSkipPermissionPrompts", "-mizarSkipLoginGate", "-mizarCreditsFixture",
             "-mizarAccountURL", Self.mockAccountURL,
             "-mizarAccountFreshStart",
             "-AppleLanguages", "(en)",
@@ -287,6 +293,7 @@ final class AccountUITests: XCTestCase {
         if mockSubscription { arguments += ["-mizarMockSubscription", "-mizarMockSubscriptionPrice", "¥6.00"] }
         app.launchArguments = arguments
         app.launch()
+        dismissSystemAlertIfPresent(app)
         dismissNamingIfPresented(app)
         return app
     }
@@ -302,6 +309,7 @@ final class AccountUITests: XCTestCase {
         app.terminate()
         app.launchArguments.removeAll { $0 == "-mizarAccountFreshStart" }
         app.launch()
+        dismissSystemAlertIfPresent(app)
         dismissNamingIfPresented(app)
     }
 
@@ -360,7 +368,17 @@ final class AccountUITests: XCTestCase {
         let marker = app.buttons["sessions.new"]
         if marker.exists, marker.isHittable { return }
         let toggle = app.buttons["shell.sidebarToggle"]
-        expect(toggle, "there is no way to open the sidebar")
+        if !toggle.waitForExistence(timeout: Self.patience) {
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = "no-sidebar"
+            shot.lifetime = .keepAlways
+            add(shot)
+            dismissSystemAlertIfPresent(app)
+            if !toggle.waitForExistence(timeout: Self.patience) {
+                XCTFail("there is no way to open the sidebar")
+                return
+            }
+        }
         toggle.tap()
         let shown = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == true AND hittable == true"),
@@ -427,6 +445,30 @@ final class AccountUITests: XCTestCase {
             if app.buttons["command.goal"].waitForExistence(timeout: 5) { return }
         }
         XCTFail("the command popover did not open")
+    }
+
+    /// Tap away a system permission alert, if one is up.
+    ///
+    /// The notification prompt can outlive the process that asked for it: a
+    /// launch that is interrupted leaves the dialog on screen for the next one,
+    /// where it covers the sidebar and eats every tap under it.
+    ///
+    /// - Parameter app: the launched app, unused beyond keeping the signature
+    ///   parallel with the other launch helpers.
+    private func dismissSystemAlertIfPresent(_ app: XCUIApplication) {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        // The dialog can arrive a beat after the app does: it is raised by the
+        // app's own first request, not by the launch itself.
+        for _ in 0..<3 {
+            for label in ["Don’t Allow", "Don't Allow", "Allow"] {
+                let button = springboard.buttons[label]
+                if button.waitForExistence(timeout: 1), button.isHittable {
+                    button.tap()
+                    return
+                }
+            }
+        }
+        _ = app
     }
 
     /// Find an element by accessibility identifier, whatever its type.

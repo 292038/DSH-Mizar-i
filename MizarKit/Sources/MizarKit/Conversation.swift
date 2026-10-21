@@ -234,7 +234,15 @@ extension SessionMessagesResult {
     /// - Returns: the items, oldest first.
     public func conversationItems() -> [ConversationItem] {
         var out: [ConversationItem] = []
+        // Ids already kept. A record's identity is its `seq`, and a host that
+        // numbers nothing gives every record of a kind the same fallback id
+        // (see ``SessionRecord/recordId``) -- two rows sharing one id in a
+        // `ForEach` is a crash rather than a drawing mistake, so the second of
+        // two colliding ids is dropped. With numbered records the set never
+        // fires: every id is `seq-<n>` and distinct.
+        var seen: Set<String> = []
         for item in records.compactMap({ $0.conversationItems() }).flatMap({ $0 }) {
+            guard seen.insert(item.id).inserted else { continue }
             if case .message(_, let role, let text, _) = item,
                case .message(_, let priorRole, let priorText, _) = out.last,
                role == priorRole, text == priorText {
@@ -996,6 +1004,45 @@ extension SessionMessagesResult {
             if let at, at < (firstAt[turn] ?? .distantFuture) { firstAt[turn] = at }
         }
 
+        /// Item ids each turn has already been given, prompts and steps apart.
+        ///
+        /// A record's identity is its `seq` (``SessionRecord/recordId``), and a
+        /// host that numbers nothing gives every record of a kind the same
+        /// fallback id -- one prompt can even arrive as two `user/message`
+        /// records, the RPC source and the inbox splice. Prompts and steps are
+        /// two separate `ForEach` lists on screen, so an id repeated *within*
+        /// one list is a crash while the same id on two different turns is not:
+        /// the scopes here are exactly the lists the screen keys on, which
+        /// drops the duplicate without ever dropping a second turn's prompt.
+        /// Numbered records are untouched -- every id is `seq-<n>` and
+        /// distinct, so neither set ever fires on a host that numbers its log.
+        var placedIds: [Int?: Set<String>] = [:]
+        var placedStepIds: [Int?: Set<String>] = [:]
+
+        /// Put a record's items on its turn, keeping the first of any repeated id.
+        ///
+        /// - Parameters:
+        ///   - items: what the record contributed.
+        ///   - turn: the turn it belongs to, or `nil` for the group a prompt
+        ///     with no turn after it keeps.
+        ///   - step: whether these are steps -- an answer or a failure card --
+        ///     rather than prompts.
+        func place(_ items: [ConversationItem], for turn: Int?, as step: Bool) {
+            var kept: [ConversationItem] = []
+            for item in items {
+                let isNew = step
+                    ? placedStepIds[turn, default: []].insert(item.id).inserted
+                    : placedIds[turn, default: []].insert(item.id).inserted
+                if isNew { kept.append(item) }
+            }
+            guard !kept.isEmpty else { return }
+            if step {
+                steps[turn, default: []].append(contentsOf: kept)
+            } else {
+                prompts[turn, default: []].append(contentsOf: kept)
+            }
+        }
+
         for record in records {
             let payload = record.payload
             let name = payload["type"]?.stringValue ?? record.type
@@ -1011,7 +1058,7 @@ extension SessionMessagesResult {
                 open = turn
                 openIsSet = true
                 if !pending.isEmpty {
-                    prompts[turn, default: []].append(contentsOf: pending)
+                    place(pending, for: turn, as: false)
                     pending.removeAll()
                 }
             case "step/start":
@@ -1049,8 +1096,9 @@ extension SessionMessagesResult {
                 // finish. That turn keeps its row's own warning and its answer.
                 if let kind, kind != "completed", steps[turn]?.isEmpty ?? true {
                     let detail = payload["data"]?["reason"]?["error"]?["message"]?.stringValue
-                    steps[turn, default: []].append(
-                        .failure(id: record.recordId, message: detail ?? kind, at: at ?? .distantPast),
+                    place(
+                        [.failure(id: record.recordId, message: detail ?? kind, at: at ?? .distantPast)],
+                        for: turn, as: true,
                     )
                 }
             case "user/message", "assistant/message":
@@ -1062,9 +1110,9 @@ extension SessionMessagesResult {
                     // when nothing is open is it held for a turn that has not
                     // been read yet.
                     if let turn, order.contains(turn) {
-                        prompts[turn, default: []].append(contentsOf: items)
+                        place(items, for: turn, as: false)
                     } else if openIsSet {
-                        prompts[open, default: []].append(contentsOf: items)
+                        place(items, for: open, as: false)
                     } else {
                         pending.append(contentsOf: items)
                     }
@@ -1077,10 +1125,10 @@ extension SessionMessagesResult {
                 // the page before it -- so it is claimed by whichever of the two
                 // is read first.
                 if !pending.isEmpty {
-                    prompts[turn, default: []].append(contentsOf: pending)
+                    place(pending, for: turn, as: false)
                     pending.removeAll()
                 }
-                steps[turn, default: []].append(contentsOf: items)
+                place(items, for: turn, as: true)
             default:
                 continue
             }
@@ -1089,7 +1137,7 @@ extension SessionMessagesResult {
         // A prompt with nothing after it still has to be on screen.
         if !pending.isEmpty {
             order.append(nil)
-            prompts[nil, default: []].append(contentsOf: pending)
+            place(pending, for: nil, as: false)
         }
 
         return order.map { turn in

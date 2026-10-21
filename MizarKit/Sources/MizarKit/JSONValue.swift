@@ -78,7 +78,11 @@ extension JSONValue {
         guard case .number(let value) = self, value.isFinite else { return nil }
         let rounded = value.rounded()
         guard rounded == value else { return nil }
-        return Int(rounded)
+        // `Int(_:)` traps on a magnitude `Int` cannot hold -- and a record whose
+        // position or turn is `1e300` is malformed, not a position. `nil` here
+        // is the answer every reader of this property already handles, so a
+        // bad record costs one unreadable field rather than the process.
+        return Int(exactly: rounded)
     }
 
     /// The value as a boolean, or `nil` when it is another type.

@@ -107,6 +107,21 @@ struct SessionDetailView: View {
     /// The turn the conversation has been reduced to, for the length of a long
     /// jump. See ``jump(to:proxy:)``.
     @State private var stagedTurn: String?
+    /// Whether the composer is opened out into its tall, focused-input form.
+    /// Owned here because the overlay's layout -- the dock, the jump button,
+    /// the room the conversation reserves -- all answer to it.
+    @State private var composerExpanded = false
+    /// How far the newest message is below what is on screen, and how tall the
+    /// viewport is. Tracked continuously so the way-back button can tell a
+    /// nudge from a journey -- a long way back takes the same travelling
+    /// transition a long turn jump takes, not an animated scroll across rows
+    /// nobody asked to see.
+    @State private var distanceFromBottom: CGFloat = 0
+    @State private var scrollViewportHeight: CGFloat = 0
+    /// Whether the composer's expand or collapse animation is still playing.
+    /// While it is, the bottom anchor and the composer-height correction are
+    /// suspended -- see `defaultScrollAnchor` below.
+    @State private var composerAnimating = false
     /// How far the page is faded out while a long jump plays, and how far it has
     /// been shifted on its way there.
     ///
@@ -149,11 +164,28 @@ struct SessionDetailView: View {
     static let space = "session.detail"
     /// The very end of the page, below the room left for the composer.
     static let endAnchor = "session.end"
+    /// The very top of the page.
+    ///
+    /// The screen is one view for every session, so the scroll view is reused:
+    /// the offset the operator left session A at is still in force when
+    /// session B is opened, and if B's conversation is shorter than that
+    /// offset, the page sits in the empty space *below* B's content -- a black
+    /// conversation with nothing in it, until a swipe pushes the view back
+    /// over the content. A known top to aim at puts the page somewhere
+    /// definite before the new conversation arrives; the load then takes it
+    /// down to the newest message.
+    static let topAnchor = "session.top"
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    // The top of the page, for a session switch to aim at. See
+                    // ``topAnchor``.
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.topAnchor)
+
                     conversation
 
                     // What was just sent, drawn where it will land before the
@@ -174,8 +206,18 @@ struct SessionDetailView: View {
                     // conversation is shorter than the screen, and the newest
                     // turn sat under the dock on an iPad. The anchor is the true
                     // end of the page -- below the stand-ins for anything sent.
+                    //
+                    // An expanded composer is the size of the screen; reserving
+                    // that as content would park the conversation a page above
+                    // its own end, so the reservation stays at the resting
+                    // height while the composer is open. It also stays there
+                    // while the composer is *becoming* open or closed: at the
+                    // start of a collapse the measured height is still a
+                    // screenful, and reserving it would grow the page by a
+                    // screen and then shrink it back over the animation --
+                    // the bounce that made a collapse feel broken.
                     Color.clear
-                        .frame(height: composerHeight + 16)
+                        .frame(height: composerExpanded || composerAnimating ? 110 : composerHeight + 16)
                         .id(Self.endAnchor)
                 }
                 .padding(.horizontal, 18)
@@ -183,8 +225,29 @@ struct SessionDetailView: View {
             }
             // A conversation is read from the bottom, and it stays pinned there
             // as the composer and the dock change height.
-            .defaultScrollAnchor(.bottom)
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
+            //
+            // Only for size changes. An unconditional `defaultScrollAnchor(.bottom)`
+            // anchors on the *first* layout too, and that is the race behind a
+            // black conversation: the rows arrive after the anchor is applied,
+            // and the scroll view is left parked in the empty space under the
+            // page. Scrolling by hand pushes it back into the content and the
+            // problem never returns -- so the position is also corrected
+            // whenever the geometry says it is past the end (below).
+            //
+            // Suspended while a jump plays. A long jump swaps the whole list
+            // for one staged turn and back, and each swap is a size change:
+            // with the anchor live, every swap yanks the page to the bottom,
+            // the jump's own `scrollTo` pulls it back to the turn, and the two
+            // take turns for as long as the rows are settling -- the shudder
+            // seen at the end of a jump to the newest turn.
+            //
+            // Also suspended while the composer grows or shrinks. Collapsing
+            // the expanded composer hands back a screenful of height: every
+            // intermediate size change fired the bottom anchor as an instant
+            // jump while the composer's own animation was still easing, and
+            // the instant jumps and the easing fought the whole way down --
+            // the shudder that followed every collapse.
+            .defaultScrollAnchor(jumping || composerAnimating ? nil : .bottom, for: .sizeChanges)
             // Dragging the conversation puts the keyboard away, which is what
             // every messaging app does and what a thumb already expects.
             .scrollDismissesKeyboard(.interactively)
@@ -206,6 +269,43 @@ struct SessionDetailView: View {
                     if !far { unseen = 0 }
                 }
             }
+            // …and the mirror case: past the end of the content rather than
+            // short of it. That is where the first layout sometimes parks the
+            // page, and what a few swipes by hand fixed.
+            //
+            // The value watched is the overshoot itself, not a Bool. A Bool
+            // fires its action only when it flips, and the failing sequence
+            // never flips it: enter a session, land past the end while the
+            // rows are still being read (the guard below refuses to run on an
+            // empty page), the rows arrive, and the page is still past the
+            // end -- `true` then, `true` now, no fire, black screen until a
+            // swipe. Watching the distance means the rows arriving *is* a
+            // change, and the correction runs the moment there is content to
+            // correct against. A hand cannot scroll past the end -- the scroll
+            // view bounces back -- so repeated fires here are always the
+            // layout case, and an instant `scrollTo` to where the page already
+            // is costs nothing.
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.visibleRect.minY - geometry.contentSize.height
+            } action: { _, overshoot in
+                // A jump owns the position until it lands: its staged turn is
+                // deliberately a short page, which reads as past the end, and
+                // correcting then is a second scroll fighting the first.
+                guard overshoot > 2, !jumping, !shownItems.isEmpty else { return }
+                reachBottomNow(proxy)
+            }
+            // How far the operator is from the newest message, kept current so
+            // the way-back button can choose between a scroll and a journey.
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentSize.height - geometry.visibleRect.maxY
+            } action: { _, distance in
+                distanceFromBottom = max(0, distance)
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.containerSize.height
+            } action: { _, height in
+                scrollViewportHeight = height
+            }
             .onChange(of: loadGeneration) { _, _ in
                 // Anchored when the load has *finished*, not when the first
                 // content appears: a cached conversation is replaced a moment
@@ -213,7 +313,19 @@ struct SessionDetailView: View {
                 // scroll view against rows that are about to be swapped.
                 reachBottom(proxy)
             }
+            .onChange(of: sessionId) { _, _ in
+                // A different conversation: the offset the last one was left
+                // at means nothing here, and if it is larger than this
+                // conversation is long, the page opens in the empty space
+                // below it -- black, until a swipe. Put it at the top first,
+                // where it is certain to be; the load takes it from there to
+                // the newest message.
+                proxy.scrollTo(Self.topAnchor, anchor: .top)
+            }
             .onChange(of: newMessageArrived) { _, _ in
+                // A jump owns the position until it lands; a send mid-jump is
+                // picked up by the jump's own final aim instead.
+                guard !jumping else { return }
                 Task { @MainActor in
                     await Task.yield()
                     withMizarAnimation(.mizarSmooth) {
@@ -224,8 +336,21 @@ struct SessionDetailView: View {
             .onChange(of: composerHeight) { _, _ in
                 // The dock arriving or the field growing is the bottom moving
                 // up; a reader who was at the bottom stays at it.
-                guard !farFromBottom, didReachBottom else { return }
+                guard !jumping, !composerAnimating, !farFromBottom, didReachBottom else { return }
                 withMizarAnimation(.mizarSmooth) {
+                    proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+                }
+            }
+            .onChange(of: composerExpanded) { _, expanded in
+                // While the composer trades places with its expanded self the
+                // bottom corrections stand down (see `defaultScrollAnchor`);
+                // when the move has played out, a reader who was at the bottom
+                // is put back at it once, exactly.
+                composerAnimating = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(600))
+                    composerAnimating = false
+                    guard !expanded, !jumping, !farFromBottom, didReachBottom else { return }
                     proxy.scrollTo(Self.endAnchor, anchor: .bottom)
                 }
             }
@@ -441,27 +566,36 @@ struct SessionDetailView: View {
         GeometryReader { container in
             VStack(spacing: 8) {
                 Spacer(minLength: 0)
-                if farFromBottom {
+                // The way back is hidden while a jump plays -- the conversation
+                // is already on its way somewhere -- and while the composer is
+                // expanded or moving between its two sizes, when there is no
+                // conversation in view to return to.
+                if farFromBottom, !jumping, !composerExpanded, !composerAnimating {
                     JumpToLatest(unseen: unseen) {
-                        withMizarAnimation(.mizarSmooth) {
-                            proxy.scrollTo(Self.endAnchor, anchor: .bottom)
-                        }
+                        returnToLatest(proxy: proxy)
                     }
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .padding(.trailing, 16)
                     .transition(.pop)
                 }
                 VStack(spacing: 8) {
-                    InteractionsDock(
-                        composerFocused: composerFocused,
-                        onExpand: { composerFocused = false },
-                        maxHeight: max(160, container.size.height * 0.34),
-                    )
+                    // The dock leaves while the composer is expanded: the open
+                    // field is the whole height of the screen, and a queue of
+                    // pending requests above it is the opposite of the focus
+                    // the expansion is for.
+                    if !composerExpanded {
+                        InteractionsDock(
+                            composerFocused: composerFocused,
+                            onExpand: { composerFocused = false },
+                            maxHeight: max(160, container.size.height * 0.34),
+                        )
+                    }
                     ComposerView(
                         sessionId: sessionId,
                         stats: shownStats,
                         text: $draft,
                         focused: $composerFocused,
+                        expanded: $composerExpanded,
                         showingModel: $showingModelPicker,
                         showingContext: $showingContextDetail,
                         showingCommands: $showingCommands,
@@ -469,12 +603,80 @@ struct SessionDetailView: View {
                         onSent: { sent in await refreshAfterSend(sent) },
                         onSendFailed: { text in withdraw(text) },
                     )
+                    // Expanded, the composer fills the overlay up to just under
+                    // the title; at rest it wraps its content.
+                    .frame(maxHeight: composerExpanded ? .infinity : nil)
                 }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
                     composerHeight = height
                 }
             }
         }
+    }
+
+    /// Back to the newest message.
+    ///
+    /// Two ways, the same choice a turn jump makes. Close enough to see, an
+    /// animated scroll says where the bottom is. A long way back -- the
+    /// threshold mirrors the turn index's `animatedReach`: past a couple of
+    /// screens the rows along the way do not exist, and animating across them
+    /// is work spent on frames nobody asked to see -- is *travelled*, the same
+    /// dip and arrive a long turn jump uses.
+    ///
+    /// - Parameter proxy: the conversation's scroll view.
+    private func returnToLatest(proxy: ScrollViewProxy) {
+        guard distanceFromBottom > max(600, scrollViewportHeight * 2) else {
+            withMizarAnimation(.mizarSmooth) {
+                proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+            }
+            return
+        }
+        Task { await travelToBottom(proxy: proxy) }
+    }
+
+    /// The long way back to the newest message: the page dips, the scroll
+    /// jumps with no animation at all, and the page arrives from above.
+    ///
+    /// The bottom anchor is always in the hierarchy, so unlike ``travel(to:anchor:proxy:generation:)``
+    /// there is no staged turn to build -- only the dip, the jump, and the
+    /// return. `jumping` still runs: it suspends the bottom anchor and the
+    //  corrections that would fight the jump for the whole of the move.
+    private func travelToBottom(proxy: ScrollViewProxy) async {
+        jumpGeneration &+= 1
+        let generation = jumpGeneration
+        if jumping {
+            jumpFade = 1
+            jumpShift = 0
+            jumping = false
+        }
+        jumping = true
+        // The newest message is below: the content leaves upwards, as it would
+        // have moved had the operator swiped all the way there.
+        withAnimation(Motion.pick(.easeIn(duration: 0.1))) {
+            jumpFade = 0.08
+            jumpShift = Motion.reduced ? 0 : -30
+        }
+        try? await Task.sleep(for: .milliseconds(140))
+        guard isCurrentJump(generation) else {
+            jumping = false
+            return
+        }
+        proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+        await settleLayout()
+        guard isCurrentJump(generation) else {
+            jumping = false
+            return
+        }
+        // A second aim, for the rows that settled their heights in between.
+        proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+
+        jumpShift = Motion.reduced ? 0 : 18
+        withAnimation(Motion.pick(.mizarSmooth)) {
+            jumpFade = 1
+            jumpShift = 0
+        }
+        try? await Task.sleep(for: .milliseconds(220))
+        jumping = false
     }
 
     /// The workspace this session belongs to, for the subtitle.
@@ -588,6 +790,29 @@ struct SessionDetailView: View {
     private func reachBottom(_ proxy: ScrollViewProxy) {
         guard !didReachBottom, !shownItems.isEmpty else { return }
         didReachBottom = true
+        reachBottomNow(proxy)
+        // The first scroll lands while the lazy rows are still settling their
+        // heights; later ones after a beat are what put the page against the
+        // bottom rather than beside it. Without them, a conversation whose
+        // rows are still growing can be left a screen short of the newest
+        // turn -- and a long conversation's rows take longer than one beat to
+        // be built at all, so the anchor the scrolls aim at may not exist yet
+        // on the first attempt.
+        Task { @MainActor in
+            for delay in [180, 600] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard didReachBottom else { return }
+                proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+            }
+        }
+    }
+
+    /// Scroll to the end now, without the one-shot guard.
+    ///
+    /// Used by the correction that finds the page parked past the end of the
+    /// content: there the question is not "has this happened before" but "get
+    /// back onto the conversation".
+    private func reachBottomNow(_ proxy: ScrollViewProxy) {
         Task { @MainActor in
             // One turn of the runloop, so the lazy stack has laid the rows out
             // and there is something to scroll to.

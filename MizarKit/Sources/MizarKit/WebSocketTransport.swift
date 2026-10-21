@@ -76,14 +76,25 @@ public actor URLSessionWebSocketTransport: WebSocketTransport {
 
     public func receive() async throws -> String? {
         guard let task else { return nil }
-        let message = try await task.receive()
-        switch message {
-        case .string(let text):
-            return text
-        case .data(let data):
-            return String(data: data, encoding: .utf8)
-        @unknown default:
-            return nil
+        do {
+            let message = try await task.receive()
+            switch message {
+            case .string(let text):
+                return text
+            case .data(let data):
+                return String(data: data, encoding: .utf8)
+            @unknown default:
+                return nil
+            }
+        } catch {
+            // A close inside the WebSocket protocol arrives as a generic
+            // `receive()` failure, but the task still holds the code and reason
+            // the peer sent. The relay uses that sentence to tell the app the
+            // day's traffic is spent, which is the difference between "retry"
+            // and "come back tomorrow".
+            let reason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            if reason.isEmpty { throw error }
+            throw MizarError(code: "SOCKET_CLOSED", message: reason, retryable: true)
         }
     }
 

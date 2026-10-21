@@ -164,12 +164,14 @@ struct AccountScreen: View {
     var onDone: (() -> Void)? = nil
 
     /// Which form the signed-out state is showing.
-    private enum Mode: String, CaseIterable {
+    enum Mode: String, CaseIterable, Identifiable {
         case login
         case register
+
+        var id: String { rawValue }
     }
 
-    @State private var mode: Mode = .login
+    @State private var mode: Mode
     @State private var identifier = ""
     @State private var username = ""
     @State private var email = ""
@@ -177,7 +179,26 @@ struct AccountScreen: View {
     @State private var showingDelete = false
     @State private var appleFailure: String?
     @State private var avatarItem: PhotosPickerItem?
+    @State private var verification: VerificationChallenge?
+    @State private var resetChallenge: VerificationChallenge?
+    @State private var showingResetForm = false
+    @State private var showingDistributionNotice = false
     @FocusState private var focused: Field?
+
+    /// A code sheet's state: which address, and what to do with the digits.
+    struct VerificationChallenge: Identifiable {
+        let id = UUID()
+        let email: String
+        let resendAfter: Int
+    }
+
+    /// - Parameters:
+    ///   - onDone: closes the settings sheet this screen was pushed from.
+    ///   - initialMode: which half of the form to show first.
+    init(onDone: (() -> Void)? = nil, initialMode: Mode = .login) {
+        self.onDone = onDone
+        _mode = State(initialValue: initialMode)
+    }
 
     private enum Field: Hashable {
         case identifier
@@ -230,6 +251,46 @@ struct AccountScreen: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This cannot be undone. The account, its devices and its invite records are removed on the server. An App Store subscription is not cancelled by deleting the account; cancel it in your Apple ID subscription settings.")
+        }
+        .sheet(item: $verification) { challenge in
+            VerificationCodeSheet(
+                purpose: .register,
+                email: challenge.email,
+                initialResendAfter: challenge.resendAfter,
+                submit: { code in
+                    let created = await model.account.completeRegistration(
+                        username: username,
+                        email: challenge.email,
+                        password: password,
+                        code: code,
+                    )
+                    if created {
+                        password = ""
+                        return nil
+                    }
+                    return model.account.lastError
+                },
+                resend: {
+                    guard let again = await model.account.beginRegistration(
+                        username: username,
+                        email: challenge.email,
+                        password: password,
+                    ) else { return nil }
+                    return RegistrationChallenge(
+                        email: again.email,
+                        expiresAt: again.expiresAt,
+                        resendAfterSeconds: again.resendAfterSeconds,
+                    )
+                },
+            )
+        }
+        .sheet(isPresented: $showingResetForm) {
+            PasswordResetSheet()
+        }
+        .alert("Not available yet", isPresented: $showingDistributionNotice) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The TestFlight build does not support this yet. Stay tuned.")
         }
     }
 
@@ -396,6 +457,15 @@ struct AccountScreen: View {
             .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
             .accessibilityIdentifier("account.submit")
 
+            if mode == .login {
+                Button("Forgot password?") {
+                    showingResetForm = true
+                }
+                .font(.footnote.weight(.medium))
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .accessibilityIdentifier("account.forgot")
+            }
+
             AppleSignInView { failure in appleFailure = failure }
         } header: {
             Text("Sign in")
@@ -405,7 +475,7 @@ struct AccountScreen: View {
                     .foregroundStyle(Theme.failed)
                     .accessibilityIdentifier("account.error")
             } else {
-                Text("An account is optional. Attachments and a paid plan need one; everything else works signed out.")
+                Text("A Mizar account is required to use the app.")
             }
         }
     }
@@ -437,6 +507,9 @@ struct AccountScreen: View {
     }
 
     /// Send whichever form is up.
+    ///
+    /// Registration stops after mailing a code: the account is not created until
+    /// the sheet's digits come back, which is the whole point of the flow.
     private func submit() {
         guard canSubmit, !model.account.working else { return }
         focused = nil
@@ -445,10 +518,18 @@ struct AccountScreen: View {
             switch mode {
             case .login:
                 guard await model.account.login(identifier: identifier, password: password) else { return }
+                password = ""
             case .register:
-                guard await model.account.register(username: username, email: email, password: password) else { return }
+                guard let challenge = await model.account.beginRegistration(
+                    username: username,
+                    email: email,
+                    password: password,
+                ) else { return }
+                verification = VerificationChallenge(
+                    email: challenge.email,
+                    resendAfter: challenge.resendAfterSeconds,
+                )
             }
-            password = ""
         }
     }
 
@@ -460,13 +541,15 @@ struct AccountScreen: View {
                 Text(model.subscription.priceText)
                     .monospacedDigit()
             } label: {
-                Label("Mizar Paid", systemImage: "star.circle")
+                HStack(spacing: 8) {
+                    Label("Mizar Paid", systemImage: "star.circle")
+                    Text("Sign in to subscribe. The subscription is bound to your account, so the plan follows you to every device.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
             .accessibilityIdentifier("account.subscription.price")
-
-            Text("Sign in to subscribe. The subscription is bound to your account, so the plan follows you to every device.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         } header: {
             Text("Subscription")
         }
@@ -479,13 +562,15 @@ struct AccountScreen: View {
                     .monospacedDigit()
                     .accessibilityIdentifier("account.subscription.priceValue")
             } label: {
-                Label("Mizar Paid", systemImage: "star.circle")
+                HStack(spacing: 8) {
+                    Label("Mizar Paid", systemImage: "star.circle")
+                    Text("Auto-renewing monthly subscription")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             .accessibilityIdentifier("account.subscription.price")
-
-            Text("Auto-renewing monthly subscription")
-                .font(.caption)
-                .foregroundStyle(.secondary)
 
             if model.account.isPaid, let user = model.account.user, user.paidViaInvite {
                 Label(
@@ -497,7 +582,11 @@ struct AccountScreen: View {
             }
 
             Button {
-                Task { await model.subscription.purchase() }
+                if Distribution.isTestFlight {
+                    showingDistributionNotice = true
+                } else {
+                    Task { await model.subscription.purchase() }
+                }
             } label: {
                 HStack {
                     Spacer()
@@ -523,7 +612,11 @@ struct AccountScreen: View {
             .accessibilityIdentifier("account.subscription.cta")
 
             Button {
-                Task { await model.subscription.restore() }
+                if Distribution.isTestFlight {
+                    showingDistributionNotice = true
+                } else {
+                    Task { await model.subscription.restore() }
+                }
             } label: {
                 Label("Restore purchases", systemImage: "arrow.clockwise")
             }

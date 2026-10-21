@@ -542,6 +542,7 @@ class AppFlowTestBase: XCTestCase {
             pairingURIs: pairingURIs ?? [Self.mockPairingURI],
         )
         app.launch()
+        dismissSystemAlertIfPresent(app)
         if naming { dismissNamingIfPresented(app) }
         return app
     }
@@ -594,6 +595,12 @@ class AppFlowTestBase: XCTestCase {
         // 30-second timeout. The override also keeps a future signed-in test
         // from reaching the real account server by accident.
         arguments += ["-mizarAccountFreshStart", "-mizarAccountURL", "http://127.0.0.1:\(mockPort)"]
+        // The app now opens on a login gate. The protocol and layout suites drive
+        // screens behind it and have no account to sign in with, so they launch
+        // past it; the gate has its own test class.
+        arguments += ["-mizarSkipLoginGate"]
+        // Credits come from GitHub; the suite asserts rows, not the network.
+        arguments += ["-mizarCreditsFixture"]
         return arguments
     }
 
@@ -622,7 +629,14 @@ class AppFlowTestBase: XCTestCase {
         let marker = app.buttons["sessions.new"]
         if marker.exists, marker.isHittable { return }
         let toggle = app.buttons["shell.sidebarToggle"]
-        expect(toggle, "there is no way to open the sidebar")
+        if !toggle.waitForExistence(timeout: Self.patience) {
+            // A system dialog that arrived late covers the shell and eats the
+            // tap. Dismiss it and look once more before calling it a failure.
+            dismissSystemAlertIfPresent(app)
+            if !toggle.waitForExistence(timeout: Self.patience) {
+                expect(toggle, "there is no way to open the sidebar")
+            }
+        }
         toggle.tap()
         let shown = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == true AND hittable == true"),
@@ -884,6 +898,30 @@ class AppFlowTestBase: XCTestCase {
             if !skip.waitForExistence(timeout: 2) { return }
             Thread.sleep(forTimeInterval: 0.4)
         }
+    }
+
+    /// Tap away a system permission alert, if one is up.
+    ///
+    /// The notification prompt can outlive the process that asked for it: a
+    /// launch that is interrupted leaves the dialog on screen for the next one,
+    /// where it covers the sidebar and eats every tap under it.
+    ///
+    /// - Parameter app: the launched app, unused beyond keeping the signature
+    ///   parallel with the other launch helpers.
+    func dismissSystemAlertIfPresent(_ app: XCUIApplication) {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        // The dialog can arrive a beat after the app does: it is raised by the
+        // app's own first request, not by the launch itself.
+        for _ in 0..<3 {
+            for label in ["Don’t Allow", "Don't Allow", "Allow"] {
+                let button = springboard.buttons[label]
+                if button.waitForExistence(timeout: 1), button.isHittable {
+                    button.tap()
+                    return
+                }
+            }
+        }
+        _ = app
     }
 
     /// Wait for an element to exist.

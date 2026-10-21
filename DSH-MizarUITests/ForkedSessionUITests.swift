@@ -175,7 +175,7 @@ final class ForkedSessionUITests: XCTestCase {
         app.launchArguments = [
             "-mizarPairURI", Self.mockPairingURI,
             "-mizarFreshStart",
-            "-mizarSkipPermissionPrompts",
+            "-mizarSkipPermissionPrompts", "-mizarSkipLoginGate", "-mizarCreditsFixture",
             "-mizarAccountFreshStart",
             "-mizarAccountURL", Self.mockBaseURL,
             "-AppleLanguages", "(en)",

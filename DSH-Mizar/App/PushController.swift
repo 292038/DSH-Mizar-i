@@ -34,6 +34,24 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         _ application: UIApplication,
         didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil,
     ) -> Bool {
+        // A tap on a notification can be what launched this process, and the
+        // session it names is in the launch options before any view exists.
+        // It is stashed rather than posted: a post made now would arrive with
+        // no subscriber -- the root view is not mounted yet -- which is the
+        // tap that opens the app on the session list. `didReceive` below
+        // stashes the same fact, so whichever of the two iOS uses, one is
+        // enough.
+        //
+        // `assumeIsolated` rather than a hop: UIKit calls every application
+        // delegate method on the main thread, and a `Task` here would race the
+        // first frame it exists to inform.
+        if let userInfo = options?[.remoteNotification] as? [AnyHashable: Any],
+           let sessionId = userInfo["sessionId"] as? String,
+           !sessionId.isEmpty {
+            MainActor.assumeIsolated {
+                PendingPushSession.stash(sessionId)
+            }
+        }
         // Before anything can arrive. iOS does not queue a foreground
         // notification for a delegate that is set later.
         UNUserNotificationCenter.current().delegate = self
@@ -129,8 +147,47 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
         guard let sessionId, !sessionId.isEmpty else { return }
         await MainActor.run {
             ActivityLog.shared.add(.push, "opened from a notification: session \(sessionId)")
+            // Kept as well as posted. A cold launch can deliver this before
+            // the root view is mounted, and a post with no subscriber is gone;
+            // the root view takes what is waiting when it appears, and a tap
+            // that arrived with the view already up clears it on its way
+            // through the publisher. Either order opens the session once.
+            PendingPushSession.stash(sessionId)
             NotificationCenter.default.post(name: Self.openSession, object: sessionId)
         }
+    }
+}
+
+/// A session a notification asked to open, held until a view can receive it.
+///
+/// A tap is delivered by UIKit, and its delivery is not ordered against the
+/// app's first frame: a cold launch can be told to open a session before
+/// SwiftUI has mounted the root view, and a `NotificationCenter` post made
+/// then has no subscriber to hear it -- the app opens on the session list,
+/// which is the one tap this whole path exists to spend well. So the delegate
+/// writes the request here as well as posting it, and the root view takes it
+/// when it appears. Whichever of the two arrives first, the session is opened
+/// once: the post's receiver clears this on its way through.
+///
+/// Main-actor state, and deliberately not persisted: it is a request about the
+/// frame that is about to be drawn, and a request that outlived the process
+/// would open a session days later.
+@MainActor
+enum PendingPushSession {
+    /// The session the last unread notification named, or `nil`.
+    private static var sessionId: String?
+
+    /// Remember a session a notification asked for.
+    /// - Parameter id: the session.
+    static func stash(_ id: String) {
+        sessionId = id
+    }
+
+    /// Take the remembered session, forgetting it.
+    /// - Returns: the session, or `nil` when nothing is waiting.
+    static func take() -> String? {
+        defer { sessionId = nil }
+        return sessionId
     }
 }
 

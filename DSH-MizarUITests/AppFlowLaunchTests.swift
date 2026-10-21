@@ -181,12 +181,10 @@ final class AppFlowLaunchTests: AppFlowTestBase {
             "the version row does not show a version: \(version.label)",
         )
 
-        // 开发者鸣谢: two names, on two rows. Not one paragraph with a line break
-        // in it -- which is why the y positions are compared rather than the text.
-        // The text element of each `Label`, not its symbol: a `Label` gives both
-        // the same identifier, and the symbol's label is "Account".
-        let shirazu = labelled("settings.credits.shirazu", in: app, contains: "ShirazuNagisa")
-        let arowey = labelled("settings.credits.arowey", in: app, contains: "Arowey")
+        // 开发者鸣谢: one row per person, fetched from GitHub (the suite runs a
+        // fixed list). The text element of each row, not its avatar.
+        let shirazu = labelled("settings.credits.row.ShirazuNagisa", in: app, contains: "ShirazuNagisa")
+        let arowey = labelled("settings.credits.row.Arowey", in: app, contains: "Arowey")
         XCTAssertTrue(revealInSettings(arowey, in: app), "the credits are missing")
         XCTAssertTrue(shirazu.exists, "the first credit is missing")
         XCTAssertTrue(shirazu.label.contains("ShirazuNagisa"), "the first credit is mislabelled: \(shirazu.label)")

@@ -121,7 +121,7 @@ final class ActivityUITests: XCTestCase {
         var arguments: [String] = [
             "-mizarPairURI", Self.mockPairingURI,
             "-mizarFreshStart",
-            "-mizarSkipPermissionPrompts",
+            "-mizarSkipPermissionPrompts", "-mizarSkipLoginGate", "-mizarCreditsFixture",
             "-mizarAccountURL", Self.mockAccountURL,
             "-mizarAccountFreshStart",
             "-AppleLanguages", "(en)",

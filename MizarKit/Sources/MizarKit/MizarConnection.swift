@@ -111,6 +111,12 @@ public actor MizarConnection {
     private var transport: WebSocketTransport?
     private var receiveTask: Task<Void, Never>?
     private var state: State = .idle
+    /// The sentence the peer closed with, when it sent one.
+    ///
+    /// The relay uses it for one thing the app must act on: `traffic allowance
+    /// spent` means the day's bytes are gone, which is a different screen from
+    /// "the network dropped".
+    private var lastCloseReason: String?
 
     /// Unary calls awaiting their answer, keyed by correlation id.
     private var pending: [String: CheckedContinuation<JSONValue?, any Error>] = [:]
@@ -150,9 +156,19 @@ public actor MizarConnection {
     /// and a socket that closes in between used to leave the listener alive
     /// forever.
     ///
+    /// The sentence the peer closed with, or `nil` when it closed without one.
+    ///
+    /// The app reads this after the event stream ends: the relay closes a phone
+    /// that has spent its daily traffic with `traffic allowance spent`, and that
+    /// is a notice, not a network failure.
+    ///
+    /// - Returns: the close reason.
+    public func closeReason() -> String? {
+        lastCloseReason
+    }
+
     /// - Returns: the stream.
-    public func events() -> AsyncStream<ServerFrame> {
-        let id = UUID()
+    public func events() -> AsyncStream<ServerFrame> {        let id = UUID()
         return AsyncStream { continuation in
             if case .failed = state {
                 continuation.finish()
@@ -523,6 +539,7 @@ public actor MizarConnection {
     /// Fail everything in flight and tell subscribers the stream ended.
     private func handleClosed(reason: String?) async {
         let message = reason ?? "the host closed the connection"
+        lastCloseReason = message
         state = .failed(message)
 
         if let continuation = handshake {

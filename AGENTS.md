@@ -4,6 +4,21 @@ Read the project's `README.md` §四 for the plain commands. This file only list
 rules that keep the test loop cheap and safe. Current state, measured numbers,
 blockers and rollback: `docs/test-pipeline-handover.md` (2026-10-20).
 
+## Building and testing on a machine with a nested sandbox
+
+`xcodebuild`'s Swift macro plugin (`swift-plugin-server`) sandboxes itself, and
+that fails under a sandboxed shell with `produced malformed response`. Pass the
+flag through to the compiler:
+
+```sh
+OTHER_SWIFT_FLAGS='-disable-sandbox' scripts/ios.sh build
+OTHER_SWIFT_FLAGS='-disable-sandbox' scripts/ios.sh test-fast
+```
+
+Without it, every `@Observable`/`@State` in the app target fails to compile and
+the errors point at "cannot find `$foo` in scope" -- which is the macro failing,
+not the view.
+
 ## Test loop
 
 ```sh

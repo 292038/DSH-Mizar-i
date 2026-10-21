@@ -49,6 +49,19 @@ final class AccountController {
     /// section is a row, and a row that throws a modal at launch is a launch
     /// prompt by another name.
     private(set) var lastError: String?
+    /// A ban the operator must be told about, out of band.
+    ///
+    /// A banned account is not a failed request: it is a state the whole app has
+    /// to explain, with the address to appeal to. The alert lives on the root
+    /// view so it appears whether the ban was discovered at launch or by a login.
+    private(set) var banNotice: BanNotice?
+
+    /// What the ban alert says.
+    struct BanNotice: Identifiable, Equatable {
+        let id = UUID()
+        let message: String
+        let contact: String?
+    }
     /// Whether a sign-in, sign-out or write is in flight.
     private(set) var working = false
     /// A photo the operator picked for this account.
@@ -235,6 +248,7 @@ final class AccountController {
             apply(user: user)
             phase = .ready
         } catch let error as AccountError {
+            noteBan(error)
             if error.requiresReauthentication {
                 signOutLocally(reason: message(for: error), notice: nil)
             } else {
@@ -265,23 +279,111 @@ final class AccountController {
 
     // MARK: - Sign-in
 
-    /// Create an account.
+    /// Create an account, step one: ask the server to mail a code.
+    ///
+    /// Nothing is created here. The username, address and password stay on this
+    /// phone until the code is presented, which is what lets the sheet be
+    /// cancelled without leaving a half-account behind.
     ///
     /// - Parameters:
     ///   - username: the display name.
     ///   - email: the address.
-    ///   - password: at least 8 characters.
+    ///   - password: the password.
+    /// - Returns: where the code went, or `nil` when the request failed.
+    func beginRegistration(username: String, email: String, password: String) async -> RegistrationChallenge? {
+        working = true
+        lastError = nil
+        defer { working = false }
+        do {
+            return try await client.registerStart(
+                username: username.trimmingCharacters(in: .whitespacesAndNewlines),
+                email: email.trimmingCharacters(in: .whitespacesAndNewlines),
+                password: password,
+                device: device,
+            )
+        } catch {
+            let accountError = AccountError.transport(error)
+            noteBan(accountError)
+            lastError = message(for: accountError)
+            return nil
+        }
+    }
+
+    /// Create an account, step two: present the code.
+    ///
+    /// - Parameters:
+    ///   - username: the display name.
+    ///   - email: the address the code went to.
+    ///   - password: the password.
+    ///   - code: the six digits.
     /// - Returns: whether the account was created and stored.
     @discardableResult
-    func register(username: String, email: String, password: String) async -> Bool {
+    func completeRegistration(
+        username: String,
+        email: String,
+        password: String,
+        code: String,
+    ) async -> Bool {
         await perform {
             try await self.client.register(
                 username: username.trimmingCharacters(in: .whitespacesAndNewlines),
                 email: email.trimmingCharacters(in: .whitespacesAndNewlines),
                 password: password,
+                code: code,
                 device: self.device,
             )
         }
+    }
+
+    /// Ask for a password-reset code.
+    ///
+    /// - Parameter email: the account's address.
+    /// - Returns: where the code went, or `nil` when the request failed.
+    func beginPasswordReset(email: String) async -> RegistrationChallenge? {
+        working = true
+        lastError = nil
+        defer { working = false }
+        do {
+            return try await client.resetPasswordStart(email: email.trimmingCharacters(in: .whitespacesAndNewlines))
+        } catch {
+            let accountError = AccountError.transport(error)
+            noteBan(accountError)
+            lastError = message(for: accountError)
+            return nil
+        }
+    }
+
+    /// Finish a password reset, which also signs this device in.
+    ///
+    /// - Parameters:
+    ///   - email: the address.
+    ///   - code: the six digits.
+    ///   - password: the new password.
+    /// - Returns: whether the password was changed and the session stored.
+    @discardableResult
+    func completePasswordReset(email: String, code: String, password: String) async -> Bool {
+        await perform {
+            try await self.client.resetPassword(
+                email: email.trimmingCharacters(in: .whitespacesAndNewlines),
+                code: code,
+                password: password,
+                device: self.device,
+            )
+        }
+    }
+
+    /// Dismiss the ban alert.
+    func clearBanNotice() {
+        banNotice = nil
+    }
+
+    /// Turn an `ACCOUNT_DISABLED` into the alert, with its appeal address.
+    private func noteBan(_ error: AccountError) {
+        guard error.code == AccountErrorCode.accountDisabled else { return }
+        banNotice = BanNotice(
+            message: String(localized: "This account has been banned."),
+            contact: error.contact,
+        )
     }
 
     /// Sign in with a username or an email.
@@ -348,7 +450,9 @@ final class AccountController {
             await onAuthenticated?()
             return true
         } catch {
-            lastError = message(for: AccountError.transport(error))
+            let accountError = AccountError.transport(error)
+            noteBan(accountError)
+            lastError = message(for: accountError)
             return false
         }
     }
@@ -586,6 +690,16 @@ final class AccountController {
             String(localized: "This account has been disabled.")
         case AccountErrorCode.rateLimited:
             String(localized: "Too many attempts. Wait a moment and try again.")
+        case AccountErrorCode.emailVerificationRequired:
+            String(localized: "Enter the code that was emailed to you.")
+        case AccountErrorCode.verificationInvalid:
+            String(localized: "That code is not right. Try again.")
+        case AccountErrorCode.verificationExpired:
+            String(localized: "That code has expired. Send a new one.")
+        case AccountErrorCode.verificationAttempts:
+            String(localized: "Too many attempts. Send a new code.")
+        case AccountErrorCode.mailUnavailable:
+            String(localized: "Email is unavailable right now. Try again shortly.")
         case AccountErrorCode.appleTokenInvalid:
             String(localized: "Apple could not verify this sign-in. Try again.")
         case AccountErrorCode.appleUnavailable:

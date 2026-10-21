@@ -1218,6 +1218,56 @@ struct TurnTests {
         // taken one.
         #expect(turn.stepCount == nil)
     }
+
+    @Test("records a host did not number cannot give two rows one identity")
+    func unnumberedRecordsKeepDistinctIdentities() throws {
+        // A host that numbers nothing -- `seq` absent from every record -- gives
+        // every record of a kind the same fallback id, `unknown-<type>`. And one
+        // prompt really can arrive as two `user/message` records, the RPC source
+        // and the inbox splice. Two rows sharing one id in a `ForEach` is a
+        // crash rather than a drawing mistake, so the second of two colliding
+        // ids is dropped as it is placed on its turn.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":null,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"turn/start","time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"user/message","time":1100,
+            "data":{"content":[{"type":"text","text":"fix the parser"}],"source":{"kind":"user"}}}},
+          {"type":"event","event":{"type":"user/message","time":1150,
+            "data":{"content":[{"type":"text","text":"fix the parser"}],"source":{"kind":"user"}}}},
+          {"type":"event","event":{"type":"turn/end","time":2000,
+            "data":{"turn":1,"reason":{"kind":"completed"}}}}
+        ]}
+        """)
+        let turn = try #require(result.conversationTurns().first)
+        let ids = turn.prompts.map(\.id)
+        #expect(ids.count == Set(ids).count)
+        #expect(ids.count == 1)
+    }
+
+    @Test("the duplicate rule is scoped to one turn, never across turns")
+    func unnumberedPromptsSurviveOnTheirOwnTurns() throws {
+        // The opposite direction, and the reason the dedup is per turn: on a
+        // host that numbers nothing, two different turns' prompts both carry the
+        // fallback id. Deduping page-wide would drop the second turn's prompt --
+        // a message the operator typed, gone. The screen keys each turn's list
+        // separately, so only a repeat *within* one list is a crash.
+        let result = try page("""
+        {"sessionId":"s1","asOfSeq":null,"hasMore":false,"records":[
+          {"type":"event","event":{"type":"turn/start","time":1000,"data":{"turn":1}}},
+          {"type":"event","event":{"type":"user/message","time":1100,
+            "data":{"content":[{"type":"text","text":"first turn"}],"source":{"kind":"user"}}}},
+          {"type":"event","event":{"type":"turn/end","time":1200,
+            "data":{"turn":1,"reason":{"kind":"completed"}}}},
+          {"type":"event","event":{"type":"turn/start","time":2000,"data":{"turn":2}}},
+          {"type":"event","event":{"type":"user/message","time":2100,
+            "data":{"content":[{"type":"text","text":"second turn"}],"source":{"kind":"user"}}}}
+        ]}
+        """)
+        let turns = result.conversationTurns()
+        #expect(turns.count == 2)
+        #expect(turns.allSatisfy { $0.prompts.count == 1 })
+        #expect(turns.flatMap { $0.prompts }.map { $0.words ?? "" } == ["first turn", "second turn"])
+    }
 }
 
 @Suite("Turn merging")

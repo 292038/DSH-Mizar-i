@@ -1810,7 +1810,7 @@ function handleAccount(request, response, url) {
     })
   }
 
-  if (method === 'POST' && route === '/register') {
+  if (method === 'POST' && route === '/register/start') {
     withBody((parsed) => {
       const username = String(parsed.username ?? '').trim()
       const email = String(parsed.email ?? '').trim().toLowerCase()
@@ -1826,13 +1826,40 @@ function handleAccount(request, response, url) {
           return refusal(409, 'EMAIL_TAKEN', 'that email already has an account')
         }
       }
+      // No account is created here: the mock mirrors the real flow, where the
+      // code proves the address before anything is written down.
+      answer(200, { email, expiresAt: Date.now() + 600000, resendAfterSeconds: 60 })
+    })
+    return true
+  }
+
+  if (method === 'POST' && route === '/register') {
+    withBody((parsed) => {
+      const username = String(parsed.username ?? '').trim()
+      const email = String(parsed.email ?? '').trim().toLowerCase()
+      const password = String(parsed.password ?? '')
+      const code = String(parsed.code ?? '').trim()
+      if (username.length < 2 || !email.includes('@') || password.length < 8) {
+        return refusal(400, 'INVALID_INPUT', 'those details are not acceptable')
+      }
+      if (!/^\d{6}$/.test(code)) {
+        return refusal(428, 'EMAIL_VERIFICATION_REQUIRED', 'request a code with /register/start and send it as "code"')
+      }
+      for (const existing of accounts.values()) {
+        if (existing.username.toLowerCase() === username.toLowerCase()) {
+          return refusal(409, 'USERNAME_TAKEN', 'that username is taken')
+        }
+        if ((existing.email ?? '').toLowerCase() === email) {
+          return refusal(409, 'EMAIL_TAKEN', 'that email already has an account')
+        }
+      }
       const id = crypto.randomUUID()
       const user = {
         id,
         username,
         email,
         password,
-        emailVerified: false,
+        emailVerified: true,
         grantedPaidUntil: null,
         appStore: null,
         createdAt: now,
@@ -1842,6 +1869,33 @@ function handleAccount(request, response, url) {
       noteDevice(user, parsed.device, now)
       const token = newAccountToken()
       accountSessions.set(token, id)
+      answer(200, { token, user: publicUser(user, parsed.device?.id) })
+    })
+    return true
+  }
+
+  if (method === 'POST' && route === '/password/reset/start') {
+    withBody(() => {
+      // The same answer whether or not the address exists, like the real one.
+      answer(200, { ok: true, expiresAt: Date.now() + 600000, resendAfterSeconds: 60 })
+    })
+    return true
+  }
+
+  if (method === 'POST' && route === '/password/reset/complete') {
+    withBody((parsed) => {
+      const email = String(parsed.email ?? '').trim().toLowerCase()
+      const code = String(parsed.code ?? '').trim()
+      const password = String(parsed.password ?? '')
+      if (!/^\d{6}$/.test(code)) return refusal(400, 'VERIFICATION_INVALID', 'that code is not right')
+      if (password.length < 8) return refusal(400, 'INVALID_INPUT', 'those details are not acceptable')
+      const user = [...accounts.values()].find((existing) => (existing.email ?? '').toLowerCase() === email)
+      if (user === undefined) return refusal(400, 'VERIFICATION_INVALID', 'that code is not right')
+      user.password = password
+      user.emailVerified = true
+      noteDevice(user, parsed.device, now)
+      const token = newAccountToken()
+      accountSessions.set(token, user.id)
       answer(200, { token, user: publicUser(user, parsed.device?.id) })
     })
     return true

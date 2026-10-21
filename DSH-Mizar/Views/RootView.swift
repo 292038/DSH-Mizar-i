@@ -22,50 +22,26 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            switch model.phase {
-            case .launching:
+            // Nothing is decided until the stored session has been read: the
+            // gate must not flash for somebody who is already signed in.
+            if model.account.phase == .idle {
                 LaunchingView()
-            case .unpaired:
-                // Nothing paired at all: the only useful thing on screen is the
-                // way to fix that.
-                UnpairedView()
-            case .connecting where model.host == nil:
-                LaunchingView()
-            case .ready, .connecting:
-                // The one-time download covers the app rather than sitting in a
-                // sheet. It runs straight after pairing, when every screen
-                // behind it would be empty, and an empty screen under a small
-                // dialog reads as a broken app.
-                if model.firstLoad {
-                    FirstLoadView(progress: model.syncProgress)
-                } else {
-                    MizarShell()
-                }
-            case .failed(let message):
-                // A phone with something stored shows it, with the failure as a
-                // banner over the top. Only a phone that has never synced gets
-                // the screen below, because only then is there nothing to look
-                // at.
-                //
-                // The distinction matters more than it looks. Reading a
-                // conversation is entirely local once it has been synced, so
-                // replacing it with "Cannot reach the computer" takes away an answer
-                // the operator already has -- and the phone is opened on trains,
-                // in lifts, and on the far side of a relay having a bad day.
-                if model.hasStoredIndex {
-                    MizarShell()
-                } else {
-                    UnreachableView(message: message)
-                }
+            } else if requiresLogin {
+                WelcomeGateView()
+            } else {
+                phaseContent
             }
         }
         .animation(.mizarSmooth, value: phaseKey)
-        .task { await model.start() }
-        // The account is read beside the pairing, not before it and not
-        // instead of it: nothing here is required for the free app to work, and
-        // a slow or unreachable account server must not delay the screen that
-        // shows the conversations. Nothing is presented for an account either;
-        // signing in is something the operator chooses from Settings.
+        .animation(.mizarSmooth, value: requiresLogin)
+        // The first connect waits for a signed-in account. Connecting behind the
+        // gate would put bytes on the relay as a `guest:` identity, which is the
+        // one thing the gate exists to prevent.
+        .task(id: startKey) {
+            if Self.skipLoginGate || model.account.isLoggedIn {
+                model.scheduleStart()
+            }
+        }
         .task {
             await model.account.start()
             // A subscription bought on another device, or before a reinstall,
@@ -75,6 +51,36 @@ struct RootView: View {
         }
         .task { await model.requestFirstRunPermissions() }
         .task { await model.ensurePushRegistration() }
+        .alert(
+            Text("This account has been banned"),
+            isPresented: Binding(
+                get: { model.account.banNotice != nil },
+                set: { if !$0 { model.account.clearBanNotice() } },
+            ),
+            presenting: model.account.banNotice,
+        ) { _ in
+            Button("OK", role: .cancel) { model.account.clearBanNotice() }
+        } message: { notice in
+            if let contact = notice.contact {
+                Text(String(
+                    format: String(localized: "Contact %@ if you believe this is a mistake."),
+                    contact,
+                ))
+            } else {
+                Text(notice.message)
+            }
+        }
+        .alert(
+            Text("Traffic allowance spent"),
+            isPresented: Binding(
+                get: { model.trafficNotice },
+                set: { if !$0 { model.trafficNotice = false } },
+            ),
+        ) {
+            Button("OK", role: .cancel) { model.trafficNotice = false }
+        } message: {
+            Text("This account has carried its whole daily allowance on the relay. It resets at 00:00 UTC; connecting directly over the local network still works.")
+        }
         // Initial as well as changes: a launch starts active, and that is the
         // state the running poll needs before the first session list arrives.
         .onChange(of: scenePhase, initial: true) { _, phase in
@@ -139,13 +145,87 @@ struct RootView: View {
             // not the app was already running, because this view is the root of
             // both.
             guard let sessionId = note.object as? String else { return }
+            // The delegate stashed the same request before posting it. Taking
+            // it here is what keeps a tap that arrived with this view already
+            // mounted from being opened twice -- once now, and once by the
+            // next launch's `.onAppear`.
+            _ = PendingPushSession.take()
             model.selectedSessionId = sessionId
+        }
+        .onAppear {
+            // A tap that arrived before this view existed -- a cold launch from
+            // a notification -- left its request with the delegate instead of
+            // on the wire, because a post made then had nobody to hear it.
+            // Take it now. A tap that arrives after this point is delivered by
+            // the publisher above, so this covers the one case the post cannot.
+            if let waiting = PendingPushSession.take() {
+                model.selectedSessionId = waiting
+            }
         }
     }
 }
 
 /// Which of the root's screens is up, as something an animation can watch.
 private extension RootView {
+    /// Whether the login gate is in front of the app.
+    var requiresLogin: Bool {
+        #if DEBUG
+        if Self.skipLoginGate { return false }
+        #endif
+        return !model.account.isLoggedIn
+    }
+
+    /// Changes when the first connect becomes allowed.
+    var startKey: String {
+        "\(model.account.isLoggedIn)-\(Self.skipLoginGate)"
+    }
+
+    /// Whether a debug build was launched with the gate bypassed.
+    ///
+    /// The UI suite drives screens behind the gate and has no account to sign in
+    /// with; the gate itself is covered by its own tests.
+    static var skipLoginGate: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains("-mizarSkipLoginGate")
+        #else
+        false
+        #endif
+    }
+
+    @ViewBuilder
+    var phaseContent: some View {
+        switch model.phase {
+        case .launching:
+            LaunchingView()
+        case .unpaired:
+            // Nothing paired at all: the only useful thing on screen is the
+            // way to fix that.
+            UnpairedView()
+        case .connecting where model.host == nil:
+            LaunchingView()
+        case .ready, .connecting:
+            // The one-time download covers the app rather than sitting in a
+            // sheet. It runs straight after pairing, when every screen
+            // behind it would be empty, and an empty screen under a small
+            // dialog reads as a broken app.
+            if model.firstLoad {
+                FirstLoadView(progress: model.syncProgress)
+            } else {
+                MizarShell()
+            }
+        case .failed(let message):
+            // A phone with something stored shows it, with the failure as a
+            // banner over the top. Only a phone that has never synced gets
+            // the screen below, because only then is there nothing to look
+            // at.
+            if model.hasStoredIndex {
+                MizarShell()
+            } else {
+                UnreachableView(message: message)
+            }
+        }
+    }
+
     var phaseKey: Int {
         switch model.phase {
         case .launching: 0

@@ -429,3 +429,48 @@
 "Transfer" = "传输";
 "Local network first" = "局域网优先";
 "When on, every reconnect first looks for the computer on your local network and falls back to the relay when it is not there. When off, the scan is skipped and reconnecting goes straight to the saved route, which is faster." = "打开后，每次重连都会先在你的局域网里寻找电脑，找不到再回退到中继；关闭后跳过局域网扫描，直接使用已保存的通道重连，速度更快。";
+
+/* 0.9.5 — mail, gate, credits */
+"Mizar Paid exists to provide what a high-bandwidth server can do: carrying a session's execution as it happens, attachments, and so on. Payment only shares the server cost and can barely be profitable. Free users can still use most features and the free server. Thank you for using it." = "Mizar付费版旨在为使用者提供高带宽服务器能做到的功能，包括会话执行过程传输、附件传输等。付费仅用于分摊服务器成本，基本无法盈利，同时免费用户依旧可以使用绝大部分功能与调用免费版服务器。感谢你的使用。";
+"A Mizar account is required to use the app." = "使用 DSH-Mizar 需要先登录或注册。";
+"A Mizar account is required to use the app. It keeps every relay session attributable to one person." = "使用 DSH-Mizar 需要一个 Mizar 账户：这样每一份中继流量都能对应到一个人。";
+"A high-bandwidth relay, paid for by the people who need it. The free server stays free." = "高带宽中继由需要它的人分摊成本；免费服务器继续免费。";
+"Collected from the four GitHub repositories and refreshed every 24 hours. Tap a name to open their GitHub profile." = "名单来自四个 GitHub 仓库，每 24 小时自动更新。点击一位开发者可打开其 GitHub 主页。";
+"Updated %@." = "更新于 %@。";
+"GitHub could not be reached; this is the saved list." = "暂时连不上 GitHub，显示的是上次保存的名单。";
+"Loading contributors…" = "正在获取贡献者…";
+"No contributors to show yet." = "暂时没有可显示的贡献者。";
+"Details" = "详情";
+"Enter the code" = "输入验证码";
+"Reset your password" = "重置密码";
+"Verify and create account" = "验证并创建账户";
+"Verify and set password" = "验证并设置密码";
+"We sent a 6-digit code to %@. It expires in 10 minutes." = "我们已向 %@ 发送 6 位验证码，10 分钟内有效。";
+"6-digit code" = "6 位验证码";
+"Resend in %lld s" = "%lld 秒后可重新发送";
+"Resend code" = "重新发送验证码";
+"That code is not right. Try again." = "验证码不正确，请重试。";
+"That code has expired. Send a new one." = "验证码已过期，请重新发送。";
+"Too many attempts. Send a new code." = "尝试次数过多，请重新发送验证码。";
+"Email is unavailable right now. Try again shortly." = "邮件服务暂时不可用，请稍后再试。";
+"The code could not be sent. Try again shortly." = "验证码发送失败，请稍后再试。";
+"Forgot password?" = "忘记密码？";
+"Send code" = "发送验证码";
+"New password" = "新密码";
+"This account has been banned." = "该账户已被封禁。";
+"This account has been banned" = "该账户已被封禁";
+"Contact %@ if you believe this is a mistake." = "如有疑问请联系 %@。";
+"Traffic allowance spent" = "今日流量已用尽";
+"This account has carried its whole daily allowance on the relay. It resets at 00:00 UTC; connecting directly over the local network still works." = "这个账户今天的中继流量已经用尽，将在 UTC 00:00 重置；在同一个局域网内直连仍然可用。";
+"Not available yet" = "暂不支持";
+"The TestFlight build does not support this yet. Stay tuned." = "目前TestFlight版本暂不支持该功能，敬请期待";
+"We will email a 6-digit code to the address on your account." = "我们会向账户邮箱发送一封包含 6 位验证码的邮件。";
+"Sign in to get started" = "登录后开始使用";
+"DSH-Mizar's conversations travel through a relay. Once you sign in, every byte belongs to an account, so abnormal traffic can be recognised and stopped — that is what keeps the free server running." = "DSH-Mizar 的对话要经过中继服务器。登录后，每一份流量都能对应到一个账户，异常流量才能被识别和拦截——这是免费服务器能长期开下去的前提。";
+"Signing in is only for the account and traffic safety; conversations never pass through the account server." = "登录只用于账户与流量安全，对话内容不经过账户服务器。";
+"Install the plugin, then scan" = "先装插件，再扫码";
+"In DSH's plugin panel, enter dsh-mizar to install the plugin, then restart DSH. When the panel shows a code, come back here and scan it." = "在电脑的 DSH 插件面板里输入 dsh-mizar 安装插件，然后重启 DSH。面板出现二维码后，回到这里扫码。";
+"Once it is installed, there is nothing else to set up." = "装好后，手机和电脑之间不需要别的设置。";
+
+/* 0.9.5 */
+"Turn this on if you use the app on the same local network; turning it off makes every reconnect faster." = "如果你需要在同一局域网内使用应用，则请打开该功能，否则关闭该功能有助于加快每次重连的速度。";

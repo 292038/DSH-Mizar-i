@@ -56,6 +56,8 @@ final class AppModel {
     let account: AccountController
     /// The Apple subscription, and the plan it changes on the server.
     let subscription: SubscriptionController
+    /// The GitHub contributors shown in Settings, cached for a day.
+    let credits = CreditsController()
 
     /// The machine whose pairing just completed and has not been named yet.
     ///
@@ -138,6 +140,26 @@ final class AppModel {
     /// landed on offered "Pair again", which forgot the pairing -- which is why
     /// a transient error could cost the operator their setup entirely.
     private(set) var lastError: String?
+
+    /// Whether the relay said this account has spent its daily traffic.
+    ///
+    /// Set from the socket's close reason, because that is where the relay puts
+    /// it: `1008 traffic allowance spent`. The alert is dismissible and stays
+    /// down until the next close, so a reconnect loop cannot stack popups.
+    var trafficNotice = false
+
+    /// Whether `start()` has run. The login gate defers the first connect until
+    /// somebody is signed in, and the view that does it may appear more than once.
+    private var hasStarted = false
+
+    /// The one first-connect task.
+    ///
+    /// Unstructured on purpose: a `.task` in a view is cancelled when that view
+    /// goes away, and a pairing cancelled halfway lands on "Cannot reach the
+    /// computer" with an empty reason -- which is exactly what a launch looked
+    /// like whenever the root view re-laid out during the handshake. This task
+    /// belongs to the model, not to a screen.
+    private var startTask: Task<Void, Never>?
 
     /// Whether a reconnect is in flight, so the UI can say so.
     private(set) var reconnecting = false
@@ -920,6 +942,16 @@ final class AppModel {
         )
     }
 
+    /// Start the first connect once, from a task the view lifecycle cannot cancel.
+    ///
+    /// Safe to call from every appearance: the second call is a no-op.
+    func scheduleStart() {
+        guard startTask == nil else { return }
+        startTask = Task { [weak self] in
+            await self?.start()
+        }
+    }
+
     /// Load any stored pairing and, if there is one, connect.
     ///
     /// A pairing URI passed on the command line takes precedence, which is what
@@ -927,6 +959,8 @@ final class AppModel {
     /// typing into fields or tapping through an alert. It is the same payload
     /// the QR carries, so the path exercised is the real one.
     func start() async {
+        guard !hasStarted else { return }
+        hasStarted = true
         // Launching is opening the app, so the Live Activity's flag starts set.
         // Only the flag: the session list has not been read yet, and "nothing is
         // running" must not be confused with "nothing is known".
@@ -1435,7 +1469,7 @@ final class AppModel {
             // what lets the next read take the reconnect path instead of asking
             // a dead transport for an answer.
             guard !Task.isCancelled else { return }
-            self.noteSocketClosed(opened)
+            await self.noteSocketClosed(opened)
         }
     }
 
@@ -1450,12 +1484,20 @@ final class AppModel {
     /// socket, which is the recovery every refresh path already has.
     ///
     /// - Parameter closed: the connection whose event stream ended.
-    private func noteSocketClosed(_ closed: MizarConnection) {
+    private func noteSocketClosed(_ closed: MizarConnection) async {
         // A reconnect may already have replaced it; only the socket that is
         // still the model's is this method's to forget.
         guard connection === closed else { return }
         connection = nil
         log.add(.connection, "the socket closed; the next read reconnects")
+
+        // The one close the operator must see rather than infer: the relay
+        // refuses more bytes once the day's allowance is gone, and closes this
+        // socket with that sentence as the reason.
+        if let reason = await closed.closeReason(), reason.contains("traffic allowance spent") {
+            log.add(.connection, "the relay closed the socket: the daily traffic allowance is spent")
+            trafficNotice = true
+        }
 
         // A socket that dies on the operator's own network is the one close
         // that cannot be left to the next read. Waiting for one would ask the
@@ -4024,6 +4066,17 @@ final class AppModel {
             try? await Task.sleep(for: .milliseconds(700))
             pendingNameHostId = paired.hostId
         } catch {
+            if error is CancellationError || Task.isCancelled {
+                // The task that started this pairing went away (a view rebuilt
+                // while the handshake was in flight). The pairing did not fail;
+                // the next start will try again. Showing "Cannot reach the
+                // computer" here is what made a first launch look broken when
+                // nothing was.
+                log.add(.connection, "pairing cancelled before it finished")
+                firstLoad = false
+                hasStarted = false
+                return
+            }
             // One line per route that was tried, then the answer to act on. A
             // pairing that fell through the LAN to the relay and then failed
             // there is a different problem from one that never left the phone,

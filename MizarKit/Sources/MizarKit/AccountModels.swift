@@ -483,6 +483,22 @@ public struct AccountAuth: Codable, Sendable, Equatable {
     public var session: AccountSession { AccountSession(token: token, profile: user) }
 }
 
+/// What `/register/start` answers: a code is on its way.
+public struct RegistrationChallenge: Codable, Sendable, Equatable {
+    /// Where it was sent, echoed so the sheet can name the address.
+    public let email: String
+    /// When the code stops working.
+    public let expiresAt: Date
+    /// How long until another code may be requested.
+    public let resendAfterSeconds: Int
+
+    public init(email: String, expiresAt: Date, resendAfterSeconds: Int) {
+        self.email = email
+        self.expiresAt = expiresAt
+        self.resendAfterSeconds = resendAfterSeconds
+    }
+}
+
 // MARK: - Errors
 
 /// The machine-readable codes the account API documents.
@@ -498,6 +514,13 @@ public enum AccountErrorCode {
     public static let usernameTaken = "USERNAME_TAKEN"
     public static let emailTaken = "EMAIL_TAKEN"
     public static let rateLimited = "RATE_LIMITED"
+    /// The server now proves the address before it creates the account.
+    public static let emailVerificationRequired = "EMAIL_VERIFICATION_REQUIRED"
+    public static let verificationInvalid = "VERIFICATION_INVALID"
+    public static let verificationExpired = "VERIFICATION_EXPIRED"
+    public static let verificationAttempts = "VERIFICATION_ATTEMPTS"
+    /// The mail service could not be reached, so no code was sent.
+    public static let mailUnavailable = "MAIL_UNAVAILABLE"
     public static let appleTokenInvalid = "APPLE_TOKEN_INVALID"
     public static let appleUnavailable = "APPLE_UNAVAILABLE"
     public static let inviteInvalid = "INVITE_INVALID"
@@ -530,12 +553,18 @@ public struct AccountError: Error, Sendable, Equatable, LocalizedError {
     public let message: String
     /// Whether retrying the same request could succeed.
     public let retryable: Bool
+    /// An appeal address the server attached to a refusal.
+    ///
+    /// Only `ACCOUNT_DISABLED` carries one today: a banned account needs
+    /// somewhere to write to, and the app cannot invent that address.
+    public let contact: String?
 
-    public init(code: String, status: Int = 0, message: String, retryable: Bool = false) {
+    public init(code: String, status: Int = 0, message: String, retryable: Bool = false, contact: String? = nil) {
         self.code = code
         self.status = status
         self.message = message
         self.retryable = retryable
+        self.contact = contact
     }
 
     public var errorDescription: String? { message }
