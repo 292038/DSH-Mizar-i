@@ -2,7 +2,7 @@
 #
 # Pre-merge gate: the local, CI-shaped minimum before a merge.
 #
-#   scripts/pre-merge.sh            # unit suite + snapshot suite + selection plan
+#   scripts/pre-merge.sh            # kernel suite + unit suite + snapshot suite + selection plan
 #   scripts/pre-merge.sh --with-ui  # also actually run the selected UI subset
 #
 # Never runs the live layer; a default regression must not touch a real host.
@@ -24,12 +24,17 @@ fi
 
 t0=$(date +%s)
 
-echo "== 1/3 unit suite (host, whole) =="
-scripts/swift.sh test 2>&1 | tail -2
+echo "== 1/4 kernel suite (typecheck, vitest, bundle) =="
+( cd LocalKernel/kernel && npm run verify ) 2>&1 | tail -2
 t1=$(date +%s)
-echo "pre-merge: unit $((t1-t0))s"
+echo "pre-merge: kernel $((t1-t0))s"
 
-echo "== 2/3 snapshot suite =="
+echo "== 2/4 unit suite (host, whole) =="
+scripts/swift.sh test 2>&1 | tail -2
+t2=$(date +%s)
+echo "pre-merge: unit $((t2-t1))s"
+
+echo "== 3/4 snapshot suite =="
 xcrun simctl boot "$SIMULATOR" 2>/dev/null || true
 xcrun simctl bootstatus "$SIMULATOR" -b >/dev/null 2>&1 || true
 xcodebuild test \
@@ -39,16 +44,16 @@ xcodebuild test \
   -derivedDataPath "$SNAP_DERIVED" \
   CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES \
   -collect-test-diagnostics never 2>&1 | tail -3
-t2=$(date +%s)
-echo "pre-merge: snapshots $((t2-t1))s"
+t3=$(date +%s)
+echo "pre-merge: snapshots $((t3-t2))s"
 
-echo "== 3/3 test selection =="
+echo "== 4/4 test selection =="
 if [ "$WITH_UI" = "1" ]; then
   scripts/test-select.sh
 else
   scripts/test-select.sh --dry-run
 fi
-t3=$(date +%s)
-echo "pre-merge: selection $((t3-t2))s"
+t4=$(date +%s)
+echo "pre-merge: selection $((t4-t3))s"
 
-echo "pre-merge: all gates finished in $((t3-t0))s"
+echo "pre-merge: all gates finished in $((t4-t0))s"
