@@ -131,7 +131,7 @@ interface EngineAdapter {
 - **流式**：delta 在步骤完成前通过 `onDelta` 送达——它们被折叠进
   `assistant/attempt` 记录（activity 流的 `thinking` 行来源）。
 - **取消**：`signal.aborted` 轮询 + `onAbort` 注册；中止的步骤返回
-  `finishReason: "abortred"` 形状（`'aborted'`）。
+  `finishReason: "aborted"`。
 - **错误**：`finishReason: "error"` + 稳定 `errorCode`
   （`MISSING_CREDENTIAL` 等已在 turn/end 语义里）。
 - **usage**：能报就报（OpenAI `stream_options.include_usage` / DeepSeek
