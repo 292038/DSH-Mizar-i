@@ -15,7 +15,9 @@
 //
 //    - **It knows where you are.** The turns on screen in the conversation are
 //      bracketed on the index's timeline, and the bracket moves as you scroll,
-//      so opening it answers "how far up am I" before anything is tapped.
+//      so the turns being read are lit at a glance. The stream itself opens
+//      at its top -- the bracket says where you are, the list does not jump
+//      to it.
 //    - **It shows where the time went.** Under each prompt a hairline bar is as
 //      long as the turn took, against the longest turn in the session: the one
 //      that ran for twenty minutes is visible from across the room.
@@ -362,20 +364,18 @@ struct TurnIndexPanel: View {
             // and every row after it travels beneath the glass on the way
             // past -- the margin is content, not a bar the scroll stops at.
             .contentMargins(.top, Self.chromeContentTop, for: .scrollContent)
-            // Opened, the index is already at the part of the session the
-            // operator is reading -- not at the top of a list of forty turns.
-            .onAppear { centre(proxy) }
-            .onChange(of: index.sessionId) { _, _ in centre(proxy) }
-            .onChange(of: onlyUnfinished) { _, _ in centre(proxy) }
-        }
-    }
-
-    private func centre(_ proxy: ScrollViewProxy) {
-        let target = shown.last { index.visible.contains($0.id) } ?? shown.last
-        guard let target else { return }
-        Task { @MainActor in
-            await Task.yield()
-            proxy.scrollTo(target.id, anchor: .center)
+            // The stream opens at its top and keeps the operator's place after
+            // that. No auto-centring: a scroll into a lazy stack's not-yet-
+            // built region lands on an estimate, and on a session's first open
+            // that estimate stranded the stream mid-drawer with a void above
+            // and below it. A session switch starts the new session's stream
+            // at its own top, too -- the old offset belongs to the old list,
+            // and carrying it over would drop the new one somewhere
+            // arbitrary.
+            .onChange(of: index.sessionId) { _, _ in
+                guard let top = shown.first?.id else { return }
+                proxy.scrollTo(top, anchor: .top)
+            }
         }
     }
 
