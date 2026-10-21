@@ -3867,6 +3867,11 @@ final class AppModel {
             modelChoice = [:]
             host = paired
             LastOpenedHostStore.store(paired.hostId)
+            // The initializing screen takes over here, not at the download:
+            // between the pairing and the download there is a connect, and the
+            // shell it would briefly expose has nothing to draw yet. From the
+            // operator's side the scan landed straight into "Setting up".
+            firstLoad = true
             // Offered once, now, while the operator still knows which machine
             // they just scanned. The connection is opened first so the name is
             // asked for over a working screen rather than a spinner, and over the
@@ -3917,6 +3922,9 @@ final class AppModel {
                     ?? target.authority ?? target.baseURL,
             )
             log.add(.connection, "pairing failed: \(message)")
+            // A pairing that died on the way in must not leave the initializing
+            // screen up: the failure screen behind it is the one that answers.
+            firstLoad = false
             phase = .failed(message)
         }
     }

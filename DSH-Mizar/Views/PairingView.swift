@@ -23,10 +23,8 @@ struct PairingView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
-    /// Whether the camera is open, inside this window.
+    /// The camera is open, inside this window.
     @State private var scanning = false
-    /// Whether the camera has read a code, for the frame to close on it.
-    @State private var locked = false
     @State private var manual = false
     @State private var authority = ""
     @State private var code = ""
@@ -109,34 +107,32 @@ struct PairingView: View {
         .mizarFeedback(.success, trigger: scans)
     }
 
-    /// The camera, inside the window: square, with corners that close on the
-    /// code once it is read, and a way back to the button.
+    /// The camera, inside the window: square, with corners that frame the code
+    /// and a way back to the button.
     private var viewfinder: some View {
         ZStack {
             Scanner { value in
                 guard let target = PairingURI.parse(value) else { return }
-                withMizarAnimation(.mizarBouncy) { locked = true }
                 scans += 1
-                Task {
-                    // A beat for the frame to close on the code before pairing
-                    // takes over, so the scan is seen to land.
-                    try? await Task.sleep(for: .milliseconds(450))
-                    await model.pair(with: target, deviceName: resolvedDeviceName)
-                }
+                // The code is read, so the camera and this window go away at
+                // once: pairing, connecting and the first download are the
+                // model's screens now. A viewfinder that stayed up over them
+                // read as "the scan did not land". The haptic above is the
+                // acknowledgement; what replaces this window is the proof.
+                scanning = false
+                dismiss()
+                Task { await model.pair(with: target, deviceName: resolvedDeviceName) }
             }
             ViewfinderCorners()
-                .stroke(locked ? Theme.running : .white, style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
-                .padding(locked ? 52 : 34)
+                .stroke(.white, style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+                .padding(34)
                 .shadow(color: .black.opacity(0.4), radius: 6)
                 .allowsHitTesting(false)
             VStack {
                 HStack {
                     Spacer()
                     Button {
-                        withMizarAnimation(.mizarSmooth) {
-                            scanning = false
-                            locked = false
-                        }
+                        withMizarAnimation(.mizarSmooth) { scanning = false }
                     } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 13, weight: .bold))
@@ -147,7 +143,7 @@ struct PairingView: View {
                     .accessibilityLabel(Text("Close"))
                 }
                 Spacer()
-                Text(locked ? "Connecting…" : "Point at the code on your computer")
+                Text("Point at the code on your computer")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12)
@@ -240,6 +236,10 @@ struct PairingView: View {
         Task {
             await model.pair(with: target, deviceName: resolvedDeviceName)
             pairing = false
+            // Whatever the outcome, the root view has already moved on to the
+            // screen that owns it -- connecting, the first download, or the
+            // failure -- and this window closing is what uncovers it.
+            dismiss()
         }
     }
 }
