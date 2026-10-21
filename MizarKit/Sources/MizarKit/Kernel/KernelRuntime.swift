@@ -32,9 +32,10 @@ import os
 
 /// A small synchronous string store behind the kernel's `kv` surface.
 ///
-/// The default implementation uses `UserDefaults`, namespaced under
-/// `mizar.kernel.`. API keys belong here in v0; a Keychain-backed store is a
-/// drop-in replacement for this protocol, not a kernel change.
+/// The surface carries provider API keys, so the default implementation keeps
+/// its values in the Keychain, under the `mizar.kernel.` account prefix.
+/// `UserDefaultsKernelKeyValueStore` remains for callers that want the plain
+/// store back.
 public protocol KernelKeyValueStore: Sendable {
     func value(forKey key: String) -> String?
     func set(_ value: String?, forKey key: String)
@@ -54,6 +55,80 @@ public struct UserDefaultsKernelKeyValueStore: KernelKeyValueStore {
 
     public func set(_ value: String?, forKey key: String) {
         UserDefaults.standard.set(value, forKey: prefix + key)
+    }
+}
+
+/// The Keychain-backed store the kernel gets by default.
+///
+/// One generic-password item per key, matched by service and account; the
+/// account carries the same `mizar.kernel.` prefix the UserDefaults store
+/// used, so a key's identity does not depend on which store holds it. Items
+/// are written `AfterFirstUnlockThisDeviceOnly`, like every other long-lived
+/// credential in this app: readable by a background turn after a reboot,
+/// never migrated to another device by a backup or iCloud sync.
+///
+/// The protocol cannot carry a failure, so a write the Keychain refuses is
+/// silent -- the same contract the UserDefaults store had -- and a missing or
+/// unreadable item reads as `nil`, which the kernel already treats as "no
+/// credential".
+public struct KeychainKernelKeyValueStore: KernelKeyValueStore {
+    /// The Keychain service name.
+    private let service: String
+    /// The account prefix, namespacing the kernel's keys inside the service.
+    private let prefix: String
+
+    public init(service: String = "dsh-mizar", prefix: String = "mizar.kernel.") {
+        self.service = service
+        self.prefix = prefix
+    }
+
+    #if canImport(Security)
+    /// The base query identifying one item.
+    private func baseQuery(for key: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: prefix + key,
+        ]
+    }
+    #endif
+
+    public func value(forKey key: String) -> String? {
+        #if canImport(Security)
+        var query = baseQuery(for: key)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(decoding: data, as: UTF8.self)
+        #else
+        return nil
+        #endif
+    }
+
+    public func set(_ value: String?, forKey key: String) {
+        #if canImport(Security)
+        guard let value else {
+            SecItemDelete(baseQuery(for: key) as CFDictionary)
+            return
+        }
+        let data = Data(value.utf8)
+        // Update first, then add: `SecItemAdd` fails with `errSecDuplicateItem`
+        // when the item exists, and delete-then-add would open a window where
+        // the credential does not exist.
+        let updateStatus = SecItemUpdate(
+            baseQuery(for: key) as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary,
+        )
+        guard updateStatus != errSecSuccess else { return }
+
+        var query = baseQuery(for: key)
+        query[kSecValueData as String] = data
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        _ = SecItemAdd(query as CFDictionary, nil)
+        #endif
     }
 }
 
@@ -196,7 +271,7 @@ public final class KernelRuntime: @unchecked Sendable {
     public init(
         rootURL: URL,
         hostName: String,
-        kv: any KernelKeyValueStore = UserDefaultsKernelKeyValueStore(),
+        kv: any KernelKeyValueStore = KeychainKernelKeyValueStore(),
         httpHandler: any KernelHTTPHandler = URLSessionKernelHTTPHandler(),
     ) {
         let root = rootURL.standardizedFileURL
