@@ -118,8 +118,16 @@ public struct URLSessionKernelHTTPHandler: KernelHTTPHandler {
         onError: @escaping @Sendable (String) -> Void,
     ) -> KernelHTTPHandle {
         let session = session
+        // The kernel checks a URL's shape, not its parseability: the model can
+        // hand over `http://[`. Unwrapping here would crash the app on the
+        // model's own output, and a URL that does not parse is an error like
+        // any other -- onError is the path the engine's caller already knows.
+        guard let url = URL(string: request.url) else {
+            onError("malformed url: \(request.url)")
+            return KernelHTTPHandle {}
+        }
         let task = Task.detached(priority: .userInitiated) {
-            var urlRequest = URLRequest(url: URL(string: request.url)!)
+            var urlRequest = URLRequest(url: url)
             urlRequest.httpMethod = request.method
             for (name, value) in request.headers {
                 urlRequest.setValue(value, forHTTPHeaderField: name)
@@ -468,7 +476,7 @@ public final class KernelRuntime: @unchecked Sendable {
                 }
             }, onError: { message in
                 self.performOnKernelQueue { _ in
-                    guard !settled.settle() else { return }
+                    guard settled.settle() else { return }
                     handlersBox.value.invokeMethod("onError", withArguments: [message])
                     self.clearException()
                 }
