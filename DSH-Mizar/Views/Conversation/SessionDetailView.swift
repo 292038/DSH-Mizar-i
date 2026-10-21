@@ -48,14 +48,6 @@ struct SessionDetailView: View {
     /// The same conversation grouped into turns, when the host gave turn numbers.
     @State private var turns: [ConversationTurn] = []
 
-    /// The newest log position that was already part of this conversation when
-    /// it opened.
-    ///
-    /// The typewriter's gate. An answer is typed only when it arrives while the
-    /// screen is watching, and "arrived while watching" is exactly "its seq is
-    /// past the newest one the first page held". Everything at or below this is
-    /// history, and history appears as history -- instantly.
-    @State private var answerBaseline: Int?
     /// Answers this screen has already started typing (or chosen not to type).
     ///
     /// A lazy row that scrolls out of the stack is destroyed, and the answer it
@@ -367,9 +359,7 @@ struct SessionDetailView: View {
         }
         .task(id: sessionId) {
             // A different session is a different conversation, and the typewriter
-            // state belongs to the one that was on screen. The first page of the
-            // new one sets a fresh baseline.
-            answerBaseline = nil
+            // state belongs to the one that was on screen.
             settledAnswerIds = []
             // A session just started from the home screen arrives with its first
             // prompt already sent: put it where it will land, and watch for the
@@ -436,7 +426,6 @@ struct SessionDetailView: View {
                 // successful fetch.
                 if let arrived, arrived > 0,
                    let cached = await model.cachedConversation(for: sessionId) {
-                    noteAnswerBaseline(in: cached.items)
                     items = cached.items
                     show(turns: cached.turns ?? [])
                 }
@@ -780,7 +769,6 @@ struct SessionDetailView: View {
             let cached = await model.cachedConversation(for: sessionId)
             withMizarAnimation(.mizarSmooth) {
                 if !synced.isEmpty {
-                    noteAnswerBaseline(in: synced)
                     items = synced
                     conversationSessionId = sessionId
                 }
@@ -843,7 +831,6 @@ struct SessionDetailView: View {
         // answer rises into place.
         withMizarAnimation(.mizarSmooth) {
             if !synced.isEmpty {
-                noteAnswerBaseline(in: synced)
                 items = synced
                 conversationSessionId = sessionId
             }
@@ -912,22 +899,39 @@ struct SessionDetailView: View {
 
     // MARK: - The typewriter's gate
 
+    /// How long after a turn finished its answer may still be typed.
+    ///
+    /// The reveal stands in for a voice that has just finished talking, so it
+    /// plays only while the answer is fresh: a session viewed within a minute
+    /// of the turn completing plays it; a session opened later is a record
+    /// being read, and records appear as records -- instantly. Typing an answer
+    /// that finished hours ago presents a turn long over as one that finished
+    /// while you watched, and that is the lie this window closes.
+    private static let typewriterFreshness: TimeInterval = 60
+
     /// The answer currently being typed, if any.
     ///
-    /// Only the newest answer can be typed. When several arrived while the
-    /// screen was elsewhere -- the phone was on another screen, or the app was
-    /// in the background -- they are history the operator missed, and history
-    /// appears at once. The voice they are watching is the one still arriving.
+    /// Only the newest answer can be typed, and only while it is fresh: its own
+    /// timestamp -- the host's record of when the turn ended -- has to be within
+    /// ``typewriterFreshness`` of now. Freshness is read off the answer, not off
+    /// what this phone has fetched: a page pulled in just now can be carrying
+    /// an answer that finished last night, and that answer is history.
+    ///
+    /// The decision freezes the moment the row draws: the answer is recorded as
+    /// started (``noteAnswerTypingStarted``), so a later redraw or the minute
+    /// running out cannot turn a voice back into history, and a row that first
+    /// appears after the minute is simply the message, whole.
     ///
     /// Reduce Motion is the one switch that turns the reveal off entirely: a
     /// reader who asked for less motion gets the answer, not a slower one.
     private var typingAnswerId: String? {
-        guard !reduceMotion, let answerBaseline else { return nil }
+        guard !reduceMotion else { return nil }
         guard let newest = shownItems.last(where: { item in
             if case .message(_, .assistant, _, _) = item { return true }
             return false
-        }), let seq = newest.seq, seq > answerBaseline,
-            !settledAnswerIds.contains(newest.id)
+        }), !settledAnswerIds.contains(newest.id),
+            Self.previewTypesNewestAnswer
+                || Date().timeIntervalSince(newest.at) <= Self.typewriterFreshness
         else { return nil }
         return newest.id
     }
@@ -943,33 +947,11 @@ struct SessionDetailView: View {
         settledAnswerIds.insert(answerId)
     }
 
-    /// Establish the baseline from the first page that reached this screen.
-    ///
-    /// Called before the page is assigned to `items`, in the same run-loop turn,
-    /// so the rows built from it already know whether they are history: the
-    /// baseline has to exist before the rows do, or the newest answer would be
-    /// drawn once as history and could never be typed.
-    ///
-    /// - Parameter list: the items about to be drawn.
-    private func noteAnswerBaseline(in list: [ConversationItem]) {
-        guard answerBaseline == nil, !list.isEmpty else { return }
-        let newest = list.compactMap(\.seq).max()
-        guard let newest else { return }
-        if Self.previewTypesNewestAnswer,
-           let answer = list.last(where: { item in
-               if case .message(_, .assistant, _, _) = item { return true }
-               return false
-           })?.seq {
-            // Debug-only preview: type the newest answer when the conversation
-            // opens, so the effect can be watched (and captured) without waiting
-            // for a live turn to finish.
-            answerBaseline = max(0, answer - 1)
-        } else {
-            answerBaseline = newest
-        }
-    }
-
     /// Whether the Debug launch argument asked for the effect on open.
+    ///
+    /// The demo replays the newest answer whatever its age -- the point is to
+    /// watch (and capture) the reveal without waiting for a live turn to
+    /// finish -- so the gate skips the freshness check for it.
     private static var previewTypesNewestAnswer: Bool {
         #if DEBUG
         ProcessInfo.processInfo.arguments.contains("-mizarTypewriterDemo")
@@ -1122,7 +1104,6 @@ struct SessionDetailView: View {
         // The phone's own copy first. It is instant, it is there when the
         // network is not, and the fetch below replaces it when it lands.
         if let cached = await model.cachedConversation(for: sessionId), !cached.items.isEmpty {
-            noteAnswerBaseline(in: cached.items)
             items = cached.items
             show(turns: cached.turns ?? [])
             loadingConversation = false
@@ -1157,7 +1138,6 @@ struct SessionDetailView: View {
         // populated screen is what "pull to refresh loses my history" was.
         let fresh = conversationResult
         if !fresh.isEmpty {
-            noteAnswerBaseline(in: fresh)
             items = fresh
             conversationSessionId = sessionId
         }
