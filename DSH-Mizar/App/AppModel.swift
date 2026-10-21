@@ -620,6 +620,12 @@ final class AppModel {
             await self?.subscription.syncEntitlements()
             await self?.subscription.load()
         }
+        // The plan decides which relay the host's tunnel should use. A change
+        // in either direction asks the host to move; the phone then updates the
+        // base URL it stores and, if it is on the relay now, redials.
+        account.onPlanChange = { [weak self] in
+            self?.accountPlanChanged()
+        }
     }
 
     /// Read what this phone already knows and make the island match it.
@@ -1414,8 +1420,12 @@ final class AppModel {
             guard let opened = self.connection else { return }
             let stream = await opened.events()
             for await frame in stream {
-                guard case .event(let name, _) = frame else { continue }
+                guard case .event(let name, let data) = frame else { continue }
                 self.noteHostEvent(name)
+                if name == "relay.changed" {
+                    await self.applyRelayChanged(data)
+                    continue
+                }
                 // Any other event name is for a future build; ignoring it is not
                 // the same as failing on it.
                 guard Self.interactionEvents.contains(name) else { continue }
@@ -1757,12 +1767,114 @@ final class AppModel {
             // reconnect is what moves it back to ready.
             guard await self.reconnect(patient: false) else { return }
             await self.refreshSessions()
+            // The new identity may carry a different plan, and the tunnel's
+            // relay should follow it. Done after the reconnect: `relay.set`
+            // needs a live socket.
+            await self.syncRelayTier()
         }
     }
 
     /// The reconnect a sign-in or sign-out asked for, kept so a second change
     /// cannot stack two redials on one socket.
     private var accountReconnectTask: Task<Void, Never>?
+
+    // MARK: - Relay tier
+
+    /// A plan change may mean the tunnel belongs on the other relay.
+    private func accountPlanChanged() {
+        relaySyncTask?.cancel()
+        relaySyncTask = Task { [weak self] in
+            await self?.syncRelayTier()
+        }
+    }
+
+    /// Ask the host to put its tunnel on the relay this account's tier pays for.
+    ///
+    /// The host redials; this side only says which of the two public relays the
+    /// phone should be reached through. A host from before `relay.set` answers
+    /// `NOT_IMPLEMENTED` and is left alone. The pairing's stored base URL is
+    /// updated from the answer so the next reconnect dials the right relay, and
+    /// a relayed socket is redialled once the host has had time to move.
+    func syncRelayTier() async {
+        guard let connection, phase == .ready else { return }
+        guard let info = try? await connection.call("host.info", as: HostInfo.self),
+              let relay = info.relay
+        else { return }
+        let desired = RelayTier.baseURL(paid: account.isPaid)
+        if RelayTier.canonicalOrigin(relay.url) == desired {
+            // The host is already on the right relay. The phone's stored base
+            // URL can still be stale -- a fallback may have landed on the
+            // alternate -- so repair that from the host's own answer.
+            if let baseURL = relay.baseURL, baseURL != host?.baseURL {
+                await rememberRelayBaseURL(baseURL)
+            }
+            return
+        }
+        do {
+            let result = try await connection.call(
+                "relay.set",
+                payload: .object(["url": .string(desired)]),
+                as: RelaySetResult.self,
+            )
+            let baseURL = result.baseURL
+                ?? host?.baseURL.flatMap { RelayTier.rebased($0, onto: result.url) }
+            if let baseURL { await rememberRelayBaseURL(baseURL) }
+            log.add(.connection, "relay: host moved to \(result.url)")
+            scheduleRelayReconnect(to: baseURL)
+        } catch {
+            // An older host answers NOT_IMPLEMENTED: it predates relay tiers and
+            // is already where its configuration says, so there is nothing to
+            // report. Anything else is a connection failure the next request
+            // will surface; this must not take the screen down.
+            if let failure = error as? MizarError, failure.known == .notImplemented { return }
+            log.add(
+                .connection,
+                "relay: could not move the host to \(desired) — "
+                    + Self.describe(error, authority: desired),
+            )
+        }
+    }
+
+    /// Persist the relay base URL the host reported or promised.
+    private func rememberRelayBaseURL(_ baseURL: String) async {
+        guard let host, host.baseURL != baseURL else { return }
+        let moved = host.moved(toRelay: baseURL)
+        self.host = moved
+        if let index = hosts.firstIndex(where: { $0.hostId == moved.hostId }) { hosts[index] = moved }
+        try? await credentials.save(moved)
+    }
+
+    /// Redial once the host has had time to move its tunnel.
+    ///
+    /// The answer travelled over the tunnel the host is about to replace, so the
+    /// host waits a beat before moving. Dialling exactly the new room avoids
+    /// first trying the relay the host just left.
+    private func scheduleRelayReconnect(to baseURL: String?) {
+        guard let activeEndpoint, case .relay = activeEndpoint, let baseURL else { return }
+        relaySwitchTask?.cancel()
+        relaySwitchTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            guard await self.reconnect(over: .relay(baseURL: baseURL)) else { return }
+            await self.refreshSessions(reconnectingIfNeeded: false)
+            await self.refreshInteractions()
+        }
+    }
+
+    /// Apply a `relay.changed` event another device asked for.
+    private func applyRelayChanged(_ data: JSONValue) async {
+        guard let changed = try? data.decoded(as: HostRelay.self) else { return }
+        let baseURL = changed.baseURL
+            ?? host?.baseURL.flatMap { RelayTier.rebased($0, onto: changed.url) }
+        if let baseURL { await rememberRelayBaseURL(baseURL) }
+        scheduleRelayReconnect(to: baseURL)
+    }
+
+    /// The relay switch or sync in flight, so a second change cannot stack two
+    /// redials on one socket.
+    private var relaySyncTask: Task<Void, Never>?
+    private var relaySwitchTask: Task<Void, Never>?
 
     /// Start a session in a directory.
     ///
@@ -2930,6 +3042,11 @@ final class AppModel {
                 // from the last, and the footer, the entitlement and the next
                 // reconnect all read this.
                 activeEndpoint = route
+                // The alternate relay may be the one that answered while the
+                // stored URL was stale; keep the pairing in step with reality.
+                if case .relay(let baseURL) = route, self.host?.baseURL != baseURL {
+                    await rememberRelayBaseURL(baseURL)
+                }
                 // A reconnect is a new conversation with the same machine, and
                 // the epoch says so. Everything scoped to the old socket -- the
                 // catalogues, the pending set, an answer still on its way --
@@ -2950,6 +3067,10 @@ final class AppModel {
                 // bug: "Try again does nothing" was true on the only screen
                 // where it could be seen.
                 phase = .ready
+                // The account's tier is the phone's fact, not the host's. A
+                // reconnect is the first moment after an offline plan change
+                // that this side can align the tunnel's relay.
+                await syncRelayTier()
                 // The session list is *not* refreshed here. It used to be, and
                 // that call is what closed the deadlock above; every caller
                 // either refreshes for itself or is about to.
@@ -4111,12 +4232,21 @@ final class AppModel {
             "connected to \(welcome.hostName), protocol \(welcome.protocolVersion), over \(Self.routeName(endpoint))",
         )
         self.activeEndpoint = endpoint
+        // A connection that landed on the alternate relay is the repair for a
+        // stale stored URL: remember the one that actually answered before the
+        // next reconnect starts from the old address again.
+        if case .relay(let baseURL) = endpoint, host.baseURL != baseURL {
+            await rememberRelayBaseURL(baseURL)
+        }
         phase = .ready
         await refreshSessions()
         // After the session list, so the first screen is not waiting on a
         // registration the operator never asked for. A round trip, not a
         // dependency: the app works identically whether or not it lands.
         await syncPushRegistration()
+        // The plan may have changed while the app was unpaired or offline; the
+        // first live socket is the first chance to align the tunnel's relay.
+        await syncRelayTier()
         startInteractionPoll()
 
         if let requested = Self.launchSelectedSession {

@@ -113,8 +113,10 @@ struct ConnectionPanel: View {
     ///
     /// A relay's own address is not something anybody can act on -- it is a
     /// string of a hostname -- so a relayed link says which tier of the relay is
-    /// carrying it instead: the free one, or the high-bandwidth one a paid
-    /// account is entitled to. A direct link on the operator's own network says
+    /// carrying it instead. The label follows the relay the socket is actually
+    /// on, not the account's plan: a paid phone whose host has not moved yet is
+    /// still on the free relay, and claiming otherwise is the one thing this
+    /// line exists to avoid. A direct link on the operator's own network says
     /// what it is rather than which address answered: there it is the *kind* of
     /// link that matters, because that is what opened the paid features. A
     /// loopback direct link keeps the address, as it always has -- that is the
@@ -128,8 +130,8 @@ struct ConnectionPanel: View {
         // classification so the two lines cannot disagree.
         if model.isLocalCommunication { return String(localized: "On the local network") }
         switch model.activeEndpoint {
-        case .relay:
-            return model.account.isPaid
+        case .relay(let baseURL):
+            return RelayTier.isPaidRelay(baseURL)
                 ? String(localized: "High-bandwidth server")
                 : String(localized: "Free-tier server")
         case .direct(let authority):

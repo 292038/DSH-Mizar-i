@@ -92,11 +92,20 @@ public struct PairedHost: Codable, Sendable, Equatable {
     /// or the same tailnet, so it is faster and involves nobody else. The relay
     /// is the fallback, and for a host whose network blocks inbound traffic it
     /// is the only one that works.
+    ///
+    /// When the stored relay is one of the two public relays, the other one is
+    /// tried after it with the same room path. That is the repair for a phone
+    /// that was offline while its host moved between tiers: the stored URL leads
+    /// to a room nobody is in, and the alternate is where the tunnel actually
+    /// is. A self-hosted relay has no alternate.
     public var endpoints: [Endpoint] {
         var out: [Endpoint] = []
         if let authority, !authority.isEmpty { out.append(.direct(authority: authority)) }
         if let baseURL, !baseURL.isEmpty, PairingURI.isUsableBaseURL(baseURL) {
             out.append(.relay(baseURL: baseURL))
+            if let alternate = RelayTier.alternate(to: baseURL) {
+                out.append(.relay(baseURL: alternate))
+            }
         }
         return out
     }

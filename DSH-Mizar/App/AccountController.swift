@@ -72,6 +72,14 @@ final class AccountController {
     var onIdentityChange: (@MainActor () -> Void)?
     /// Called after a successful sign-in, so the subscription side can sync.
     var onAuthenticated: (@MainActor () async -> Void)?
+    /// Called when the account's paid state may have changed.
+    ///
+    /// The relay tier follows the plan: a paid account should be on the account
+    /// relay, a free one on the free relay. This is a closure rather than a
+    /// property observation because the move is a network round trip the model
+    /// owns, and the ordering (profile stored first, then the host asked) should
+    /// be explicit.
+    var onPlanChange: (@MainActor () -> Void)?
 
     private let store: any AccountStoring
     private let client: AccountClient
@@ -464,11 +472,13 @@ final class AccountController {
     /// Replace the cached profile with a newer one.
     private func apply(user: AccountUser) {
         guard var session else { return }
+        let wasPaid = session.profile.isPaid
         session.profile = user
         self.session = session
         // Best effort: the profile is cosmetic next to the token, and a failed
         // write here must not invalidate a working session.
         try? store.save(session)
+        if wasPaid != user.isPaid { onPlanChange?() }
     }
 
     /// Forget the session locally.
@@ -478,6 +488,7 @@ final class AccountController {
     ///     sign-out, which needs no explanation.
     ///   - notice: a notice to keep showing.
     private func signOutLocally(reason: String?, notice: AccountNotice?) {
+        let wasPaid = session?.profile.isPaid ?? false
         store.clear()
         session = nil
         customAvatar = nil
@@ -485,6 +496,9 @@ final class AccountController {
         lastError = reason
         phase = .ready
         onIdentityChange?()
+        // A paid computer left on the account relay would strand the free
+        // phones paired with it, so signing out moves the tunnel back.
+        if wasPaid { onPlanChange?() }
     }
 
     // MARK: - Custom avatar

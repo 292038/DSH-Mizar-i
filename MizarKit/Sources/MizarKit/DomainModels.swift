@@ -35,18 +35,61 @@ public struct HostInfo: Decodable, Sendable, Equatable {
     /// addresses it is listening on, and the phone probes those directly.
     public let addresses: [String]?
 
+    /// Where this host's relay tunnel currently points, when the host can move
+    /// between the two public relays.
+    ///
+    /// Optional for the same reason as `addresses`: an older host answers
+    /// without it, and the phone must read "cannot say" rather than "no relay".
+    /// `baseURL` is `nil` until the tunnel has a room.
+    public let relay: HostRelay?
+
     public init(
         hostId: String,
         hostName: String,
         home: String,
         protocolVersion: Int,
         addresses: [String]? = nil,
+        relay: HostRelay? = nil,
     ) {
         self.hostId = hostId
         self.hostName = hostName
         self.home = home
         self.protocolVersion = protocolVersion
         self.addresses = addresses
+        self.relay = relay
+    }
+}
+
+/// Where a host's relay tunnel points, as `host.info` reports it.
+public struct HostRelay: Decodable, Sendable, Equatable {
+    /// The relay origin the host dials.
+    public let url: String
+    /// The room the relay assigned, once connected.
+    public let room: String?
+    /// The base URL a phone should dial (origin plus `/r/<room>`), or `nil`
+    /// before the tunnel has a room.
+    public let baseURL: String?
+
+    public init(url: String, room: String?, baseURL: String?) {
+        self.url = url
+        self.room = room
+        self.baseURL = baseURL
+    }
+}
+
+/// The answer to asking a host to move its tunnel to another relay.
+public struct RelaySetResult: Decodable, Sendable, Equatable {
+    /// The relay origin the host will dial.
+    public let url: String
+    /// The room, unchanged by the move.
+    public let room: String?
+    /// The base URL a phone should dial after the move.
+    public let baseURL: String?
+
+    public init(url: String, room: String?, baseURL: String?) {
+        self.url = url
+        self.room = room
+        self.baseURL = baseURL
     }
 }
 
