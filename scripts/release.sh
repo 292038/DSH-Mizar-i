@@ -55,7 +55,11 @@ version() {
 
 archive() {
   echo "release: archiving $SCHEME for the App Store"
-  xcodebuild archive \
+  # A stale archive from an earlier run would make a failed build look like a
+  # success: the check below would find a directory and report its old version.
+  rm -rf "$ARCHIVE"
+  local log="$CACHE/archive.log"
+  if ! xcodebuild archive \
     -project "$PROJECT" \
     -scheme "$SCHEME" \
     -configuration Release \
@@ -64,8 +68,11 @@ archive() {
     -derivedDataPath "$CACHE/DerivedData" \
     -allowProvisioningUpdates \
     DEVELOPMENT_TEAM="$TEAM_ID" \
-    CODE_SIGN_STYLE=Automatic \
-    | grep -E "error:|warning: .*(provision|sign|entitlement)|ARCHIVE (SUCCEEDED|FAILED)" || true
+    CODE_SIGN_STYLE=Automatic >"$log" 2>&1; then
+    grep -E "error:|ARCHIVE FAILED" "$log" | tail -20 || true
+    die "archive failed — see $log"
+  fi
+  grep -E "warning: .*(provision|sign|entitlement)|ARCHIVE (SUCCEEDED|FAILED)" "$log" || true
   test -d "$ARCHIVE" || die 'archive failed'
   echo "release: $ARCHIVE"
   echo "release: version $(version)"

@@ -129,7 +129,13 @@ struct SessionSidePlane: View {
             // the new size rather than sliding into it.
             planeOffset = -CGFloat(selection.rawValue) * width
         }
-        .onAppear { alignWithDebugLaunchArgument() }
+        .onAppear {
+            // Debug-only: `alignWithDebugLaunchArgument` lives behind `#if
+            // DEBUG`, and a Release build that calls it cannot compile.
+            #if DEBUG
+            alignWithDebugLaunchArgument()
+            #endif
+        }
         .mizarFeedback(.selection, trigger: selection)
         // The plane never paints outside its drawer. On the phone that is
         // already true by occlusion -- the conversation card covers whatever
