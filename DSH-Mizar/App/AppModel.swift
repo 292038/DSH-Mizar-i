@@ -3510,6 +3510,14 @@ final class AppModel {
     /// failure -- puts nothing on the screen for a conversation that exists and
     /// that the host is willing to summarise.
     ///
+    /// A delegated child's page is read through the same call, and the parent
+    /// travels with it. The host does not address a child as a session -- it
+    /// answers `session/agent-busy` ("subagent Sessions require their durable
+    /// parent address") and refuses the read before touching the log -- so a
+    /// request that named only the child's id could never page it at all. The
+    /// lineage is on the row this phone was already given, so it is resolved
+    /// here rather than at each of the three call sites that read a page.
+    ///
     /// - Parameters:
     ///   - sessionId: the session to read.
     ///   - beforeSeq: the log position to page back from, when paging.
@@ -3523,6 +3531,13 @@ final class AppModel {
         afterSeq: SessionMessagesCursor = .unstated,
         maxMessages: Int = 200,
     ) async throws -> SessionMessagesResult {
+        // Only a delegated child has one. A fork carries a parent and is not a
+        // subagent -- it is the operator's own conversation, addressable as a
+        // session like any other, and sending a parent for it would be a claim
+        // about a log that is not a child's.
+        let parentSessionId: String? = sessions
+            .first { $0.sessionId == sessionId && $0.isSubagent }?
+            .parentSessionId
         var ask = maxMessages
         while true {
             var fields: [String: JSONValue] = [
@@ -3531,6 +3546,7 @@ final class AppModel {
                 // asking for more only costs a bigger request.
                 "maxMessages": .number(Double(ask)),
             ]
+            if let parentSessionId { fields["parentSessionId"] = .string(parentSessionId) }
             if let beforeSeq { fields["beforeSeq"] = .number(Double(beforeSeq)) }
             // `.unstated` leaves the key out on purpose: the host may then answer
             // from what it has already delivered to this device.

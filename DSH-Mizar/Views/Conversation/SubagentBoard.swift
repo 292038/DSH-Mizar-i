@@ -12,7 +12,7 @@
 //  Nothing on a row opens anything.
 //
 //  Where the figures come from is the same trio every other screen reads, and
-//  no new protocol is asked for:
+//  no new method is asked for:
 //
 //    - the session **list**, which already carries every child and its
 //      `running` flag -- the app has always received these rows and simply
@@ -20,7 +20,11 @@
 //    - the child's **conversation page**, read once per child into the same
 //      cache the parent's uses, because the log is the only authority on when
 //      a turn began and how it ended -- and so the only authority on "how
-//      long" and "interrupted or finished";
+//      long" and "interrupted or finished". The one thing this page needs that
+//      a conversation screen does not is the child's `parentSessionId`: the
+//      host does not address a delegated child as a session, so the read is
+//      refused with `session/agent-busy` unless the parent comes with it (see
+//      `AppModel.messages`);
 //    - the child's **usage frame**, for the tokens.
 //
 //  The reads are one at a time, per child, and only for the open session's
