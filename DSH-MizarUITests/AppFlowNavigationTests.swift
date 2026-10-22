@@ -28,7 +28,7 @@ final class AppFlowNavigationTests: AppFlowTestBase {
         let row = sessionRow(in: app, titled: "Mock session", in: "demo")
         XCTAssertTrue(expand(demo, revealing: row), "the session never appeared under its workspace")
         row.tap()
-        expect(app.textFields["composer.field"], "the conversation never opened")
+        expect(app.textViews["composer.field"], "the conversation never opened")
         XCTAssertTrue(sidebar(newSession, isOut: false), "the sidebar stayed out over the conversation")
 
         // The toggle brings it back, and a tap on the conversation beside it
@@ -69,7 +69,7 @@ final class AppFlowNavigationTests: AppFlowTestBase {
         let row = sessionRow(in: app, titled: "Mock session", in: "demo")
         XCTAssertTrue(expand(demo, revealing: row), "the session never appeared")
         row.tap()
-        expect(app.textFields["composer.field"], "the conversation never opened")
+        expect(app.textViews["composer.field"], "the conversation never opened")
         Thread.sleep(forTimeInterval: 0.5)
 
         let newSession = app.buttons["sessions.new"]
@@ -385,7 +385,7 @@ final class AppFlowNavigationTests: AppFlowTestBase {
     /// the overlap itself is the whole of the defect and only the host can see it.
     func testASendDuringAReloadDoesNotStartASecondLoad() {
         let app = launch(pending: false, running: false)
-        let field = app.textFields["composer.field"]
+        let field = app.textViews["composer.field"]
         expect(field, "the conversation never opened")
         expect(app.staticTexts["The parser is now two files."], "the conversation never arrived")
 
@@ -450,7 +450,7 @@ final class AppFlowNavigationTests: AppFlowTestBase {
         // assert on the "对话" segmented control; that control is gone, and the
         // placeholder is the localised string nearest the same place on screen.
         XCTAssertEqual(
-            chinese.textFields["composer.field"].value as? String,
+            chinese.textViews["composer.field"].value as? String,
             "给 agent 发消息…",
             "the interface did not follow Chinese",
         )
@@ -472,7 +472,7 @@ final class AppFlowNavigationTests: AppFlowTestBase {
         let englishFailure = english.staticTexts["The turn ended without a response"]
         XCTAssertTrue(reveal(englishFailure, in: english), "the failure card did not translate")
         XCTAssertEqual(
-            english.textFields["composer.field"].value as? String,
+            english.textViews["composer.field"].value as? String,
             "Ask your agent…",
             "the interface did not follow English",
         )
@@ -493,7 +493,7 @@ final class AppFlowNavigationTests: AppFlowTestBase {
         let app = launch()
         let allow = app.buttons["approval.allowOnce"]
         expect(allow, "the pending approval is not docked above the composer")
-        let field = app.textFields["composer.field"]
+        let field = app.textViews["composer.field"]
         expect(field, "the composer is missing")
         // Docked means above the composer, on screen, without a scroll.
         XCTAssertLessThan(allow.frame.maxY, field.frame.minY, "the approval is not above the composer")
@@ -512,7 +512,7 @@ final class AppFlowNavigationTests: AppFlowTestBase {
     /// sidebar always says where the operator is.
     func testTheOpenSessionsWorkspaceIsExpanded() {
         let app = launch(pending: false)
-        expect(app.textFields["composer.field"], "the session never opened")
+        expect(app.textViews["composer.field"], "the session never opened")
         openSidebar(app)
         let row = sessionRow(in: app, titled: "Mock session", in: "demo")
         XCTAssertTrue(row.waitForExistence(timeout: Self.patience), "the open session's workspace stayed folded")
@@ -543,7 +543,7 @@ final class AppFlowNavigationTests: AppFlowTestBase {
         send.tap()
 
         // A conversation opens, and the prompt reaches it.
-        expect(app.textFields["composer.field"], "sending from home did not open a conversation")
+        expect(app.textViews["composer.field"], "sending from home did not open a conversation")
         let sent = app.staticTexts.matching(NSPredicate(format: "label == %@", "start something from the phone")).firstMatch
         XCTAssertTrue(sent.waitForExistence(timeout: Self.patience * 2), "the first prompt never reached the new conversation\nHIERARCHY-START\n\(app.debugDescription)\nHIERARCHY-END")
     }
@@ -591,7 +591,7 @@ final class AppFlowNavigationTests: AppFlowTestBase {
         field.tap()
         field.typeText("start on the chosen model")
         app.buttons["home.send"].tap()
-        expect(app.textFields["composer.field"], "sending from home did not open a conversation")
+        expect(app.textViews["composer.field"], "sending from home did not open a conversation")
 
         let sets = Self.mockModelSets()
         XCTAssertEqual(
@@ -613,7 +613,7 @@ final class AppFlowNavigationTests: AppFlowTestBase {
     /// chosen there is shown in the conversation, with the index put away.
     func testTheTurnIndexOpensByADragAndJumps() {
         let app = launch(pending: false)
-        let field = app.textFields["composer.field"]
+        let field = app.textViews["composer.field"]
         expect(field, "the conversation never opened")
         Thread.sleep(forTimeInterval: 1)
 

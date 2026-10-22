@@ -1,3 +1,18 @@
+/* Official host wallets */
+"balance.title" = "DeepSeek balance";
+"balance.explanation" = "A snapshot of the connected computer’s official DeepSeek account. Separate from Mizar subscription credits. Refresh to check for changes.";
+"balance.paid" = "Recharge wallets";
+"balance.bonus" = "Bonus wallets";
+"balance.top-up" = "Recharge on DeepSeek";
+"balance.top-up-note" = "Opens the official DeepSeek website. Sign in there to recharge; no account credentials are sent from this app.";
+"balance.refresh" = "Refresh balance";
+"balance.loading" = "Checking balance…";
+"balance.disconnected" = "Connect to a computer to check its DeepSeek balance.";
+"balance.unsupported" = "Requires a current dsh-mizar plugin and the official DeepSeek account service on the connected computer.";
+"balance.signed-out" = "Sign in to the official DeepSeek account in DSH on the connected computer, then refresh.";
+"balance.unavailable" = "The account balance is unavailable. The account may have changed or the service could not return a balance. Try refreshing.";
+"balance.failed" = "Could not check the balance. No amount is being shown. Check the connection and try again.";
+
 /* Pairing */
 "Connect to DSH" = "Connect to DSH";
 "Scan the code on your computer" = "Scan the code on your computer";
@@ -471,6 +486,17 @@
 "Install the plugin, then scan" = "Install the plugin, then scan";
 "In DSH's plugin panel, enter dsh-mizar to install the plugin, then restart DSH. When the panel shows a code, come back here and scan it." = "In DSH's plugin panel, enter dsh-mizar to install the plugin, then restart DSH. When the panel shows a code, come back here and scan it.";
 "Once it is installed, there is nothing else to set up." = "Once it is installed, there is nothing else to set up.";
+
+/* Completed turn response toolbar */
+"Copy response" = "Copy response";
+"Response copied" = "Response copied";
+"Branch in a new conversation" = "Branch in a new conversation";
+"Token usage unavailable" = "Token usage unavailable";
+"Time unavailable" = "Time unavailable";
+"Complete turn metadata is unavailable. Refresh or update the computer plugin." = "Complete turn metadata is unavailable. Refresh or update the computer plugin.";
+"This response is followed by tool activity or an error and cannot be branched here." = "This response is followed by tool activity or an error and cannot be branched here.";
+"The conversation was not branched. Try again." = "The conversation was not branched. Try again.";
+"Branching…" = "Branching…";
 
 /* 0.9.5 */
 "Turn this on if you use the app on the same local network; turning it off makes every reconnect faster." = "Turn this on if you use the app on the same local network; turning it off makes every reconnect faster.";

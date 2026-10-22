@@ -16,6 +16,15 @@ import MizarKit
 /// pinned to the bottom where the keyboard expects it.
 struct SessionDetailView: View {
     let sessionId: String
+    /// Internal hosted-test observation seam, nil in production. Delivers the
+    /// same state binding the composer's real expand/collapse control changes.
+    var onComposerBindingAvailable: ((Binding<Bool>) -> Void)? = nil
+    /// Internal read-only hosted-test observation, nil in production; this
+    /// callback cannot bypass the placement reveal gate.
+    var onPlacementChanged: ((InitialPlacement) -> Void)? = nil
+    /// Internal read-only hosted-test geometry, in the conversation coordinate space.
+    var onConversationContentBottomChanged: ((CGFloat) -> Void)? = nil
+    var onComposerFrameChanged: ((CGRect) -> Void)? = nil
 
     @Environment(AppModel.self) private var model
     @Environment(TurnIndex.self) private var turnIndex
@@ -29,10 +38,11 @@ struct SessionDetailView: View {
     @State private var stats: SessionStatsFrame?
     /// The session `stats` was read for.
     ///
-    /// One view draws every session, so `@State` outlives the conversation it
-    /// was filled from. The figures are now deliberately never blanked by a read
+    /// The shell keys this page per session (`.id(sessionId)`), so the state
+    /// belongs to the session it was filled from; this tag is the defence
+    /// behind that. The figures are now deliberately never blanked by a read
     /// that fails -- that is what made them vanish on the way into a session --
-    /// so without this tag a failed read would leave the *previous* session's
+    /// so without the tag a failed read would leave the *previous* session's
     /// title, model and context on screen instead, which is worse than blank.
     @State private var statsSessionId: String?
     @State private var loading = true
@@ -42,8 +52,10 @@ struct SessionDetailView: View {
     @State private var showingPermissionPicker = false
     @State private var items: [ConversationItem] = []
     /// The session `items` and `turns` belong to, for the same reason as
-    /// ``statsSessionId``: one view, many sessions, and a read that returns
-    /// nothing must not be able to throw away what is on screen.
+    /// ``statsSessionId``: the shell keys this page per session, and the tag
+    /// is the defence behind it -- a read that returns nothing must not be
+    /// able to throw away what is on screen, and a page from one session must
+    /// never be drawn under another's grouping.
     @State private var conversationSessionId: String?
     /// The same conversation grouped into turns, when the host gave turn numbers.
     @State private var turns: [ConversationTurn] = []
@@ -59,15 +71,24 @@ struct SessionDetailView: View {
     ///
     /// Once per appearance, not once per load: scrolling to the bottom after a
     /// page of *older* messages arrives would undo the scroll that asked for it.
+    /// Set by the initial placement (see ``InitialPlacement``) once the first
+    /// frame is in position, and read by the composer's corrections as "the
+    /// operator has been put at the newest message at least once".
     @State private var didReachBottom = false
     /// What has been typed, held here because the command button writes to it.
     @State private var draft = ""
     /// Whether the field has the keyboard. Owned here so a tap on the
     /// conversation can put it away.
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
     /// How tall the floating composer is, measured rather than guessed, so the
     /// scroll content reserves exactly the room it covers.
     @State private var composerHeight: CGFloat = 130
+    /// The last resting reservation, not the screen-height expanded composer.
+    /// Until measured, reuse the existing initial composer height.
+    @State private var composerReservedHeight: CGFloat?
+    @State private var collapsedComposerHeight: CGFloat?
+    /// Dock and stack overhead, measured against the shell in one layout pass.
+    @State private var collapsedComposerExtra: CGFloat?
     /// Whether a load of this screen is already running.
     @State private var reloading = false
     /// Whether something asked for a load while one was running.
@@ -80,12 +101,27 @@ struct SessionDetailView: View {
     /// This is the narrower claim: someone tapped the control and it has not
     /// answered yet.
     @State private var refreshing = false
-    /// Bumped when one full load of this screen has finished.
+    /// Where the conversation is on its way to its first position.
     ///
-    /// The scroll is anchored on this rather than on the appearance of content,
-    /// so it lands against what is finally on screen rather than against the
-    /// cached copy the host's answer is about to replace.
-    @State private var loadGeneration = 0
+    /// The page used to reveal the conversation at whatever offset a new
+    /// `ScrollView` starts at -- the top -- and move it to the newest message
+    /// once the load had finished, which is why a session with a cached
+    /// history opened showing its oldest turns and jumped a moment later. The
+    /// placement is now a precondition of display: the message area stays
+    /// gated until the geometry says the newest turn is in view. See
+    /// ``InitialPlacement``.
+    @State private var placement: InitialPlacement = .waitingForContent
+    /// Which round of placement is running, as part of the placement task's
+    /// identity. Bumped when a conversation is committed to a page that has
+    /// not been placed yet -- including one whose first read failed, so a
+    /// late answer still gets its first frame at the bottom.
+    @State private var placementRound = 0
+    /// The signed distance from the newest message: positive when it is still
+    /// below the viewport, negative when the page sits past the end of the
+    /// content. The placement's acceptance test, because a page parked *under*
+    /// the content is the one failure a clamped distance reads as "at the
+    /// bottom" -- and it is the shape the black conversation used to open in.
+    @State private var placementGeometry: ConversationPlacementGeometry?
     /// Bumped when something was just sent, to move the view to it.
     @State private var newMessageArrived = 0
     /// Messages sent and not yet read back from the host.
@@ -141,11 +177,11 @@ struct SessionDetailView: View {
 
     /// The figures for the session on screen, or nothing.
     ///
-    /// The screen is one view for every session: what it has read for one is
-    /// still in `@State` when another is opened. Tagging rather than clearing is
-    /// what makes both directions right -- a read that fails for the session
-    /// already on screen keeps what it has, and a session that has not answered
-    /// yet shows nothing rather than somebody else's model name.
+    /// The shell keys this page per session (`.id(sessionId)`), so the state
+    /// belongs to the session it was filled from; the tag is the belt to that
+    /// braces. A read that returns nothing must not be able to draw another
+    /// session's model name, and a session that has not answered yet shows
+    /// nothing rather than somebody else's.
     private var shownStats: SessionStatsFrame? {
         statsSessionId == sessionId ? stats : nil
     }
@@ -164,244 +200,72 @@ struct SessionDetailView: View {
     static let space = "session.detail"
     /// The very end of the page, below the room left for the composer.
     static let endAnchor = "session.end"
-    /// The very top of the page.
+
+    /// How far from the newest message the placement accepts as "at the
+    /// bottom", in points. A hair rather than zero: the composer's reserved
+    /// room and rounding at non-integral display scales leave a fraction of a
+    /// point between the anchor and the end of the content.
+    static let placementTolerance: CGFloat = 4
+    /// How many re-aims the placement may spend before offering a retry.
+    /// This bounds active correction, not acceptance: a later geometry update
+    /// can still reveal the conversation after these attempts are exhausted.
+    static let placementAttempts = 32
+    /// The spacing between those re-aims, in milliseconds.
+    static let placementAttemptSpacing = 32
+
+    /// Whether the message area may be shown and touched: the initial
+    /// placement has settled, or there was nothing to settle.
     ///
-    /// The screen is one view for every session, so the scroll view is reused:
-    /// the offset the operator left session A at is still in force when
-    /// session B is opened, and if B's conversation is shorter than that
-    /// offset, the page sits in the empty space *below* B's content -- a black
-    /// conversation with nothing in it, until a swipe pushes the view back
-    /// over the content. A known top to aim at puts the page somewhere
-    /// definite before the new conversation arrives; the load then takes it
-    /// down to the newest message.
-    static let topAnchor = "session.top"
+    /// The gate is the message area alone -- the title, the composer, the
+    /// sidebar and the refresh entry answer as usual while a page is being
+    /// placed. Freezing the whole app to hide a first-frame flicker would be
+    /// a worse trade than the flicker.
+    private var placementRevealed: Bool {
+        placement.isRevealed
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    // The top of the page, for a session switch to aim at. See
-                    // ``topAnchor``.
-                    Color.clear
-                        .frame(height: 1)
-                        .id(Self.topAnchor)
-
-                    conversation
-
-                    // What was just sent, drawn where it will land before the
-                    // host has recorded it. Hidden from the accessibility tree:
-                    // the conversation's own copy, read back from the host, is
-                    // the proof the message arrived -- this is only the promise.
-                    ForEach(outgoing) { message in
-                        PendingBubble(text: message.text, visible: message.landed)
-                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frame in
-                                land(message.id, at: frame)
-                            }
-                            .padding(.top, 14)
-                            .transition(.opacity)
-                    }
-
-                    // Room for the floating composer and the dock, as content
-                    // rather than as a margin: a margin is ignored when the
-                    // conversation is shorter than the screen, and the newest
-                    // turn sat under the dock on an iPad. The anchor is the true
-                    // end of the page -- below the stand-ins for anything sent.
-                    //
-                    // An expanded composer is the size of the screen; reserving
-                    // that as content would park the conversation a page above
-                    // its own end, so the reservation stays at the resting
-                    // height while the composer is open. It also stays there
-                    // while the composer is *becoming* open or closed: at the
-                    // start of a collapse the measured height is still a
-                    // screenful, and reserving it would grow the page by a
-                    // screen and then shrink it back over the animation --
-                    // the bounce that made a collapse feel broken.
-                    Color.clear
-                        .frame(height: composerExpanded || composerAnimating ? 110 : composerHeight + 16)
-                        .id(Self.endAnchor)
+            // The gated scroll view and the furniture are two views on
+            // purpose. The gate quiets the message area with
+            // `allowsHitTesting`, and a modifier applied *before* an overlay
+            // covers the overlay with it -- the composer would stop answering
+            // while a page is being placed, which is the one thing the gate
+            // must not do.
+            conversationScroll(proxy: proxy)
+                .task(id: PlacementKey(sessionId: sessionId, round: placementRound)) {
+                    await placeInitially(proxy: proxy)
                 }
-                .padding(.horizontal, 18)
-                .padding(.top, 8)
-            }
-            // A conversation is read from the bottom, and it stays pinned there
-            // as the composer and the dock change height.
-            //
-            // Only for size changes. An unconditional `defaultScrollAnchor(.bottom)`
-            // anchors on the *first* layout too, and that is the race behind a
-            // black conversation: the rows arrive after the anchor is applied,
-            // and the scroll view is left parked in the empty space under the
-            // page. Scrolling by hand pushes it back into the content and the
-            // problem never returns -- so the position is also corrected
-            // whenever the geometry says it is past the end (below).
-            //
-            // Suspended while a jump plays. A long jump swaps the whole list
-            // for one staged turn and back, and each swap is a size change:
-            // with the anchor live, every swap yanks the page to the bottom,
-            // the jump's own `scrollTo` pulls it back to the turn, and the two
-            // take turns for as long as the rows are settling -- the shudder
-            // seen at the end of a jump to the newest turn.
-            //
-            // Also suspended while the composer grows or shrinks. Collapsing
-            // the expanded composer hands back a screenful of height: every
-            // intermediate size change fired the bottom anchor as an instant
-            // jump while the composer's own animation was still easing, and
-            // the instant jumps and the easing fought the whole way down --
-            // the shudder that followed every collapse.
-            .defaultScrollAnchor(jumping || composerAnimating ? nil : .bottom, for: .sizeChanges)
-            // Dragging the conversation puts the keyboard away, which is what
-            // every messaging app does and what a thumb already expects.
-            .scrollDismissesKeyboard(.interactively)
-            // A long jump dips the page rather than travelling it. Applied to
-            // the scroll view and not to the screen, so the composer and the
-            // rail stay where they are while the conversation moves under
-            // them: what is travelling is the page, not the furniture.
-            .opacity(jumpFade)
-            .offset(y: jumpShift)
-            .allowsHitTesting(!jumping)
-            .scrollEdgeEffectStyle(.soft, for: .bottom)
-            .refreshable { await reload() }
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                let distance = geometry.contentSize.height - geometry.visibleRect.maxY
-                return distance > max(320, geometry.containerSize.height * 0.8)
-            } action: { _, far in
-                withMizarAnimation(.mizarBouncy) {
-                    farFromBottom = far
-                    if !far { unseen = 0 }
+                // The composer floats over the conversation instead of sitting under
+                // it. A bar in its own row clips the message behind it at a hard
+                // edge; floating, the content runs underneath and reads through the
+                // glass.
+                .overlay(alignment: .bottom) {
+                    bottomStack(proxy: proxy)
                 }
-            }
-            // …and the mirror case: past the end of the content rather than
-            // short of it. That is where the first layout sometimes parks the
-            // page, and what a few swipes by hand fixed.
-            //
-            // The value watched is the overshoot itself, not a Bool. A Bool
-            // fires its action only when it flips, and the failing sequence
-            // never flips it: enter a session, land past the end while the
-            // rows are still being read (the guard below refuses to run on an
-            // empty page), the rows arrive, and the page is still past the
-            // end -- `true` then, `true` now, no fire, black screen until a
-            // swipe. Watching the distance means the rows arriving *is* a
-            // change, and the correction runs the moment there is content to
-            // correct against. A hand cannot scroll past the end -- the scroll
-            // view bounces back -- so repeated fires here are always the
-            // layout case, and an instant `scrollTo` to where the page already
-            // is costs nothing.
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.visibleRect.minY - geometry.contentSize.height
-            } action: { _, overshoot in
-                // A jump owns the position until it lands: its staged turn is
-                // deliberately a short page, which reads as past the end, and
-                // correcting then is a second scroll fighting the first.
-                guard overshoot > 2, !jumping, !shownItems.isEmpty else { return }
-                reachBottomNow(proxy)
-            }
-            // How far the operator is from the newest message, kept current so
-            // the way-back button can choose between a scroll and a journey.
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentSize.height - geometry.visibleRect.maxY
-            } action: { _, distance in
-                distanceFromBottom = max(0, distance)
-            }
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.containerSize.height
-            } action: { _, height in
-                scrollViewportHeight = height
-            }
-            .onChange(of: loadGeneration) { _, _ in
-                // Anchored when the load has *finished*, not when the first
-                // content appears: a cached conversation is replaced a moment
-                // later by the host's, and anchoring on the first parks the
-                // scroll view against rows that are about to be swapped.
-                reachBottom(proxy)
-            }
-            .onChange(of: sessionId) { _, _ in
-                // A different conversation: the offset the last one was left
-                // at means nothing here, and if it is larger than this
-                // conversation is long, the page opens in the empty space
-                // below it -- black, until a swipe. Put it at the top first,
-                // where it is certain to be; the load takes it from there to
-                // the newest message.
-                proxy.scrollTo(Self.topAnchor, anchor: .top)
-            }
-            .onChange(of: newMessageArrived) { _, _ in
-                // A jump owns the position until it lands; a send mid-jump is
-                // picked up by the jump's own final aim instead.
-                guard !jumping else { return }
-                Task { @MainActor in
-                    await Task.yield()
-                    withMizarAnimation(.mizarSmooth) {
-                        proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+                // On an iPad with the index column put away, the turns stay at the
+                // edge as a rail to scrub.
+                .overlay(alignment: .trailing) {
+                    if sizeClass == .regular, !shell.indexPinnedVisible {
+                        TurnRail()
+                            .padding(.vertical, 90)
+                            .padding(.bottom, composerHeight)
+                            .padding(.trailing, 6)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
                 }
-            }
-            .onChange(of: composerHeight) { _, _ in
-                // The dock arriving or the field growing is the bottom moving
-                // up; a reader who was at the bottom stays at it.
-                guard !jumping, !composerAnimating, !farFromBottom, didReachBottom else { return }
-                withMizarAnimation(.mizarSmooth) {
-                    proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+                .animation(.mizarSmooth, value: shell.indexPinnedVisible)
+                .overlay(alignment: .topLeading) {
+                    if let flight {
+                        FlightGhost(flight: flight)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
                 }
-            }
-            .onChange(of: composerExpanded) { _, expanded in
-                // While the composer trades places with its expanded self the
-                // bottom corrections stand down (see `defaultScrollAnchor`);
-                // when the move has played out, a reader who was at the bottom
-                // is put back at it once, exactly.
-                composerAnimating = true
-                Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(600))
-                    composerAnimating = false
-                    guard !expanded, !jumping, !farFromBottom, didReachBottom else { return }
-                    proxy.scrollTo(Self.endAnchor, anchor: .bottom)
-                }
-            }
-            .onChange(of: turnIndex.jumpCount) { _, _ in
-                // A turn chosen in the index: go there, then let it glow once
-                // so the eye finds it.
-                guard turnIndex.sessionId == sessionId, let target = turnIndex.jumpTarget else { return }
-                Task { await jump(to: target, proxy: proxy) }
-            }
-            .onChange(of: shownItems.count) { old, new in
-                // Something new arrived below while the operator was reading
-                // further up: count it on the way-back button.
-                if farFromBottom, new > old, old > 0 { unseen += new - old }
-            }
-            // Tapping the conversation puts the keyboard away. On a tap catcher
-            // behind the content, not a gesture on the scroll view: as a
-            // simultaneous gesture on the container it swallowed taps meant for
-            // the controls drawn on top of it.
-            .background {
-                Color.clear
-                    .contentShape(.rect)
-                    .onTapGesture { composerFocused = false }
-            }
-            // The composer floats over the conversation instead of sitting under
-            // it. A bar in its own row clips the message behind it at a hard
-            // edge; floating, the content runs underneath and reads through the
-            // glass.
-            .overlay(alignment: .bottom) {
-                bottomStack(proxy: proxy)
-            }
-            // On an iPad with the index column put away, the turns stay at the
-            // edge as a rail to scrub.
-            .overlay(alignment: .trailing) {
-                if sizeClass == .regular, !shell.indexPinnedVisible {
-                    TurnRail()
-                        .padding(.vertical, 90)
-                        .padding(.bottom, composerHeight)
-                        .padding(.trailing, 6)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
-            }
-            .animation(.mizarSmooth, value: shell.indexPinnedVisible)
-            .overlay(alignment: .topLeading) {
-                if let flight {
-                    FlightGhost(flight: flight)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                }
-            }
         }
         .coordinateSpace(.named(Self.space))
+        .onAppear { onComposerBindingAvailable?($composerExpanded) }
+        .onChange(of: placement, initial: true) { _, value in onPlacementChanged?(value) }
         .navigationTitle(shownStats?.title ?? String(localized: "Session"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -531,31 +395,293 @@ struct SessionDetailView: View {
         }
     }
 
+    /// The conversation's scroll view, gated until its first position is known.
+    ///
+    /// The gate is opacity, hit-testing and the accessibility tree together,
+    /// and nothing is removed: the layout stays in the tree because there has
+    /// to be something laid out before there is a position to place, and a
+    /// lightweight placeholder stands in for what is being placed. The reveal
+    /// is a change of one flag, so the first frame an operator can read is the
+    /// one the geometry has already accepted.
+    private func conversationScroll(proxy: ScrollViewProxy) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                conversation
+
+                // What was just sent, drawn where it will land before the
+                // host has recorded it. Hidden from the accessibility tree:
+                // the conversation's own copy, read back from the host, is
+                // the proof the message arrived -- this is only the promise.
+                ForEach(outgoing) { message in
+                    PendingBubble(text: message.text, visible: message.landed)
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frame in
+                            land(message.id, at: frame)
+                        }
+                        .padding(.top, 14)
+                        .transition(.opacity)
+                }
+
+                // Room for the floating composer and the dock, as content
+                // rather than as a margin: a margin is ignored when the
+                // conversation is shorter than the screen, and the newest
+                // turn sat under the dock on an iPad. The anchor is the true
+                // end of the page -- below the stand-ins for anything sent.
+                //
+                // An expanded composer is the size of the screen; reserving
+                // that as content would park the conversation a page above
+                // its own end, so the reservation stays at the resting
+                // height while the composer is open. It also stays there
+                // while the composer is *becoming* open or closed: at the
+                // start of a collapse the measured height is still a
+                // screenful, and reserving it would grow the page by a
+                // screen and then shrink it back over the animation --
+                // the bounce that made a collapse feel broken.
+                Color.clear
+                    .frame(height: (composerReservedHeight ?? composerHeight) + 16)
+                    .id(Self.endAnchor)
+                    .onGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.frame(in: .named(Self.space)).minY
+                    } action: { bottom in
+                        onConversationContentBottomChanged?(bottom)
+                    }
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 8)
+        }
+        // A conversation is read from the bottom, and it stays pinned there
+        // as the composer and the dock change height.
+        //
+        // Two roles, answering to two different moments. `.initialOffset` is
+        // the first frame's intent: a cached page is often laid out before
+        // anything has *changed* size -- which is exactly why the page used
+        // to open at the top and jump a moment later, since the `.sizeChanges`
+        // role never fired for it. `.sizeChanges` then keeps the page at the
+        // bottom as the composer, the dock and the rows settle their heights.
+        //
+        // Neither role is trusted alone, and that is the lesson of the black
+        // conversation this screen once opened with: an anchor applied against
+        // content that had not arrived left the scroll view parked in the
+        // empty space under the page. The initial placement is what makes the
+        // anchor safe to use -- the message area is gated until the geometry
+        // says the newest turn is in view, so a first layout that lands wrong
+        // is corrected rather than shown, and the overshoot correction below
+        // stays live as the backstop.
+        //
+        // Suspended while a jump plays. A long jump swaps the whole list
+        // for one staged turn and back, and each swap is a size change:
+        // with the anchor live, every swap yanks the page to the bottom,
+        // the jump's own `scrollTo` pulls it back to the turn, and the two
+        // take turns for as long as the rows are settling -- the shudder
+        // seen at the end of a jump to the newest turn.
+        //
+        // Also suspended while the composer grows or shrinks. Collapsing
+        // the expanded composer hands back a screenful of height: every
+        // intermediate size change fired the bottom anchor as an instant
+        // jump while the composer's own animation was still easing, and
+        // the instant jumps and the easing fought the whole way down --
+        // the shudder that followed every collapse.
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .defaultScrollAnchor(jumping || composerAnimating ? nil : .bottom, for: .sizeChanges)
+        // Dragging the conversation puts the keyboard away, which is what
+        // every messaging app does and what a thumb already expects.
+        .scrollDismissesKeyboard(.interactively)
+        // A long jump dips the page rather than travelling it. Applied to
+        // the scroll view and not to the screen, so the composer and the
+        // rail stay where they are while the conversation moves under
+        // them: what is travelling is the page, not the furniture.
+        .opacity(placementRevealed ? jumpFade : 0)
+        .offset(y: jumpShift)
+        .allowsHitTesting(placementRevealed && !jumping)
+        .accessibilityHidden(!placementRevealed)
+        .scrollEdgeEffectStyle(.soft, for: .bottom)
+        .refreshable { await reload() }
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            let distance = geometry.contentSize.height - (geometry.visibleRect.maxY - geometry.contentInsets.bottom)
+            return distance > max(320, geometry.containerSize.height * 0.8)
+        } action: { _, far in
+            withMizarAnimation(.mizarBouncy) {
+                farFromBottom = far
+                if !far { unseen = 0 }
+            }
+        }
+        // …and the mirror case: past the end of the content rather than
+        // short of it. That is where the first layout sometimes parks the
+        // page, and what a few swipes by hand fixed.
+        //
+        // Initial placement owns the hidden page and has a bounded correction
+        // budget. Once revealed, correct only on entering an overshoot, not on
+        // every changing offset: a failed correction must not scroll forever.
+        // Insets belong to the raw visible rect, not to conversation content.
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            geometry.visibleRect.minY + geometry.contentInsets.top - geometry.contentSize.height > 2
+        } action: { _, overshoot in
+            // A jump owns the position until it lands: its staged turn is
+            // deliberately a short page, which reads as past the end, and
+            // correcting then is a second scroll fighting the first.
+            guard overshoot, placement == .ready, !jumping, !composerAnimating, !shownItems.isEmpty else { return }
+            reachBottomNow(proxy)
+        }
+        // How far the operator is from the newest message, kept current so
+        // the way-back button can choose between a scroll and a journey.
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentSize.height - (geometry.visibleRect.maxY - geometry.contentInsets.bottom)
+        } action: { _, distance in
+            distanceFromBottom = max(0, distance)
+        }
+        // The placement's acceptance test: the same distance, kept signed.
+        // Positive when the newest message is still below the viewport,
+        // negative when the page sits past the end of the content -- the one
+        // shape the clamped distance above reports as "at the bottom", and
+        // the shape the black conversation used to open in.
+        .onScrollGeometryChange(for: ConversationPlacementGeometry.self) { geometry in
+            ConversationPlacementGeometry(
+                contentHeight: geometry.contentSize.height,
+                viewportHeight: geometry.containerSize.height,
+                visibleMinY: geometry.visibleRect.minY,
+                visibleMaxY: geometry.visibleRect.maxY,
+                topInset: geometry.contentInsets.top,
+                bottomInset: geometry.contentInsets.bottom
+            )
+        } action: { _, geometry in
+            placementGeometry = geometry
+            // A late success is still valid after the bounded re-aim budget.
+            // Accept it without starting another scroll or network read.
+            finishInitialPlacement()
+        }
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.containerSize.height
+        } action: { _, height in
+            scrollViewportHeight = height
+        }
+        .onChange(of: newMessageArrived) { _, _ in
+            // A jump owns the position until it lands; a send mid-jump is
+            // picked up by the jump's own final aim instead.
+            guard !jumping else { return }
+            Task { @MainActor in
+                await Task.yield()
+                guard !Task.isCancelled, placementRevealed else { return }
+                withMizarAnimation(.mizarSmooth) {
+                    proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+                }
+            }
+        }
+        .onChange(of: composerHeight) { _, _ in
+            // The dock arriving or the field growing is the bottom moving
+            // up; a reader who was at the bottom stays at it.
+            guard !jumping, !composerAnimating, !farFromBottom, didReachBottom else { return }
+            withMizarAnimation(.mizarSmooth) {
+                proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+            }
+        }
+        .onChange(of: composerExpanded) { _, expanded in
+            // While the composer trades places with its expanded self the
+            // bottom corrections stand down (see `defaultScrollAnchor`);
+            // when the move has played out, a reader who was at the bottom
+            // is put back at it once, exactly.
+            composerAnimating = true
+            Task { @MainActor in
+                do {
+                    try await Task.sleep(for: .milliseconds(600))
+                } catch { return }
+                guard !Task.isCancelled else { return }
+                composerAnimating = false
+                guard !expanded, !jumping, !farFromBottom, didReachBottom else { return }
+                proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+            }
+        }
+        .onChange(of: turnIndex.jumpCount) { _, _ in
+            // A turn chosen in the index: go there, then let it glow once
+            // so the eye finds it.
+            guard turnIndex.sessionId == sessionId, let target = turnIndex.jumpTarget else { return }
+            Task { await jump(to: target, proxy: proxy) }
+        }
+        .onChange(of: shownItems.count) { old, new in
+            // Something new arrived below while the operator was reading
+            // further up: count it on the way-back button. Not while the
+            // initial placement is running -- before it has settled, "below
+            // the viewport" is where the page is by construction, not a
+            // message that arrived while somebody was reading.
+            if farFromBottom, placementRevealed, new > old, old > 0 { unseen += new - old }
+        }
+        // Tapping the conversation puts the keyboard away. On a tap catcher
+        // behind the content, not a gesture on the scroll view: as a
+        // simultaneous gesture on the container it swallowed taps meant for
+        // the controls drawn on top of it.
+        .background {
+            Color.clear
+                .contentShape(.rect)
+                .onTapGesture { composerFocused = false }
+        }
+        .overlay {
+            if !placementRevealed {
+                placementPlaceholder
+            }
+        }
+    }
+
+    /// What the message area shows while the initial placement runs.
+    ///
+    /// The conversation stays laid out underneath. Positioning failure offers
+    /// a local retry, separately from the network failure state in the log.
+    @ViewBuilder
+    private var placementPlaceholder: some View {
+        if placement == .positioningFailed {
+            ContentUnavailableView {
+                Label("Could not position the conversation", systemImage: "arrow.up.and.down")
+            } description: {
+                Text("Your messages are loaded. Try showing the latest message again.")
+            } actions: {
+                Button("Retry") {
+                    placementRound += 1
+                    placement = .placing(generation: placementRound)
+                }
+                .accessibilityIdentifier("session.placement.retry")
+            }
+            .accessibilityIdentifier("session.placement.failed")
+        } else {
+            ProgressView()
+                .controlSize(.regular)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityHidden(true)
+        }
+    }
+
     /// The conversation itself.
     ///
     /// A property rather than an expression inline in `body`: the view takes
     /// enough parameters and closures that naming it keeps the body's type
     /// checker inside its budget.
     private var conversation: some View {
-        ConversationView(
+        // The older-page row asks by itself while it is on screen. Before the
+        // initial placement has settled there is no such thing as "on screen"
+        // -- the page sits at the top by construction until it is placed --
+        // so the question is not asked until the placement says where the
+        // conversation starts. `nil` is the existing way to say "could not be
+        // asked right now", and the row is not drawn at all.
+        let canReadHistory = placement == .ready || placement == .navigating
+        let onLoadOlder: (() async -> Int?)? = canReadHistory ? {
+            guard !Task.isCancelled, placement == .ready || placement == .navigating else { return nil }
+            let arrived = await model.loadOlder(sessionId: sessionId)
+            guard !Task.isCancelled else { return nil }
+            // Re-read what is on screen; the page was folded into the
+            // cache, and the cache is what the screen draws from after a
+            // successful fetch.
+            if let arrived, arrived > 0,
+               let cached = await model.cachedConversation(for: sessionId) {
+                guard !Task.isCancelled else { return nil }
+                items = cached.items
+                show(turns: cached.turns ?? [])
+            }
+            return arrived
+        } : nil
+        return ConversationView(
             sessionId: sessionId,
             items: shownItems,
             turns: shownTurns,
             stagedTurn: stagedTurn,
             loading: loadingConversation,
             failure: shownItems.isEmpty ? model.conversationError : nil,
-            onLoadOlder: {
-                let arrived = await model.loadOlder(sessionId: sessionId)
-                // Re-read what is on screen; the page was folded into the
-                // cache, and the cache is what the screen draws from after a
-                // successful fetch.
-                if let arrived, arrived > 0,
-                   let cached = await model.cachedConversation(for: sessionId) {
-                    items = cached.items
-                    show(turns: cached.turns ?? [])
-                }
-                return arrived
-            },
+            onLoadOlder: onLoadOlder,
             typingAnswerId: typingAnswerId,
             onAnswerTypingStarted: noteAnswerTypingStarted,
         )
@@ -569,8 +695,11 @@ struct SessionDetailView: View {
                 // The way back is hidden while a jump plays -- the conversation
                 // is already on its way somewhere -- and while the composer is
                 // expanded or moving between its two sizes, when there is no
-                // conversation in view to return to.
-                if farFromBottom, !jumping, !composerExpanded, !composerAnimating {
+                // conversation in view to return to. Also hidden while the
+                // initial placement runs: the page is at the top by
+                // construction until it is placed, and "far from bottom" then
+                // describes the placement, not the operator.
+                if placementRevealed, farFromBottom, !jumping, !composerExpanded, !composerAnimating {
                     JumpToLatest(unseen: unseen) {
                         returnToLatest(proxy: proxy)
                     }
@@ -602,13 +731,53 @@ struct SessionDetailView: View {
                         onWillSend: { text in launch(text) },
                         onSent: { sent in await refreshAfterSend(sent) },
                         onSendFailed: { text in withdraw(text) },
+                        onCollapsedHeightChanged: { height in
+                            collapsedComposerHeight = height
+                            if let extra = collapsedComposerExtra {
+                                composerReservedHeight = height + extra
+                            }
+                        },
                     )
                     // Expanded, the composer fills the overlay up to just under
                     // the title; at rest it wraps its content.
                     .frame(maxHeight: composerExpanded ? .infinity : nil)
                 }
+                .overlayPreferenceValue(ComposerShellBoundsKey.self) { shellBounds in
+                    GeometryReader { stack in
+                        Color.clear
+                            .onGeometryChange(for: CGFloat?.self) { _ in
+                                guard !composerExpanded, !composerAnimating,
+                                      let shell = shellBounds.shell,
+                                      let chrome = shellBounds.chrome,
+                                      let fieldHeight = shellBounds.fieldHeight,
+                                      let insets = shellBounds.insets else { return nil }
+                                let shellHeight = stack[shell].height
+                                let target = fieldHeight + stack[chrome].height + insets
+                                guard target.isFinite, target > 0, shellHeight.isFinite,
+                                      abs(shellHeight - target) <= 0.5 else { return nil }
+                                let extra = stack.size.height - shellHeight
+                                return extra.isFinite && extra >= 0 ? extra : nil
+                            } action: { extra in
+                                guard !composerExpanded, !composerAnimating, let extra else { return }
+                                collapsedComposerExtra = extra
+                                if let height = collapsedComposerHeight {
+                                    composerReservedHeight = height + extra
+                                }
+                            }
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                }
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    if !composerExpanded && !composerAnimating && collapsedComposerHeight == nil {
+                        composerReservedHeight = height
+                    }
                     composerHeight = height
+                }
+                .onGeometryChange(for: CGRect.self) { geometry in
+                    geometry.frame(in: .named(Self.space))
+                } action: { frame in
+                    onComposerFrameChanged?(frame)
                 }
             }
         }
@@ -780,31 +949,95 @@ struct SessionDetailView: View {
         sizeClass == .regular ? shell.indexPinnedVisible : shell.trailingOpen
     }
 
-    /// Move the conversation to its newest message, once per appearance.
+    // MARK: - The initial placement
+
+    /// Start the initial placement, if this page has not been placed yet.
     ///
-    /// One shot rather than on every growth of the list: a page of *older*
-    /// messages grows it too, and jumping to the bottom then would undo the very
-    /// scroll that asked for them.
+    /// Called the moment a conversation is committed to the page -- the cached
+    /// copy first, the host's answer when it lands. The first of the two is
+    /// what the operator's first frame is drawn from, and the placement is
+    /// what makes that frame the bottom of the conversation rather than the
+    /// top of it.
     ///
-    /// - Parameter proxy: the scroll view to move.
-    private func reachBottom(_ proxy: ScrollViewProxy) {
-        guard !didReachBottom, !shownItems.isEmpty else { return }
-        didReachBottom = true
-        reachBottomNow(proxy)
-        // The first scroll lands while the lazy rows are still settling their
-        // heights; later ones after a beat are what put the page against the
-        // bottom rather than beside it. Without them, a conversation whose
-        // rows are still growing can be left a screen short of the newest
-        // turn -- and a long conversation's rows take longer than one beat to
-        // be built at all, so the anchor the scrolls aim at may not exist yet
-        // on the first attempt.
-        Task { @MainActor in
-            for delay in [180, 600] {
-                try? await Task.sleep(for: .milliseconds(delay))
-                guard didReachBottom else { return }
+    /// A page whose first read failed is re-armed rather than left settled: a
+    /// late answer deserves the same first frame the first one would have had.
+    private func beginInitialPlacementIfNeeded() {
+        let nextRound = placementRound + 1
+        if placement.beginIfNeeded(generation: nextRound) {
+            placementRound = nextRound
+        }
+    }
+
+    /// Settle a page nothing was ever committed to.
+    ///
+    /// An empty session and a first read that failed are both answers: the
+    /// content *is* the empty state or the failure card, and gating it would
+    /// hold a spinner over a screen that has already replied. Called from
+    /// `load()` when the read answered with nothing, and from `reload()` once
+    /// it has run out of attempts; a retry that lands content re-arms the
+    /// placement instead of settling.
+    private func settleUnplacedWithoutContent() {
+        guard placement == .waitingForContent else { return }
+        placement = model.conversationError == nil ? .empty : .failed
+    }
+
+    /// Put the conversation at its newest message before it is shown, and
+    /// reveal it once the geometry says it is there.
+    ///
+    /// The task's identity carries the round, so a conversation committed
+    /// while an earlier placement was still running takes over cleanly, and a
+    /// page going away cancels the correction rather than leaving it to
+    /// scroll a view that is gone. Re-aims have a finite budget, but acceptance
+    /// stays live in the geometry callback after that budget expires. Slower
+    /// layout must not permanently hide a successfully positioned conversation.
+    ///
+    /// - Parameter proxy: the conversation's scroll view.
+    private func placeInitially(proxy: ScrollViewProxy) async {
+        // Only a committed conversation has a bottom to place against. The
+        // empty and failed terminals reveal at commit; there is nothing here
+        // for them to do.
+        guard !Task.isCancelled, case .placing(let generation) = placement, !shownItems.isEmpty else { return }
+        // One turn of the runloop is not enough: a row exists after the
+        // runloop has taken the update, and a scroll asked for before that has
+        // nothing to place against.
+        await settleLayout()
+        guard !Task.isCancelled, placement == .placing(generation: generation) else { return }
+
+        // The anchors have the first frame's intent; this aim is the fine-tune
+        // for rows that settle their heights after it, and it must not inherit
+        // an animation from whatever transaction is running -- the sidebar
+        // closing is the one that used to carry the initial position.
+        var transaction = Transaction()
+        transaction.animation = nil
+        transaction.disablesAnimations = true
+        for _ in 0..<Self.placementAttempts {
+            withTransaction(transaction) {
                 proxy.scrollTo(Self.endAnchor, anchor: .bottom)
             }
+            // A sleep that came back nil is a cancellation: the session
+            // changed, or the page is going away. Stop, rather than scrolling
+            // a view nobody is waiting on.
+            guard (try? await Task.sleep(for: .milliseconds(Self.placementAttemptSpacing))) != nil else { return }
+            guard !Task.isCancelled, placement == .placing(generation: generation) else { return }
+            // Every aim, including the last, gets a layout interval before
+            // being judged. Hidden content cannot be dragged away by a reader.
+            guard placementGeometry?.isAtBottom(tolerance: Self.placementTolerance) == true else { continue }
+            finishInitialPlacement()
+            return
         }
+        // Do not reveal an unverified position. Keep a stable, actionable
+        // placeholder; retrying positioning does not launch another network read.
+        guard !Task.isCancelled, placement == .placing(generation: generation) else { return }
+        placement = .positioningFailed
+    }
+
+    /// Reveal the placed conversation, once.
+    private func finishInitialPlacement() {
+        guard !Task.isCancelled, !shownItems.isEmpty,
+              placement.finishIfPositioned(placementGeometry, tolerance: Self.placementTolerance) else { return }
+        // The one-shot claim the composer's corrections read: the placement
+        // *is* the appearance's jump to the newest message.
+        didReachBottom = true
     }
 
     /// Scroll to the end now, without the one-shot guard.
@@ -817,6 +1050,7 @@ struct SessionDetailView: View {
             // One turn of the runloop, so the lazy stack has laid the rows out
             // and there is something to scroll to.
             await Task.yield()
+            guard !Task.isCancelled, placement == .ready, !jumping, !composerAnimating else { return }
             proxy.scrollTo(Self.endAnchor, anchor: .bottom)
         }
     }
@@ -850,6 +1084,10 @@ struct SessionDetailView: View {
         // just been replaced, or a turn whose page has not arrived. There is
         // nothing to show and nothing to say.
         guard turnIndex.turns.contains(where: { $0.id == target }) else { return }
+        // Explicit navigation owns the scroll position from this point. Cancel
+        // the initial bottom placement before its next awaited correction.
+        placementRound += 1
+        placement = .navigating
         // A beat for the card to start coming back on a phone, so the jump is
         // seen rather than finished behind it.
         try? await Task.sleep(for: .milliseconds(sizeClass == .regular ? 0 : 140))
@@ -1294,6 +1532,12 @@ struct SessionDetailView: View {
             reloadWanted = false
             await load()
         }
+        // Out of attempts with nothing ever committed: the page has its
+        // terminal state. A session that answered with nothing settled as
+        // empty inside `load()`; this is the read that never came back, and
+        // the failure card is the content -- a message area held transparent
+        // for ever is the one answer that is never right.
+        settleUnplacedWithoutContent()
     }
 
     /// One pass over everything this screen draws.
@@ -1332,6 +1576,10 @@ struct SessionDetailView: View {
             items = cached.items
             show(turns: cached.turns ?? [])
             loadingConversation = false
+            // The first frame's source, and the placement's trigger: the
+            // message area is gated from here until the geometry says the
+            // newest turn is in view.
+            beginInitialPlacementIfNeeded()
         }
         // The last known figures, drawn before the network is asked. Without
         // this the bar was blank until a read came back, and stayed blank
@@ -1365,6 +1613,10 @@ struct SessionDetailView: View {
         if !fresh.isEmpty {
             items = fresh
             conversationSessionId = sessionId
+            // The host's answer is also a first frame's source: with no cache
+            // this is the first content the page has, and the placement runs
+            // against it exactly as it does against the cached copy.
+            beginInitialPlacementIfNeeded()
         }
         // The cache again, for the turns: the page was just folded into it.
         //
@@ -1382,13 +1634,126 @@ struct SessionDetailView: View {
         loading = false
         loadingConversation = false
         await model.refreshInteractions()
-        // Last, so the scroll anchor runs against the content that is actually
-        // staying on screen.
-        loadGeneration += 1
+        // A read that answered with nothing is an empty session, and that is
+        // an answer: the empty state is the content, and it is settled here
+        // rather than after the retries -- an empty session should not wait
+        // for a load that has already replied.
+        //
+        // A read that *failed* says nothing either way yet: `reload()` asks
+        // again, and settles this page only once it has run out of attempts.
+        // Showing the failure card on the first failure would flash it over
+        // a session that answers a moment later.
+        if model.conversationError == nil {
+            settleUnplacedWithoutContent()
+        }
         // The conversation counts as landed only when this session is the one
         // drawn: an empty page for a session nobody has typed into yet is an
         // answer, but an empty page on a screen showing another session's rows
         // means the read did not arrive.
         return statsLanded && conversationSessionId == sessionId
+    }
+}
+
+/// Where a page's conversation is on its way to its first position.
+///
+/// The screen used to reveal the conversation at whatever offset a new
+/// `ScrollView` starts at -- the top -- and move it to the newest message once
+/// the load had finished, so a session with a cached history opened showing
+/// its oldest turns and jumped a moment later, the wait growing with the
+/// network. The placement is now a precondition of display: the message area
+/// stays gated until the geometry says the newest turn is in view, which makes
+/// the first frame an operator can read the one that is already at the bottom.
+enum InitialPlacement: Equatable {
+    /// The page is up and nothing has been committed to it yet.
+    case waitingForContent
+    /// A conversation has been committed and the placement is running. The
+    /// generation is the round, so a correction belonging to an earlier
+    /// commit cannot settle a later one.
+    case placing(generation: Int)
+    /// The newest turn is in view; the message area is live.
+    case ready
+    /// Explicit turn navigation has taken ownership from initial placement.
+    case navigating
+    /// The session has no messages: there is no bottom to place against and
+    /// nothing to gate.
+    case empty
+    /// The first read failed with nothing cached: the failure card is the
+    /// content, and holding it back would be a spinner for ever.
+    case failed
+    /// Loaded content whose local placement did not converge. Offer retry.
+    case positioningFailed
+
+    /// A content commit (including refresh) may retry an unplaced page, but
+    /// never takes position back from a reader or explicit turn navigation.
+    @discardableResult
+    mutating func beginIfNeeded(generation: Int) -> Bool {
+        switch self {
+        case .waitingForContent, .empty, .failed, .positioningFailed:
+            self = .placing(generation: generation)
+            return true
+        case .placing, .ready, .navigating:
+            return false
+        }
+    }
+
+    /// Acceptance outlives the active scroll budget; it never issues a scroll.
+    @discardableResult
+    mutating func finishIfPositioned(_ geometry: ConversationPlacementGeometry?, tolerance: CGFloat) -> Bool {
+        switch self {
+        case .placing, .positioningFailed:
+            guard geometry?.isAtBottom(tolerance: tolerance) == true else { return false }
+            self = .ready
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Whether the message area may be shown and touched.
+    var isRevealed: Bool {
+        switch self {
+        case .ready, .navigating, .empty, .failed: return true
+        case .waitingForContent, .placing, .positioningFailed: return false
+        }
+    }
+}
+
+/// One round of initial placement, as something a `.task(id:)` can watch.
+///
+/// The session is in the key as well as the round: the shell already keys the
+/// page per session, and a key that names the session makes the placement task
+/// one the page's own lifetime owns -- cancelled when the page leaves, rather
+/// than a saved handle somebody has to remember to release.
+private struct PlacementKey: Equatable {
+    var sessionId: String
+    var round: Int
+}
+
+/// Acceptance uses valid measured geometry, never an unmeasured default zero.
+struct ConversationPlacementGeometry: Equatable {
+    var contentHeight: CGFloat
+    var viewportHeight: CGFloat
+    var visibleMinY: CGFloat
+    var visibleMaxY: CGFloat
+    var topInset: CGFloat = 0
+    var bottomInset: CGFloat = 0
+
+    func isAtBottom(tolerance: CGFloat) -> Bool {
+        guard contentHeight.isFinite, viewportHeight.isFinite,
+              visibleMinY.isFinite, visibleMaxY.isFinite,
+              topInset.isFinite, bottomInset.isFinite,
+              contentHeight > 0, viewportHeight > 0, visibleMaxY > visibleMinY else { return false }
+        // ScrollGeometry's raw visible rect includes content/safe-area insets.
+        // Use the usable interval consistently, including for short pages;
+        // containerSize and the raw visible rect are not interchangeable.
+        let usableMinY = visibleMinY + topInset
+        let usableMaxY = visibleMaxY - bottomInset
+        let usableHeight = usableMaxY - usableMinY
+        guard usableHeight.isFinite, usableHeight > 0 else { return false }
+        if abs(contentHeight - usableMaxY) <= tolerance { return true }
+        // A short, top-aligned conversation is already entirely visible.
+        // A viewport wholly below the content must not pass this branch.
+        return contentHeight <= usableHeight + tolerance
+            && usableMinY <= tolerance && usableMaxY >= contentHeight - tolerance
     }
 }

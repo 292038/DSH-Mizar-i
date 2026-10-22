@@ -12,9 +12,171 @@ final class AppFlowSessionDetailTests: AppFlowTestBase {
     override class var mockPort: Int { MockPorts.port(for: String(describing: self)) }
     // MARK: - Session detail
 
+    func testBalanceSupportMatrixAndExplicitRefresh() {
+        let app = launch(pending: false, running: false, contentSizeCategory: "UICTContentSizeCategoryAccessibilityXXXL")
+        openSidebar(app)
+        let entry = app.buttons["sidebar.balance"]
+        expect(entry, "balance entry is missing beside settings")
+        let settings = app.buttons["sidebar.settings"]
+        let connection = app.buttons["sidebar.connection"]
+        XCTAssertTrue(entry.isHittable && settings.isHittable && connection.isHittable, "all three footer actions must be reachable")
+        for control in [entry, settings, connection] {
+            XCTAssertGreaterThanOrEqual(control.frame.width, 44)
+            XCTAssertGreaterThanOrEqual(control.frame.height, 44)
+        }
+        XCTAssertEqual(entry.frame.width, 54, accuracy: 1)
+        XCTAssertEqual(settings.frame.width, 54, accuracy: 1)
+        XCTAssertFalse(entry.frame.intersects(settings.frame), "footer actions overlap")
+        XCTAssertFalse(connection.frame.intersects(entry.frame))
+        XCTAssertFalse(connection.frame.intersects(settings.frame))
+        entry.tap()
+        let status = app.staticTexts["balance.status"]
+        for _ in 0..<5 where !status.exists { app.collectionViews.firstMatch.swipeUp() }
+        expect(status, "unsupported plugin must explain balance support")
+        XCTAssertFalse(app.buttons["balance.topUp"].exists)
+        XCTAssertEqual(Self.mockMethodCounts()["account.balance", default: 0], 0, "old plugin must not be queried")
+        app.buttons["balance.done"].tap()
+        Self.setBalanceFixture("ready")
+        entry.tap()
+        tapBalanceRefresh(app)
+        let amount = app.staticTexts.matching(identifier: "balance.amount.CNY").firstMatch
+        for _ in 0..<5 where !amount.exists { app.collectionViews.firstMatch.swipeUp() }
+        expect(amount, "official supported balance did not appear after explicit refresh")
+        XCTAssertTrue(amount.label.contains("123.456789"), "decimal balance must not be fabricated or rounded")
+        let topUp = app.buttons["balance.topUp"]
+        for _ in 0..<8 where !topUp.exists { app.collectionViews.firstMatch.swipeUp() }
+        expect(topUp, "ready official account should offer the top-up link")
+        Self.setBalanceFixture("long")
+        tapBalanceRefresh(app)
+        let exactLong = "12345678901234567890.000000000001"
+        let longAmount = app.staticTexts.matching(identifier: "balance.amount.CNY").matching(NSPredicate(format: "label CONTAINS %@", exactLong)).firstMatch
+        for _ in 0..<12 where !longAmount.exists { app.collectionViews.firstMatch.swipeDown() }
+        expect(longAmount, "long decimal precision must remain exact at accessibility size")
+        XCTAssertTrue(longAmount.label.contains(exactLong))
+        XCTAssertGreaterThan(longAmount.frame.height, 40, "AX long amount must wrap instead of remaining a clipped single line")
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "balance-AX5-long-official-decimal"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        Self.setBalanceFixture("failed")
+        tapBalanceRefresh(app)
+        let cleared = NSPredicate { _, _ in !amount.exists }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: cleared, object: nil)], timeout: 10), .completed, "failed refresh leaked the previous account balance")
+        XCTAssertFalse(app.buttons["balance.topUp"].exists)
+    }
+
+    private func tapBalanceRefresh(_ app: XCUIApplication) {
+        let refresh = app.buttons["balance.refresh"]
+        for _ in 0..<10 where !refresh.isHittable { app.collectionViews.firstMatch.swipeUp() }
+        expect(refresh, "explicit refresh must remain reachable at accessibility text size")
+        refresh.tap()
+    }
+
+    private static func setBalanceFixture(_ variant: String) {
+        let url = URL(string: "http://127.0.0.1:\(mockPort)/balance?variant=\(variant)")!
+        let done = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: url) { _, _, _ in done.signal() }.resume()
+        XCTAssertEqual(done.wait(timeout: .now() + 5), .success, "local balance fixture did not respond")
+    }
+
+    func testCompletedTurnToolbarUsesClickedBoundaryAndExactUsage() {
+        let app = launch(pending: false, running: true, contentSizeCategory: "UICTContentSizeCategoryAccessibilityXXXL")
+        let usage = app.staticTexts["turn.1.usage"]
+        for _ in 0..<5 where !usage.isHittable { app.swipeDown() }
+        expect(usage, "completed response has no usage footer")
+        XCTAssertTrue(usage.label.contains("12345"), "whole-turn exact token count is missing")
+        XCTAssertFalse(app.buttons["turn.4.copy"].exists, "running response must not expose a completed footer")
+        let branchGeometry = app.buttons["turn.1.branch"]
+        let copyGeometry = app.buttons["turn.1.copy"]
+        for action in [copyGeometry, branchGeometry] {
+            XCTAssertTrue(action.isHittable)
+            XCTAssertGreaterThanOrEqual(action.frame.width, 44)
+            XCTAssertGreaterThanOrEqual(action.frame.height, 44)
+        }
+        XCTAssertFalse(copyGeometry.frame.intersects(branchGeometry.frame))
+        XCTAssertLessThanOrEqual(copyGeometry.frame.maxX, branchGeometry.frame.minX)
+        let time = app.staticTexts["turn.1.time"]
+        XCTAssertFalse(usage.frame.intersects(time.frame))
+        XCTAssertTrue(app.frame.contains(usage.frame) && app.frame.contains(time.frame))
+        XCTAssertFalse(app.buttons["turn.1.usage"].exists)
+        XCTAssertFalse(app.buttons["turn.1.time"].exists)
+        let geometryShot = XCTAttachment(screenshot: app.screenshot())
+        geometryShot.name = "real-completed-toolbar-AX5"
+        geometryShot.lifetime = .keepAlways
+        add(geometryShot)
+        let copy = app.buttons["turn.1.copy"]
+        expect(copy, "copy action missing")
+        copy.tap()
+        let field = app.textViews["composer.field"]
+        field.press(forDuration: 1.1)
+        let paste = app.menuItems["Paste"]
+        expect(paste, "copied response was not available to the actual system paste action")
+        paste.tap()
+        XCTAssertEqual(field.value as? String, "The parser is now two files.", "copy must place the whole selected response on the clipboard")
+        let branch = app.buttons["turn.1.branch"]
+        XCTAssertTrue(branch.isEnabled, "safe completed response should be branchable")
+        branch.tap()
+        let finished = NSPredicate { _, _ in Self.forkRequestCount() == 1 }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: finished, object: nil)], timeout: 10), .completed)
+        XCTAssertEqual(Self.lastForkSequence(), 9, "branch must use clicked turn 1 endSeq, not later answer/message/latest turn")
+    }
+
+    private static func lastForkSequence() -> Int? {
+        let done = DispatchSemaphore(value: 0)
+        let box = Box()
+        URLSession.shared.dataTask(with: URL(string: "http://127.0.0.1:\(mockPort)/loads")!) { data, _, _ in
+            if let data, let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                box.value = ((object["forks"] as? [[String: Any]])?.last?["atSeq"] as? NSNumber)?.intValue
+            }
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 5)
+        return box.value
+    }
+
+    private static func forkRequestCount() -> Int {
+        let done = DispatchSemaphore(value: 0)
+        let box = Box()
+        URLSession.shared.dataTask(with: URL(string: "http://127.0.0.1:\(mockPort)/loads")!) { data, _, _ in
+            if let data, let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                box.value = (object["forks"] as? [[String: Any]])?.count ?? 0
+            }
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 5)
+        return box.value ?? 0
+    }
+
+    func testReadingOlderMessageKeepsVisibleAnchorThroughComposerCollapse() {
+        let app = launch(pending: false, running: false)
+        let done = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: URL(string: "http://127.0.0.1:\(Self.mockPort)/reader?long=1")!) { _, _, _ in done.signal() }.resume()
+        XCTAssertEqual(done.wait(timeout: .now() + 5), .success)
+        app.terminate()
+        app.launch()
+        let field = app.textViews["composer.field"]
+        expect(field, "reader fixture did not open the real conversation")
+        let anchor = app.staticTexts["turn.20.usage"]
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.65))
+        for _ in 0..<6 where !anchor.isHittable { start.press(forDuration: 0.1, thenDragTo: end) }
+        expect(anchor, "real drag must reveal an older completed message before measurement")
+        XCTAssertTrue(anchor.isHittable)
+        let before = anchor.frame.midY
+        print("[reader-anchor] turn20-before=\(anchor.frame) turn24-visible=\(app.staticTexts["turn.24.usage"].isHittable)")
+        XCTAssertFalse(app.staticTexts["turn.24.usage"].isHittable, "reader must be materially away from the newest response")
+        app.buttons["composer.expand"].tap()
+        RunLoop.current.run(until: Date().addingTimeInterval(1.2))
+        app.buttons["composer.expand"].tap()
+        RunLoop.current.run(until: Date().addingTimeInterval(1.8))
+        XCTAssertTrue(anchor.isHittable, "composer collapse lost the older visible message")
+        print("[reader-anchor] turn20-after=\(anchor.frame) delta=\(anchor.frame.midY - before)")
+        XCTAssertLessThanOrEqual(abs(anchor.frame.midY - before), 2, "reader's message anchor moved after expand/collapse")
+    }
+
     func testOpeningASessionShowsTheComposer() {
         let app = launch(pending: false)
-        let field = app.textFields["composer.field"]
+        let field = app.textViews["composer.field"]
         expect(field, "the composer is missing")
 
         // One button, two jobs. The running session starts with an empty field,
@@ -28,6 +190,33 @@ final class AppFlowSessionDetailTests: AppFlowTestBase {
         let send = app.buttons["composer.send"]
         expect(send, "typing did not turn the button into send")
         XCTAssertTrue(send.isEnabled, "send is disabled with text in the field")
+
+        let oneLineHeight = field.frame.height
+        let lines = (1...12).map { "line \($0)" }.joined(separator: "\n")
+        field.typeText("\n" + lines)
+        let grew = NSPredicate { _, _ in field.frame.height > oneLineHeight * 2 }
+        XCTAssertTrue(
+            XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: grew, object: nil)], timeout: 5) == .completed,
+            "a multiline draft did not grow the resting editor"
+        )
+        let restingHeight = field.frame.height
+        app.buttons["composer.expand"].tap()
+        let expanded = NSPredicate { _, _ in field.frame.height > restingHeight + 20 }
+        XCTAssertTrue(
+            XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: expanded, object: nil)], timeout: 5) == .completed,
+            "expanded editor did not receive a larger viewport"
+        )
+        XCTAssertTrue((field.value as? String)?.contains("line 12") == true, "expanding lost the draft tail")
+        field.swipeDown()
+        field.swipeUp()
+        XCTAssertTrue((field.value as? String)?.contains("line 1\n") == true, "scrolling lost the draft head")
+        app.buttons["composer.expand"].tap()
+        let settled = NSPredicate { _, _ in field.frame.height <= restingHeight + 1 }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: settled, object: nil)], timeout: 5), .completed)
+        // Leave the actual UI alive beyond the production 600ms unlock so the
+        // temporary diagnostic display-link can capture the late content jump.
+        RunLoop.current.run(until: Date().addingTimeInterval(1.8))
+        XCTAssertTrue((field.value as? String)?.contains("line 12") == true, "collapsing lost the draft tail")
     }
 
     /// A session whose workspace the host has deleted is not drawn as a

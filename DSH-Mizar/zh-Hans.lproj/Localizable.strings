@@ -1,4 +1,19 @@
 /* DSH-Mizar 简体中文 */
+/* 官方宿主钱包 */
+"balance.title" = "DeepSeek 余额";
+"balance.explanation" = "已连接电脑上 DeepSeek 官方账户的余额快照，与 Mizar 订阅额度无关。账户或余额变动后请刷新。";
+"balance.paid" = "充值钱包";
+"balance.bonus" = "赠金钱包";
+"balance.top-up" = "前往 DeepSeek 充值";
+"balance.top-up-note" = "打开 DeepSeek 官方网站，请在网页上登录后充值；本 App 不传递账户凭据。";
+"balance.refresh" = "刷新余额";
+"balance.loading" = "正在查询余额…";
+"balance.disconnected" = "请先连接电脑，再查询该电脑的 DeepSeek 余额。";
+"balance.unsupported" = "需要已连接电脑安装新版 dsh-mizar 插件，并提供 DeepSeek 官方账户服务。";
+"balance.signed-out" = "请先在已连接电脑的 DSH 中登录 DeepSeek 官方账户，再刷新余额。";
+"balance.unavailable" = "暂时无法取得余额，账户可能已切换或服务未返回有效余额，请稍后刷新。";
+"balance.failed" = "余额查询失败，当前不显示任何金额。请检查连接后重试。";
+
 /* Pairing */
 "Connect to DSH" = "连接到 DSH";
 "Scan the code on your computer" = "扫描电脑上的二维码";
@@ -471,6 +486,17 @@
 "Install the plugin, then scan" = "先装插件，再扫码";
 "In DSH's plugin panel, enter dsh-mizar to install the plugin, then restart DSH. When the panel shows a code, come back here and scan it." = "在电脑的 DSH 插件面板里输入 dsh-mizar 安装插件，然后重启 DSH。面板出现二维码后，回到这里扫码。";
 "Once it is installed, there is nothing else to set up." = "装好后，手机和电脑之间不需要别的设置。";
+
+/* Completed turn response toolbar */
+"Copy response" = "复制总结";
+"Response copied" = "已复制总结";
+"Branch in a new conversation" = "在新对话中分支";
+"Token usage unavailable" = "Token 用量不可用";
+"Time unavailable" = "时间不可用";
+"Complete turn metadata is unavailable. Refresh or update the computer plugin." = "缺少完整轮次数据，请刷新对话或更新电脑插件。";
+"This response is followed by tool activity or an error and cannot be branched here." = "此总结后还有工具活动或错误，无法在此处分支。";
+"The conversation was not branched. Try again." = "未能创建分支，请重试。";
+"Branching…" = "正在创建分支…";
 
 /* 0.9.5 */
 "Turn this on if you use the app on the same local network; turning it off makes every reconnect faster." = "如果你需要在同一局域网内使用应用，则请打开该功能，否则关闭该功能有助于加快每次重连的速度。";

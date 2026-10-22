@@ -65,6 +65,7 @@ struct ConversationView: View {
 
     @State private var loadingOlder = false
     @State private var exhausted = false
+    @State private var olderRowVisible = false
     /// Pages fetched automatically since this row came on screen.
     ///
     /// The sentinel sits at the very top of the log and older messages are
@@ -79,15 +80,16 @@ struct ConversationView: View {
 
     /// Ask for the page before this one, once.
     private func fetchOlder(_ fetch: () async -> Int?, automatic: Bool = false) async {
-        guard !loadingOlder else { return }
-        if automatic, automaticPages >= Self.automaticPageLimit { return }
+        guard !Task.isCancelled, !loadingOlder else { return }
+        if automatic, !olderRowVisible || automaticPages >= Self.automaticPageLimit { return }
         if automatic { automaticPages += 1 }
         loadingOlder = true
+        defer { loadingOlder = false }
         let arrived = await fetch()
+        guard !Task.isCancelled else { return }
         // Only a definite answer ends the list. `nil` leaves `exhausted` alone
         // so the next appearance -- or the operator's tap -- asks again.
         if arrived == 0 { exhausted = true }
-        loadingOlder = false
     }
 
     /// What is drawn while a jump is staged: the turn asked for, first, and the
@@ -207,15 +209,18 @@ struct ConversationView: View {
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
         .accessibilityIdentifier("conversation.loadOlder")
-        // Keyed on the item count, not on appearance: older messages arrive
-        // below this row, so it never disappears and `onAppear` would fire
-        // exactly once. Each page changes the count, so each page re-arms it.
-        .task(id: items.count) {
+        // Lazy construction is not visibility. Only a row actually intersecting
+        // the scroll viewport may ask automatically, including after first placement.
+        .onScrollVisibilityChange(threshold: 0.5) { visible in
+            olderRowVisible = visible
+            if !visible { automaticPages = 0 }
+        }
+        .task(id: OlderPageTrigger(itemCount: items.count, visible: olderRowVisible)) {
+            guard olderRowVisible, !Task.isCancelled else { return }
             await fetchOlder(onLoadOlder, automatic: true)
         }
         .onDisappear {
-            // Scrolled away. Someone who comes back to the top is asking again,
-            // and the automatic allowance should be theirs.
+            olderRowVisible = false
             automaticPages = 0
         }
     }
@@ -253,6 +258,14 @@ private struct TurnSection: View {
                     onTypingStarted: { onAnswerTypingStarted(item.id) },
                 )
                 .transition(.rise(distance: 14, blur: 6))
+            }
+            if turn.endSeq != nil, !turn.isRunning, !turn.isEndInferred,
+               let response = turn.steps.last(where: { item in
+                   if case .message(_, .assistant, let text, _) = item { return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                   return false
+               }),
+               case .message(_, .assistant, let text, let at) = response {
+                TurnResponseToolbar(turn: turn, sessionId: sessionId, text: text, at: at)
             }
         }
         .animation(.mizarSmooth, value: turn.steps.count)
@@ -796,4 +809,9 @@ private struct Shimmer: ViewModifier {
             content
         }
     }
+}
+
+private struct OlderPageTrigger: Equatable {
+    var itemCount: Int
+    var visible: Bool
 }

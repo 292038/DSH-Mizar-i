@@ -104,10 +104,17 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     /// a switch take effect on the next notification instead of the next launch.
     ///
     /// The two strings are read out of the notification here, before the hop to
-    /// the main actor: `UNNotification` and its `userInfo` are not `Sendable`,
-    /// and only a `String` and the classified kind need to cross. A push whose
-    /// kind this build does not recognise is shown -- see
-    /// ``NotificationKind/classify(kind:title:reason:)``.
+    /// the main queue: `UNNotification` and its `userInfo` are not `Sendable`,
+    /// and only a `String` and the classified kind need to cross.
+    ///
+    /// The completion handler is explicit rather than the `async` form, and it
+    /// is called on the main queue. The async form's compiler-generated bridge
+    /// calls the system's completion handler on a cooperative background queue
+    /// after the body returns -- the body being on the main actor says nothing
+    /// about where the completion lands -- and that is the callback UIKit's
+    /// state-restoration archive runs behind (measured with the protocol probe
+    /// recorded in `docs/ios-push-diagnosis-notes.md`: the body completes on the
+    /// main thread, the async completion does not).
     ///
     /// One limit worth stating: a notification that arrives while the app is in
     /// the background is delivered by iOS without asking this delegate anything,
@@ -117,7 +124,8 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
-    ) async -> UNNotificationPresentationOptions {
+        withCompletionHandler completionHandler: @escaping @Sendable (UNNotificationPresentationOptions) -> Void,
+    ) {
         let content = notification.request.content
         let userInfo = content.userInfo
         let kind = NotificationKind.classify(
@@ -126,34 +134,57 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
             reason: userInfo["reason"] as? String,
         )
         let described = kind?.rawValue ?? (userInfo["kind"] as? String ?? "unknown")
-        let wanted = await MainActor.run { kind.map(AppSettings.shared.isEnabled) ?? true }
-        await MainActor.run {
-            ActivityLog.shared.add(
-                .push,
-                wanted
-                    ? "presented \(described)"
-                    : "suppressed \(described): switched off in settings",
-            )
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                let wanted = kind.map(AppSettings.shared.isEnabled) ?? true
+                ActivityLog.shared.add(
+                    .push,
+                    wanted
+                        ? "presented \(described)"
+                        : "suppressed \(described): switched off in settings",
+                )
+                // One exit, exactly once: the switch decision and the
+                // completion are the same main-queue step, so there is no
+                // branch that can answer twice -- or not at all.
+                completionHandler(wanted ? [.banner, .list, .sound] : [])
+            }
         }
-        return wanted ? [.banner, .list, .sound] : []
     }
 
     /// Open the session the notification was about.
+    ///
+    /// The completion handler is explicit rather than the `async` form, and it
+    /// is called on the main queue -- see
+    /// ``userNotificationCenter(_:willPresent:withCompletionHandler:)`` for why:
+    /// the async bridge completes on a background queue, and two crash reports
+    /// (`docs/ios-push-diagnosis-notes.md` §2) put UIKit's state-restoration
+    /// assertion directly behind this callback.
+    ///
+    /// Only the `sessionId` crosses into the main-queue block: the response and
+    /// its `userInfo` are not `Sendable`, and nothing here waits for the
+    /// network, the cache or the account -- the callback being answered and the
+    /// session being loaded are two different conditions.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
-    ) async {
-        let sessionId = response.notification.request.content.userInfo["sessionId"] as? String
-        guard let sessionId, !sessionId.isEmpty else { return }
-        await MainActor.run {
-            ActivityLog.shared.add(.push, "opened from a notification: session \(sessionId)")
-            // Kept as well as posted. A cold launch can deliver this before
-            // the root view is mounted, and a post with no subscriber is gone;
-            // the root view takes what is waiting when it appears, and a tap
-            // that arrived with the view already up clears it on its way
-            // through the publisher. Either order opens the session once.
-            PendingPushSession.stash(sessionId)
-            NotificationCenter.default.post(name: Self.openSession, object: sessionId)
+        withCompletionHandler completionHandler: @escaping @Sendable () -> Void,
+    ) {
+        let sessionID = response.notification.request.content
+            .userInfo["sessionId"] as? String
+
+        DispatchQueue.main.async {
+            defer { completionHandler() }
+            MainActor.assumeIsolated {
+                guard let sessionID, !sessionID.isEmpty else { return }
+                ActivityLog.shared.add(.push, "opened from a notification: session \(sessionID)")
+                // Kept as well as posted. A cold launch can deliver this before
+                // the root view is mounted, and a post with no subscriber is gone;
+                // the root view takes what is waiting when it appears, and a tap
+                // that arrived with the view already up clears it on its way
+                // through the publisher. Either order opens the session once.
+                PendingPushSession.stash(sessionID)
+                NotificationCenter.default.post(name: Self.openSession, object: sessionID)
+            }
         }
     }
 }

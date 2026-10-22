@@ -215,7 +215,7 @@ final class RunningDetailUITests: XCTestCase {
     ///
     /// - Parameter app: the running app.
     private func openSessionIfNeeded(_ app: XCUIApplication) {
-        if app.textFields["composer.field"].waitForExistence(timeout: 5) { return }
+        if app.textViews["composer.field"].waitForExistence(timeout: 5) { return }
         if !app.buttons["sessions.new"].exists {
             app.buttons["shell.sidebarToggle"].tap()
         }
@@ -229,7 +229,7 @@ final class RunningDetailUITests: XCTestCase {
         if session.waitForExistence(timeout: 10), session.isHittable {
             session.tap()
         }
-        _ = app.textFields["composer.field"].waitForExistence(timeout: 10)
+        _ = app.textViews["composer.field"].waitForExistence(timeout: 10)
     }
 
     // MARK: - The detail area
@@ -348,7 +348,7 @@ final class RunningDetailUITests: XCTestCase {
         let toggle = activityToggle(in: app)
         return "detail=\(detail.exists)"
             + " frame=\(detail.exists ? "\(detail.frame)" : "none")"
-            + " composer=\(app.textFields["composer.field"].exists)"
+            + " composer=\(app.textViews["composer.field"].exists)"
             + " rows=\(rows.count)"
             + " labels=\(labels)"
             + " olderRow=\(element("turn.activity.older", in: app).exists)"

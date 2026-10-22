@@ -528,6 +528,7 @@ class AppFlowTestBase: XCTestCase {
         naming: Bool = true,
         freshStart: Bool = true,
         pairingURIs: [String]? = nil,
+        contentSizeCategory: String? = nil,
     ) -> XCUIApplication {
         Self.resetMockHost(pending: pending, slow: slow, skew: skew, pageLimit: pageLimit, running: running)
         let app = XCUIApplication()
@@ -541,8 +542,19 @@ class AppFlowTestBase: XCTestCase {
             // subclass's port.
             pairingURIs: pairingURIs ?? [Self.mockPairingURI],
         )
+        if let contentSizeCategory {
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", contentSizeCategory]
+        }
         app.launch()
         dismissSystemAlertIfPresent(app)
+        // Simulator/system relaunches can reopen the app without the runner's
+        // arguments. A protocol test seeing the login gate is not exercising a
+        // conversation at all: restore the exact offline test launch once.
+        if app.buttons["welcome.gate.signIn"].exists {
+            app.terminate()
+            app.launch()
+            dismissSystemAlertIfPresent(app)
+        }
         if naming { dismissNamingIfPresented(app) }
         return app
     }

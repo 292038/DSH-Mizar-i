@@ -55,6 +55,10 @@ final class AppFlowTurnLifecycleTests: AppFlowTestBase {
             app.staticTexts["Could not load the conversation"].exists,
             "reloading the conversation reported a failure",
         )
+        XCTAssertFalse(
+            app.otherElements["session.placement.failed"].exists || app.buttons["session.placement.retry"].exists,
+            "reloading left loaded messages trapped behind positioning failure",
+        )
     }
 
     /// A turn that ends while the conversation is open is noticed by itself.
@@ -127,7 +131,7 @@ final class AppFlowTurnLifecycleTests: AppFlowTestBase {
     /// at the host, because a request that is never made has no screen symptom.
     func testASendStartsTheRunningPollWithoutATap() {
         let app = launch(pending: false, running: false)
-        let field = app.textFields["composer.field"]
+        let field = app.textViews["composer.field"]
         expect(field, "the composer is missing")
         // The host records the prompt a moment later, and is left running from
         // here -- the app's list still says the session is stopped.
@@ -205,7 +209,7 @@ final class AppFlowTurnLifecycleTests: AppFlowTestBase {
     /// something asked again.
     func testATurnThatEndsAfterASendIsNoticedWithoutATap() {
         let app = launch(pending: false, running: false)
-        let field = app.textFields["composer.field"]
+        let field = app.textViews["composer.field"]
         expect(field, "the composer is missing")
         Self.setMockSessionRunning(true)
 
@@ -284,7 +288,7 @@ final class AppFlowTurnLifecycleTests: AppFlowTestBase {
 
         // Drafted, not sent: a goal needs text after the slash, and firing it
         // blank would send the agent an empty instruction.
-        let field = app.textFields["composer.field"]
+        let field = app.textViews["composer.field"]
         expect(field, "the composer is missing")
         // Polled rather than read once: the sheet leaves with an animation and
         // the field is not updated until it has gone, so a single read races it
@@ -343,7 +347,7 @@ final class AppFlowTurnLifecycleTests: AppFlowTestBase {
         // the conversation after a send, so the operator's own words were absent
         // until a pull-to-refresh.
         let app = launch()
-        let field = app.textFields["composer.field"]
+        let field = app.textViews["composer.field"]
         expect(field, "the composer is missing")
         field.tap()
         field.typeText("does this reach the agent")
@@ -366,7 +370,7 @@ final class AppFlowTurnLifecycleTests: AppFlowTestBase {
         // First: did the send succeed? The composer clears only on success and is
         // refilled on failure, so its value says which branch ran -- and the two
         // produce the same visible symptom ("the text is still here").
-        let composerField = app.textFields["composer.field"]
+        let composerField = app.textViews["composer.field"]
         expect(composerField, "the composer vanished")
         XCTAssertEqual(
             composerField.value as? String,
@@ -379,7 +383,7 @@ final class AppFlowTurnLifecycleTests: AppFlowTestBase {
         // sits below the composer until scrolled into view -- which reads
         // identically to the message being absent. A fixed number of swipes is a
         // guess about how long the conversation is.
-        let composer = app.textFields["composer.field"]
+        let composer = app.textViews["composer.field"]
         // By label, not by identifier. `matching(identifier:)` reads the
         // accessibility *identifier*, and a message bubble sets its text as the
         // accessibility *label* -- so this query matched nothing, ever, and the
@@ -655,7 +659,7 @@ final class AppFlowTurnLifecycleTests: AppFlowTestBase {
             "the first session never appeared under its workspace",
         )
         first.tap()
-        let field = app.textFields["composer.field"]
+        let field = app.textViews["composer.field"]
         expect(field, "the first conversation never opened")
 
         // Something typed and never sent, and a history that has been paged to
@@ -691,11 +695,11 @@ final class AppFlowTurnLifecycleTests: AppFlowTestBase {
             "the second session never appeared under its heading",
         )
         orphanRow.tap()
-        expect(app.textFields["composer.field"], "the second conversation never opened")
+        expect(app.textViews["composer.field"], "the second conversation never opened")
 
         XCTAssertEqual(
-            app.textFields["composer.field"].value as? String,
-            "Ask your agent…",
+            app.textViews["composer.field"].value as? String,
+            "",
             "the first session's draft followed the operator into the second",
         )
         XCTAssertTrue(

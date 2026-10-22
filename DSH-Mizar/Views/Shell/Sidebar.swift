@@ -461,20 +461,21 @@ enum SessionTitle {
 private struct SidebarFooter: View {
     @Binding var showingConnection: Bool
     @Binding var showingSettings: Bool
+    @State private var showingBalance = false
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Button {
                 showingConnection = true
             } label: {
-                HStack(spacing: 12) {
+                HStack(spacing: 7) {
                     ConnectionDot(live: model.isConnected)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(status)
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(1)
-                            .fixedSize()
+                            .minimumScaleFactor(0.8)
                             .contentTransition(.opacity)
                         Text(route)
                             .font(.caption)
@@ -496,7 +497,7 @@ private struct SidebarFooter: View {
                         .rotationEffect(.degrees(showingConnection ? 180 : 0))
                         .animation(.mizarBouncy, value: showingConnection)
                 }
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 10)
                 .frame(height: 54)
                 .contentShape(.capsule)
                 .liquidCapsule(interactive: true)
@@ -516,6 +517,23 @@ private struct SidebarFooter: View {
             .accessibilityIdentifier("sidebar.connection")
             .mizarPopover(isPresented: $showingConnection, arrowEdge: .bottom) {
                 ConnectionPanel()
+            }
+
+            Button {
+                showingBalance = true
+            } label: {
+                GlassCircleLabel(size: 54) {
+                    Text("¥")
+                        .font(.system(size: 23, weight: .medium))
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text("balance.title"))
+            .accessibilityIdentifier("sidebar.balance")
+            .sheet(isPresented: $showingBalance) {
+                BalanceView()
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
             }
 
             Button {

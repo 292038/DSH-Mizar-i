@@ -518,6 +518,12 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     /// `nil` for a turn built by hand or read from a cache written before this
     /// existed, which falls back to the positions of its items.
     public let firstSeq: Int?
+    /// Exact inclusive durable boundary; never inferred from an answer's seq.
+    public let endSeq: Int?
+    /// Exact usage of the final durable turn represented by this summary.
+    public let tokenUsage: TurnTokenUsage?
+    /// Host found later tool/error content after the last text response.
+    public let branchUnavailable: Bool?
 
     /// A stable identity, unique within a conversation.
     ///
@@ -574,6 +580,9 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             firstSeq: firstSeq,
             endInferred: endInferred,
             lastTurn: lastTurn,
+            endSeq: endSeq,
+            tokenUsage: tokenUsage,
+            branchUnavailable: branchUnavailable,
         )
     }
 
@@ -600,6 +609,9 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             firstSeq: firstSeq,
             endInferred: true,
             lastTurn: lastTurn,
+            endSeq: endSeq,
+            tokenUsage: tokenUsage,
+            branchUnavailable: branchUnavailable,
         )
     }
 
@@ -655,6 +667,9 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             // The other end of the chain's identity, so a later `turn/end`
             // naming this continuation can find the folded copy it belongs to.
             lastTurn: Self.most(lastTurn, next.lastTurn ?? next.turn),
+            endSeq: continuation ? next.endSeq : endSeq,
+            tokenUsage: continuation ? next.tokenUsage : tokenUsage,
+            branchUnavailable: continuation ? next.branchUnavailable : branchUnavailable,
         )
     }
 
@@ -688,14 +703,19 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
         // keeping the placeholder because this copy has one would leave the
         // settled mark on a turn the host has since said how it ended.
         let ended: ConversationTurn
-        if endedAt != nil, !isEndInferred {
+        if (lastTurn ?? turn ?? -1) != (other.lastTurn ?? other.turn ?? -1) {
+            // A page of the older prefix may overlap a cached continuation.
+            // Only the final durable turn owns the chain's end and footer.
+            ended = (lastTurn ?? turn ?? -1) > (other.lastTurn ?? other.turn ?? -1) ? self : other
+        } else if endedAt != nil, !isEndInferred {
             ended = self
         } else if other.endedAt != nil, !other.isEndInferred {
             ended = other
         } else {
             ended = endedAt != nil ? self : other
         }
-        let reason = ended.endedReason ?? (endedAt != nil ? other.endedReason : endedReason)
+        let sameFinalTurn = (lastTurn ?? turn) == (other.lastTurn ?? other.turn)
+        let reason = ended.endedReason ?? (sameFinalTurn ? (endedAt != nil ? other.endedReason : endedReason) : nil)
         return ConversationTurn(
             turn: turn ?? other.turn,
             // `other` first, so this copy -- the one just fetched -- wins where
@@ -713,6 +733,9 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             firstSeq: Self.earliest(firstSeq, other.firstSeq),
             endInferred: ended.endInferred,
             lastTurn: Self.most(lastTurn, other.lastTurn),
+            endSeq: ended.endSeq,
+            tokenUsage: ended.tokenUsage ?? (endSeq == other.endSeq ? (tokenUsage ?? other.tokenUsage) : nil),
+            branchUnavailable: ended.branchUnavailable ?? (endSeq == other.endSeq ? (branchUnavailable ?? other.branchUnavailable) : nil),
         )
     }
 
@@ -802,6 +825,9 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
         firstSeq: Int? = nil,
         endInferred: Bool? = nil,
         lastTurn: Int? = nil,
+        endSeq: Int? = nil,
+        tokenUsage: TurnTokenUsage? = nil,
+        branchUnavailable: Bool? = nil,
     ) {
         self.turn = turn
         self.lastTurn = lastTurn
@@ -813,6 +839,9 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
         self.endedReason = endedReason
         self.firstSeq = firstSeq
         self.endInferred = endInferred
+        self.endSeq = endSeq
+        self.tokenUsage = tokenUsage
+        self.branchUnavailable = branchUnavailable
     }
 
     /// How long the turn took, when both ends are known.
@@ -978,6 +1007,9 @@ extension SessionMessagesResult {
         var started: [Int?: Date] = [:]
         var ended: [Int?: Date] = [:]
         var reason: [Int?: String] = [:]
+        var endSeqs: [Int?: Int] = [:]
+        var usages: [Int?: TurnTokenUsage] = [:]
+        var branchFlags: [Int?: Bool] = [:]
         /// The earliest log position each turn is known to hold.
         var firstSeq: [Int?: Int] = [:]
         /// The earliest time a turn-naming record carried, for a turn whose
@@ -1082,6 +1114,11 @@ extension SessionMessagesResult {
                 // copy to join.
                 if let turn, !order.contains(turn) { order.append(turn) }
                 ended[turn] = at
+                endSeqs[turn] = seq
+                if let count = payload["data"]?["mizarTokenUsage"]?["totalTokens"]?.intValue {
+                    usages[turn] = TurnTokenUsage(totalTokens: count)
+                }
+                branchFlags[turn] = payload["data"]?["mizarBranchUnavailable"]?.boolValue
                 note(turn, seq: seq, at: nil)
                 // Closed, so a prompt written after it belongs to a later turn
                 // rather than to this one.
@@ -1156,6 +1193,9 @@ extension SessionMessagesResult {
                 endedReason: reason[turn],
                 firstSeq: firstSeq[turn],
                 lastTurn: turn,
+                endSeq: endSeqs[turn],
+                tokenUsage: usages[turn],
+                branchUnavailable: branchFlags[turn],
             )
         }
     }

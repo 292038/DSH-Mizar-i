@@ -29,6 +29,7 @@
 import MizarKit
 import PhotosUI
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct ComposerView: View {
@@ -39,7 +40,7 @@ struct ComposerView: View {
     @Binding var text: String
     /// Whether the field holds the keyboard. Owned by the screen so a tap on the
     /// conversation can put it away.
-    @FocusState.Binding var focused: Bool
+    @Binding var focused: Bool
     /// Whether the composer is opened out into its tall, focused-input form.
     /// Owned by the screen: the room the conversation reserves and the dock's
     /// presence both answer to it.
@@ -54,12 +55,25 @@ struct ComposerView: View {
     let onSent: (String) async -> Void
     /// Called when the host refused it; the text is back in the field.
     var onSendFailed: (String) -> Void = { _ in }
+    /// The measured resting shell height, even while the editor is expanded.
+    /// The screen reserves this space without waiting for collapse to finish.
+    var onCollapsedHeightChanged: ((CGFloat) -> Void)? = nil
 
     @Environment(AppModel.self) private var model
     @State private var sending = false
     @State private var stopping = false
     /// Bumped on every send, to bounce the arrow.
     @State private var sends = 0
+    /// The field's resting height, measured by the editor and clamped to eight lines.
+    ///
+    /// The resting composer is laid out from this rather than from the
+    /// editor's own ambition: a `UIViewRepresentable` fills whatever it is
+    /// proposed, and the field used to wrap its content only because a
+    /// SwiftUI `TextField` has an intrinsic height. One line of body text is
+    /// the starting estimate, so the first layout is a line tall and the
+    /// first measurement corrects it before it is drawn.
+    @State private var fieldHeight: CGFloat = UIFont.preferredFont(forTextStyle: .body).lineHeight
+    @State private var restingInsets: CGFloat?
 
     // MARK: Attachments
 
@@ -87,65 +101,86 @@ struct ComposerView: View {
             //
             // Expanded, the field is the composer: it takes every point between
             // the top edge and the controls, so a long prompt is read whole
-            // instead of through an eight-line letterbox. It is one field with
-            // two limits, never two fields: a second branch would be a second
+            // instead of through an eight-line letterbox. It is one editor with
+            // two heights, never two editors: a second branch would be a second
             // view, and focus does not survive the swap -- the keyboard dropped
-            // on every expand and collapse until this was one TextField.
-            TextField("Ask your agent…", text: $text, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(expanded ? nil : 8)
-                .focused($focused)
-                .frame(maxWidth: .infinity, maxHeight: expanded ? .infinity : nil, alignment: .topLeading)
-                .padding(.horizontal, 16)
-                .padding(.top, 13)
-                .padding(.bottom, 6)
-                .accessibilityIdentifier("composer.field")
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(SessionDetailView.space)) } action: { frame in
-                    ComposerGeometry.shared.field = frame
-                }
-
-            if !attachments.isEmpty {
-                AttachmentStrip(drafts: attachments, progress: uploadProgress) { id in
-                    remove(id)
-                }
+            // on every expand and collapse until this was one view. See
+            // ``ComposerTextInput``.
+            ComposerTextInput(
+                text: $text,
+                expanded: expanded,
+                wantsFocus: focused,
+                onFocusChanged: { value in focused = value },
+                onMeasuredHeight: { height in fieldHeight = height },
+            )
+            .frame(maxWidth: .infinity, maxHeight: expanded ? .infinity : nil, alignment: .topLeading)
+            // Resting, the field is as tall as its own text -- one line to
+            // eight, measured at the width it actually has -- and scrolls
+            // inside itself past eight. Expanded, it fills the room the screen
+            // gives it and the text scrolls inside it. Neither height is
+            // estimated from a character count.
+            .frame(height: expanded ? nil : fieldHeight, alignment: .topLeading)
+            .anchorPreference(key: ComposerRestingBoundsKey.self, value: .bounds) {
+                ComposerRestingBounds(editor: $0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 13)
+            .padding(.bottom, 6)
+            .accessibilityIdentifier("composer.field")
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(SessionDetailView.space)) } action: { frame in
+                ComposerGeometry.shared.field = frame
             }
 
-            if let attachmentError {
-                Label(attachmentError, systemImage: "exclamationmark.triangle")
-                    .font(.caption2)
-                    .foregroundStyle(Theme.failed)
-                    .lineLimit(2)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 4)
-                    .accessibilityIdentifier("composer.attachment.error")
-            }
-
-            HStack(spacing: 6) {
-                ComposerBar(
-                    sessionId: sessionId,
-                    stats: stats,
-                    draft: $text,
-                    focused: $focused,
-                    showingModel: $showingModel,
-                    showingContext: $showingContext,
-                    showingCommands: $showingCommands,
-                    showingPhotoPicker: $showingPhotoPicker,
-                    showingFileImporter: $showingFileImporter,
-                    onLockedAttachment: { showingPaywall = true },
-                )
-                Spacer(minLength: 4)
-                // Put the keyboard away. Only there while the keyboard is up:
-                // with it down the button has nothing to do, and a control
-                // that does nothing reads as a broken one.
-                if focused {
-                    dismissKeyboardButton
-                        .transition(.pop)
+            VStack(alignment: .leading, spacing: 0) {
+                if !attachments.isEmpty {
+                    AttachmentStrip(drafts: attachments, progress: uploadProgress) { id in
+                        remove(id)
+                    }
                 }
-                expandButton
-                primaryButton
+
+                if let attachmentError {
+                    Label(attachmentError, systemImage: "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.failed)
+                        .lineLimit(2)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 4)
+                        .accessibilityIdentifier("composer.attachment.error")
+                }
+
+                HStack(spacing: 6) {
+                    ComposerBar(
+                        sessionId: sessionId,
+                        stats: stats,
+                        draft: $text,
+                        focused: $focused,
+                        showingModel: $showingModel,
+                        showingContext: $showingContext,
+                        showingCommands: $showingCommands,
+                        showingPhotoPicker: $showingPhotoPicker,
+                        showingFileImporter: $showingFileImporter,
+                        onLockedAttachment: { showingPaywall = true },
+                    )
+                    Spacer(minLength: 4)
+                    // Put the keyboard away. Only there while the keyboard is up:
+                    // with it down the button has nothing to do, and a control
+                    // that does nothing reads as a broken one.
+                    if focused {
+                        dismissKeyboardButton
+                            .transition(.pop)
+                    }
+                    expandButton
+                    primaryButton
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
             }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 8)
+            .anchorPreference(key: ComposerRestingBoundsKey.self, value: .bounds) {
+                ComposerRestingBounds(chrome: $0)
+            }
+            .anchorPreference(key: ComposerShellBoundsKey.self, value: .bounds) {
+                ComposerShellMeasurement(chrome: $0)
+            }
         }
         .contentShape(.rect)
         .onTapGesture { focused = true }
@@ -159,6 +194,40 @@ struct ComposerView: View {
         .animation(.mizarSmooth, value: focused)
         .padding(.horizontal, 10)
         .padding(.bottom, 6)
+        .transformAnchorPreference(key: ComposerShellBoundsKey.self, value: .bounds) { measurement, shell in
+            measurement.shell = shell
+            measurement.fieldHeight = fieldHeight
+            measurement.insets = restingInsets
+        }
+        .overlayPreferenceValue(ComposerRestingBoundsKey.self) { bounds in
+            GeometryReader { shell in
+                Color.clear
+                    .onGeometryChange(for: ComposerRestingMeasurement?.self) { _ in
+                        guard let editor = bounds.editor, let chrome = bounds.chrome else { return nil }
+                        let editorHeight = shell[editor].height
+                        let chromeHeight = shell[chrome].height
+                        guard editorHeight.isFinite, editorHeight > 0,
+                              chromeHeight.isFinite, chromeHeight >= 0 else { return nil }
+                        // Never subtract an animated expanded editor to infer a target.
+                        // Refresh padding only when the actual editor is resting.
+                        var insets = restingInsets
+                        if !expanded, abs(editorHeight - fieldHeight) <= 0.5 {
+                            let measured = shell.size.height - editorHeight - chromeHeight
+                            if measured.isFinite, measured >= 0 { insets = measured }
+                        }
+                        guard let insets else { return nil }
+                        let target = fieldHeight + chromeHeight + insets
+                        guard target.isFinite, target > 0 else { return nil }
+                        return ComposerRestingMeasurement(insets: insets, height: target)
+                    } action: { measurement in
+                        guard let measurement else { return }
+                        restingInsets = measurement.insets
+                        onCollapsedHeightChanged?(measurement.height)
+                    }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .mizarFeedback(.impact(weight: .light), trigger: sends)
         // A picker bound to this view rather than to a button: it has to survive
         // the popover closing.
@@ -523,6 +592,47 @@ struct ComposerView: View {
     }
 }
 
+/// Propagates the actual shell bounds so its parent can measure dock overhead
+/// in the same layout pass, independently of editor-height callbacks.
+struct ComposerShellMeasurement {
+    var shell: Anchor<CGRect>?
+    var chrome: Anchor<CGRect>?
+    var fieldHeight: CGFloat?
+    var insets: CGFloat?
+}
+
+struct ComposerShellBoundsKey: PreferenceKey {
+    static var defaultValue: ComposerShellMeasurement { ComposerShellMeasurement() }
+
+    static func reduce(value: inout ComposerShellMeasurement, nextValue: () -> ComposerShellMeasurement) {
+        let next = nextValue()
+        value.shell = next.shell ?? value.shell
+        value.chrome = next.chrome ?? value.chrome
+        value.fieldHeight = next.fieldHeight ?? value.fieldHeight
+        value.insets = next.insets ?? value.insets
+    }
+}
+
+private struct ComposerRestingBounds {
+    var editor: Anchor<CGRect>?
+    var chrome: Anchor<CGRect>?
+}
+
+private struct ComposerRestingBoundsKey: PreferenceKey {
+    static var defaultValue: ComposerRestingBounds { ComposerRestingBounds() }
+
+    static func reduce(value: inout ComposerRestingBounds, nextValue: () -> ComposerRestingBounds) {
+        let next = nextValue()
+        value.editor = next.editor ?? value.editor
+        value.chrome = next.chrome ?? value.chrome
+    }
+}
+
+private struct ComposerRestingMeasurement: Equatable {
+    var insets: CGFloat
+    var height: CGFloat
+}
+
 /// Where the field is, for the send's flight to start from.
 ///
 /// A plain object rather than state: the frame changes on every keystroke that
@@ -532,4 +642,275 @@ struct ComposerView: View {
 final class ComposerGeometry {
     static let shared = ComposerGeometry()
     var field: CGRect = .zero
+}
+
+// MARK: - The field
+
+/// The composer's editor: one `UITextView` behind a `UIViewRepresentable`,
+/// carrying both the resting and the expanded size.
+///
+/// Why not the SwiftUI `TextField` it replaces: an unlimited-line `TextField`
+/// inside a frame that grows without limit promises neither a constrained
+/// editing viewport, nor caret following, nor a scroll range -- a long draft
+/// was cut off with no way to reach its middle or its end. A `UITextView`
+/// states all three explicitly: the resting height is the text's own measured
+/// height clamped to eight lines, the expanded height is the room the screen
+/// gives it, and anything past either scrolls inside the editor.
+///
+/// One instance for both sizes, never two: a second branch would be a second
+/// view, and focus does not survive the swap -- the keyboard dropped on every
+/// expand and collapse until the field was one view. Expanding changes the
+/// height and the scrolling, not the editor.
+struct ComposerTextInput: UIViewRepresentable {
+    /// What has been typed. Owned by the screen, because the command list
+    /// writes into it too -- a command is something the operator finishes
+    /// typing.
+    @Binding var text: String
+    /// Whether the composer is opened out: the editor then fills the room it
+    /// is given rather than using its measured resting height.
+    var expanded: Bool
+    /// Whether the field should hold the keyboard.
+    var wantsFocus: Bool
+    /// Called when the editor takes or gives up the keyboard on its own -- a
+    /// tap into the field, a tap out of it.
+    var onFocusChanged: (Bool) -> Void
+    /// Called with the resting height at the current width, clamped to one
+    /// through eight lines even while expanded. Expansion ignores this height
+    /// for layout but keeps it ready for the next collapse.
+    var onMeasuredHeight: (CGFloat) -> Void
+
+    func makeCoordinator() -> ComposerTextInputCoordinator {
+        ComposerTextInputCoordinator(text: $text, onFocusChanged: onFocusChanged, onMeasuredHeight: onMeasuredHeight)
+    }
+
+    func makeUIView(context: Context) -> ComposerEditorView {
+        let editor = ComposerEditorView()
+        editor.delegate = context.coordinator
+        context.coordinator.editor = editor
+        editor.onNaturalHeight = { [weak coordinator = context.coordinator] height in
+            coordinator?.reportMeasuredHeight(height)
+        }
+        // The composer's own padding does the spacing; the editor's insets
+        // would double it. Zeroed, so a line of text starts exactly where the
+        // SwiftUI padding says it does -- the layout the field had before.
+        editor.textContainerInset = .zero
+        editor.textContainer.lineFragmentPadding = 0
+        // Body text, following the operator's Dynamic Type setting -- the
+        // same font the SwiftUI field used.
+        editor.font = UIFont.preferredFont(forTextStyle: .body)
+        editor.adjustsFontForContentSizeCategory = true
+        editor.textColor = UIColor.label
+        editor.backgroundColor = .clear
+        // The resting composer scrolls internally once the draft is past
+        // eight lines; the expanded one always does. No scroll indicator:
+        // the field is a small surface, and a bar down its edge read as a
+        // second scroll view fighting the conversation's.
+        editor.isScrollEnabled = true
+        editor.showsVerticalScrollIndicator = false
+        editor.showsHorizontalScrollIndicator = false
+        // Return inserts a newline, as the vertical field it replaces did.
+        editor.returnKeyType = .default
+        // The identifier the UI suite queries. A `UITextView` is a *textView*
+        // to XCUITest, not a textField -- the query type changed with the
+        // component (see `docs/ios-three-issues-diagnosis-2026-10-22.md`).
+        editor.accessibilityIdentifier = "composer.field"
+        editor.accessibilityLabel = String(localized: "Ask your agent…")
+        // The placeholder is a label, not attributed text: it has to vanish
+        // the moment the first character arrives and come back when the last
+        // one goes, and it must not scroll with the text.
+        //
+        // This manually created subview uses explicit Auto Layout constraints.
+        let placeholder = UILabel()
+        placeholder.translatesAutoresizingMaskIntoConstraints = false
+        placeholder.font = editor.font
+        placeholder.text = String(localized: "Ask your agent…")
+        placeholder.textColor = UIColor.placeholderText
+        placeholder.numberOfLines = 0
+        placeholder.isUserInteractionEnabled = false
+        placeholder.accessibilityElementsHidden = true
+        editor.addSubview(placeholder)
+        NSLayoutConstraint.activate([
+            placeholder.leadingAnchor.constraint(equalTo: editor.frameLayoutGuide.leadingAnchor),
+            placeholder.trailingAnchor.constraint(equalTo: editor.frameLayoutGuide.trailingAnchor),
+            placeholder.topAnchor.constraint(equalTo: editor.frameLayoutGuide.topAnchor),
+        ])
+        editor.placeholderLabel = placeholder
+        // The draft the screen already holds -- a restored one, or one a
+        // command just wrote -- is in the field from the first layout.
+        editor.text = text
+        return editor
+    }
+
+    func updateUIView(_ editor: ComposerEditorView, context: Context) {
+        // The callbacks are refreshed rather than captured once: the screen
+        // rebuilds this struct on every update, and a closure captured at
+        // `makeUIView` would be the first one the screen ever built.
+        context.coordinator.text = $text
+        context.coordinator.onFocusChanged = onFocusChanged
+        context.coordinator.onMeasuredHeight = onMeasuredHeight
+
+        // The text, only when it has actually changed from outside. Assigning
+        // on every SwiftUI update resets the selection, empties the undo
+        // stack and interrupts a Chinese input method's composition -- the
+        // field would fight the operator mid-word.
+        if editor.text != text, editor.markedTextRange == nil {
+            // A composition in progress is the operator's: the marked text is
+            // a candidate being chosen between, and a replacement now takes
+            // it away. The write waits for the commit, which comes through
+            // `textViewDidChange`.
+            editor.text = text
+            // The caret follows the write -- a command's insert lands where
+            // the command put it -- and is scrolled to visible if the write
+            // left it below the fold. Reading a long draft by scrolling up is
+            // not disturbed: nothing here runs without a real text change.
+            if let caret = editor.selectedTextRange?.start {
+                editor.scrollRectToVisible(editor.caretRect(for: caret), animated: false)
+            }
+        }
+
+        // The keyboard follows the binding, and only on a change: calling
+        // `becomeFirstResponder` on every update re-opens a keyboard the
+        // operator had just put away with the chevron.
+        if wantsFocus != context.coordinator.focused {
+            if wantsFocus {
+                editor.becomeFirstResponder()
+            } else {
+                editor.resignFirstResponder()
+            }
+        }
+
+        // One editor, two heights: expanded fills the room it is given and
+        // scrolls its content; resting is the text's own measured height, and
+        // scrolls only once the draft is past eight lines.
+        editor.isExpanded = expanded
+        // The placeholder goes when the first character arrives, exactly as
+        // the SwiftUI field's did.
+        editor.placeholderLabel?.isHidden = !text.isEmpty
+    }
+}
+
+/// The editor itself: a plain `UITextView` that reports the height its text
+/// needs at whatever width it has been given.
+///
+/// Measured in `layoutSubviews` rather than on the text delegate alone: the
+/// natural height depends on the width, and the width changes with a
+/// rotation, an iPad split and a Dynamic Type change -- none of which is a
+/// text change. `measureAndReportNaturalHeight()` covers the text changes.
+@MainActor
+final class ComposerEditorView: UITextView {
+    /// The placeholder label, shown while the field is empty.
+    var placeholderLabel: UILabel?
+
+    /// Whether the composer is expanded. Its viewport fills the available
+    /// room, but height reports always describe the resting viewport.
+    var isExpanded = false
+
+    /// Called with the clamped resting height at the current width, whenever
+    /// the layout produces a different one.
+    var onNaturalHeight: ((CGFloat) -> Void)?
+
+    private var lastReportedHeight: CGFloat = 0
+
+    /// Eight lines at the current font: the resting composer's ceiling. Past
+    /// it the editor scrolls instead of growing, which is the whole point --
+    /// an unlimited `TextField` grew without limit and cut the text off.
+    private var restingHeightLimit: CGFloat {
+        (font?.lineHeight ?? 20) * 8
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        measureAndReportNaturalHeight()
+    }
+
+    /// Measure the text at its actual width, clamp to the resting viewport,
+    /// and report when that resting height differs from the last one.
+    ///
+    /// Measured, never counted in characters: how many lines a paragraph
+    /// wraps to is a question about the width, and only the layout engine can
+    /// answer it. The guard on the last reported value is what stops the
+    /// report from re-driving the layout that produced it.
+    func measureAndReportNaturalHeight() {
+        guard bounds.width > 0 else { return }
+        let natural = sizeThatFits(CGSize(width: bounds.width, height: .infinity)).height
+        // Keep the collapse target ready while expanded. Reporting the full
+        // document height here made collapse first use that oversized target,
+        // then relayout again when the deferred resting measurement arrived.
+        let reported = min(max(natural, font?.lineHeight ?? 20), restingHeightLimit)
+        guard reported != lastReportedHeight else { return }
+        lastReportedHeight = reported
+        onNaturalHeight?(reported)
+    }
+}
+
+/// The bridge between the editor and the screen's state.
+///
+/// Three jobs, and each one is a place a naive implementation corrupts the
+/// field: the text follows the editor without feeding back, the keyboard
+/// follows the binding without being re-opened on every update, and the
+/// height follows the layout without a loop.
+@MainActor
+final class ComposerTextInputCoordinator: NSObject, UITextViewDelegate {
+    var text: Binding<String>
+    var onFocusChanged: (Bool) -> Void
+    var onMeasuredHeight: (CGFloat) -> Void
+
+    /// The editor this coordinator belongs to. Weak: the editor holds the
+    /// coordinator as its delegate, and the measurement has to reach the
+    /// view without a cycle.
+    weak var editor: ComposerEditorView?
+
+    /// Whether the editor last reported holding the keyboard. The bridge's
+    /// own memory, so `becomeFirstResponder` is asked for once per change
+    /// rather than once per update.
+    var focused = false
+
+    init(text: Binding<String>, onFocusChanged: @escaping (Bool) -> Void, onMeasuredHeight: @escaping (CGFloat) -> Void) {
+        self.text = text
+        self.onFocusChanged = onFocusChanged
+        self.onMeasuredHeight = onMeasuredHeight
+    }
+
+    private var pendingHeight: CGFloat?
+    private var heightReportScheduled = false
+
+    func reportMeasuredHeight(_ height: CGFloat) {
+        pendingHeight = height
+        guard !heightReportScheduled else { return }
+        heightReportScheduled = true
+        // layoutSubviews may run inside a SwiftUI update. Deliver the latest
+        // measurement next turn, avoiding state mutation during that update.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.heightReportScheduled = false
+            guard let height = self.pendingHeight else { return }
+            self.pendingHeight = nil
+            self.onMeasuredHeight(height)
+        }
+    }
+
+    func textViewDidChange(_ textView: UITextView) {
+        // The binding follows the editor, not the other way round: this is
+        // the only path that writes on an ordinary keystroke, and the
+        // `updateUIView` guard above is what keeps that write from coming
+        // straight back as a replacement.
+        text.wrappedValue = textView.text ?? ""
+        // The text changed, so the height it needs may have: a paragraph
+        // that just wrapped is a line taller.
+        editor?.measureAndReportNaturalHeight()
+    }
+
+    func textViewDidBeginEditing(_ textView: UITextView) {
+        setFocus(true)
+    }
+
+    func textViewDidEndEditing(_ textView: UITextView) {
+        setFocus(false)
+    }
+
+    private func setFocus(_ value: Bool) {
+        guard value != focused else { return }
+        focused = value
+        onFocusChanged(value)
+    }
 }

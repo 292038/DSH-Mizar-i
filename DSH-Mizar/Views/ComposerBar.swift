@@ -35,7 +35,7 @@ struct ComposerBar: View {
     @Binding var draft: String
     /// Whether the field holds the keyboard, so a command can focus it -- and so
     /// the row can make room for the text while it is being typed.
-    @FocusState.Binding var focused: Bool
+    @Binding var focused: Bool
     @Environment(AppModel.self) private var model
     /// Which panel is open, owned by the screen rather than by this view.
     ///

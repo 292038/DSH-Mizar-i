@@ -82,7 +82,7 @@ final class ScreenshotTour: XCTestCase {
             // A conversation, with the requests docked above the composer.
             app.terminate()
             app = launch(session: "first", language: language, pending: true)
-            _ = app.textFields["composer.field"].waitForExistence(timeout: 20)
+            _ = app.textViews["composer.field"].waitForExistence(timeout: 20)
             shoot("02-conversation-dock\(suffix)", settle: 2.5)
 
             // The sidebar out, and the conversation pushed aside as a card.
@@ -92,9 +92,9 @@ final class ScreenshotTour: XCTestCase {
             app.buttons["shell.dismissSidebar"].tap()
 
             // Typing tucks the requests away.
-            settled(app.textFields["composer.field"])
-            app.textFields["composer.field"].tap()
-            app.textFields["composer.field"].typeText("Run the tests again")
+            settled(app.textViews["composer.field"])
+            app.textViews["composer.field"].tap()
+            app.textViews["composer.field"].typeText("Run the tests again")
             shoot("04-typing\(suffix)")
             // The tucked pill brings them back and puts the keyboard away.
             let tucked = app.buttons["interactions.tucked"]
@@ -167,7 +167,7 @@ final class ScreenshotTour: XCTestCase {
 
         // The conversation, its windows, and the turn index.
         app = launch(session: "first", language: "en", pending: false)
-        _ = app.textFields["composer.field"].waitForExistence(timeout: 20)
+        _ = app.textViews["composer.field"].waitForExistence(timeout: 20)
         Thread.sleep(forTimeInterval: 2)
         app.buttons["composer.model"].tap()
         shoot("w06-model")
@@ -206,7 +206,7 @@ final class ScreenshotTour: XCTestCase {
     func testPadTour() throws {
         guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("an iPad tour") }
         let app = launch(session: "first", language: "en", pending: false)
-        _ = app.textFields["composer.field"].waitForExistence(timeout: 20)
+        _ = app.textViews["composer.field"].waitForExistence(timeout: 20)
         shoot("p01-rail", settle: 2)
         app.buttons["shell.turnIndexToggle"].tap()
         shoot("p02-index-column", settle: 1.5)

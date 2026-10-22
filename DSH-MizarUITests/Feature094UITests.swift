@@ -406,7 +406,7 @@ final class Feature094UITests: XCTestCase {
     ///
     /// - Parameter app: the running app.
     private func openSessionIfNeeded(_ app: XCUIApplication) {
-        if app.textFields["composer.field"].waitForExistence(timeout: 5) { return }
+        if app.textViews["composer.field"].waitForExistence(timeout: 5) { return }
         if !app.buttons["sessions.new"].exists {
             app.buttons["shell.sidebarToggle"].tap()
         }
@@ -418,7 +418,7 @@ final class Feature094UITests: XCTestCase {
         if row.waitForExistence(timeout: 10), row.isHittable {
             row.tap()
         }
-        _ = app.textFields["composer.field"].waitForExistence(timeout: 10)
+        _ = app.textViews["composer.field"].waitForExistence(timeout: 10)
     }
 
     /// Bring the sidebar out, if it is not out already.

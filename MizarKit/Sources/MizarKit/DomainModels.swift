@@ -42,6 +42,8 @@ public struct HostInfo: Decodable, Sendable, Equatable {
     /// without it, and the phone must read "cannot say" rather than "no relay".
     /// `baseURL` is `nil` until the tunnel has a room.
     public let relay: HostRelay?
+    /// Explicit plugin identity and optional capabilities; absent on older hosts.
+    public let plugin: HostPlugin?
 
     public init(
         hostId: String,
@@ -50,6 +52,7 @@ public struct HostInfo: Decodable, Sendable, Equatable {
         protocolVersion: Int,
         addresses: [String]? = nil,
         relay: HostRelay? = nil,
+        plugin: HostPlugin? = nil,
     ) {
         self.hostId = hostId
         self.hostName = hostName
@@ -57,6 +60,7 @@ public struct HostInfo: Decodable, Sendable, Equatable {
         self.protocolVersion = protocolVersion
         self.addresses = addresses
         self.relay = relay
+        self.plugin = plugin
     }
 }
 

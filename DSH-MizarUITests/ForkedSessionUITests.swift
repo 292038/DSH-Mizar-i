@@ -147,7 +147,7 @@ final class ForkedSessionUITests: XCTestCase {
         // unlike the fixture session's, so the text on screen also says whose
         // conversation was opened.
         row.tap()
-        expect(app.textFields["composer.field"], "tapping the forked session did not open its conversation")
+        expect(app.textViews["composer.field"], "tapping the forked session did not open its conversation")
         XCTAssertTrue(
             app.staticTexts[Self.branchPrompt].waitForExistence(timeout: Self.patience),
             "the forked conversation has no prompt: its history did not sync",

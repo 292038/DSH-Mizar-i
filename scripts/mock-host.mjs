@@ -79,6 +79,12 @@ const DEVICE_ID = SECOND_IDENTITY
  */
 let withPending = process.env['MIZAR_MOCK_PENDING'] !== '0'
 
+// Optional official-account fixture. Existing tests stay on an old plugin and
+// therefore cannot accidentally issue balance queries or expose account data.
+let balanceVariant = 'old'
+let longReaderFixture = false
+const forkRequests = []
+
 /**
  * How long to stall every answer, in milliseconds.
  *
@@ -757,8 +763,23 @@ function answer(frame) {
           home: '/Users/you',
           protocolVersion: 1,
           addresses: [`127.0.0.1:${port}`],
+          ...(balanceVariant === 'missing' ? {} : {
+            plugin: { id: balanceVariant === 'nonplugin' ? 'other-plugin' : 'dsh-mizar', capabilities: balanceVariant === 'old' ? [] : ['deepseek.balance.v1'] },
+          }),
         },
       }
+    case 'account.balance':
+      if (balanceVariant === 'failed') return { v: 1, type: 'error', id, error: { code: 'UPSTREAM_FAILED', message: 'Fixture balance request failed' } }
+      return { v: 1, type: 'ok', id, result:
+        ['ready', 'long'].includes(balanceVariant) ? {
+          status: 'ready', wallets: [{ currency: 'CNY', balance: balanceVariant === 'long' ? '12345678901234567890.000000000001' : '123.456789' }, { currency: 'USD', balance: '0' }],
+          bonusWallets: balanceVariant === 'long' ? [{ currency: 'CNY', balance: '98765432109876543210.123456789012' }, { currency: 'USD', balance: '1.234567890123456789e-20' }] : [{ currency: 'CNY', balance: '2.5' }], topUpURL: 'https://platform.deepseek.com/top_up',
+        } : { status: balanceVariant === 'signed-out' ? 'signed-out' : balanceVariant === 'nonofficial' ? 'unsupported' : 'unavailable' },
+      }
+    case 'session.fork':
+      forkRequests.push({ ...frame.payload })
+      forkedSessionPresent = true
+      return { v: 1, type: 'ok', id, result: { sessionId: 'forked-child' } }
     case 'workspace.list':
       // The host's own workspace registry, which is not the session list: a
       // session outlives the workspace it was created in, so a phone that
@@ -1352,6 +1373,15 @@ function answer(frame) {
       }
     }
     case 'session.messages':
+      if (longReaderFixture) {
+        const records = []
+        let seq = 0
+        for (let turn = 1; turn <= 24; turn += 1) {
+          const rec = (type, data) => ({ type: 'event', event: { type, seq: seq++, time: Date.now() - (25 - turn) * 60000, data } })
+          records.push(rec('turn/start', { turn }), rec('user/message', { role: 'user', content: [{ type: 'text', text: `Reader prompt ${turn}. ` + 'Earlier conversation body. '.repeat(10) }], source: { kind: 'user' } }), rec('assistant/message', { turn, message: { role: 'assistant', content: [{ type: 'text', text: `Reader answer ${turn}. ` + 'Stable visible message anchor. '.repeat(10) }] } }), rec('turn/end', { turn, reason: { kind: 'completed' }, mizarTokenUsage: { totalTokens: 12345 }, mizarBranchUnavailable: false }))
+        }
+        return { v: 1, type: 'ok', id, result: { sessionId: frame.payload?.sessionId, throughSeq: seq - 1, hasMore: false, records } }
+      }
       // A requested page the transport cannot carry. The host's own answer to
       // this is `RESPONSE_TOO_LARGE` rather than a truncated page or a closed
       // socket, and the client's answer is to ask for less -- so a page limit
@@ -1462,7 +1492,11 @@ function answer(frame) {
             type,
             seq: counter,
             time: now + clockSkewMs - (20 - counter) * 1000,
-            data,
+            data: type === 'turn/end' ? {
+              ...data,
+              mizarTokenUsage: { totalTokens: data.turn === 1 ? 12345 : data.turn === 3 ? 67890 : 20 },
+              mizarBranchUnavailable: data.reason?.kind === 'error',
+            } : data,
           },
         }
       }
@@ -2100,6 +2134,7 @@ const server = createServer((request, response) => {
       methods: { ...methodCounts },
       refusedMethods: { ...refusedCounts },
       modelSets: modelSets.slice(),
+      forks: forkRequests.slice(),
       // How many `session.activity` reads carried `beforeSeq`. A lazy page is
       // invisible from the screen -- the rows look like the rows that were
       // already there -- so this is the only place "the older history was
@@ -2182,6 +2217,18 @@ const server = createServer((request, response) => {
     response.end(JSON.stringify({ ok: true, forked: forkedSessionPresent }))
     return
   }
+  if (request.url?.startsWith('/reader')) {
+    longReaderFixture = (request.url ?? '').includes('long=1')
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ ok: true, long: longReaderFixture }))
+    return
+  }
+  if (request.url?.startsWith('/balance')) {
+    balanceVariant = /variant=([\w-]+)/.exec(request.url ?? '')?.[1] ?? 'ready'
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ ok: true, variant: balanceVariant }))
+    return
+  }
   if (request.url?.startsWith('/stats')) {
     statsVariant = /variant=(\w+)/.exec(request.url ?? '')?.[1] ?? 'full'
     response.writeHead(200, { 'content-type': 'application/json' })
@@ -2220,6 +2267,9 @@ const server = createServer((request, response) => {
     // depend on test order, which is a suite nobody can trust.
     sentPrompts.length = 0
     createdSessions.length = 0
+    forkRequests.length = 0
+    longReaderFixture = false
+    balanceVariant = /balance=([\w-]+)/.exec(request.url ?? '')?.[1] ?? 'old'
     failMethod = null
     statsVariant = 'full'
     // The permission preset and the archived set are fixture state like the

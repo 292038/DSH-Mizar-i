@@ -6,9 +6,11 @@ next to the tests. It exists to move the *layout and copy* half of UI coverage
 off the XCUITest suite, which launches the whole app for every assertion.
 
 The existing UI suite is 80 XCTest methods: **1806.6 s of test execution /
-1831 s wall**, an average of **22.6 s per method**. The snapshot suite is six tests — five
-snapshot tests with ten rendered references, plus one identifier-contract test —
-and executes in **0.23–0.43 s in total** on the same simulator runtime — there is no app launch, no mock host, no navigation.
+1831 s wall**, an average of **22.6 s per method**. The snapshot suite is six
+tests — four snapshot tests with eight rendered references, plus two
+identifier-contract tests (the attachment strip's and the composer field's) —
+and executes in **0.23–0.43 s in total** on the same simulator runtime — there
+is no app launch, no mock host, no navigation.
 
 ## Running it
 
@@ -164,6 +166,12 @@ UIKit. Verified here rather than assumed:
   half needs the chip extracted into a view the renderer can draw (or a
   UIHostingController-based renderer, which this harness does not have). Do not
   re-add a blank reference for it.
+- **`ComposerTextInput` is blank.** The composer's field is a `UITextView`
+  behind `UIViewRepresentable` (replaced 2026-10-22, see
+  `docs/ios-three-issues-diagnosis-2026-10-22.md`), which is UIKit-backed the
+  same way. Its pilot is the identifier/copy contract only; the long-text
+  behaviour it exists for -- viewport, caret following, scroll range -- needs a
+  real window and a keyboard, which is UI-test territory.
 - **Animations cannot be snapshotted.** `TwinStar`, `MizarMarkConnecting`,
   `MizarMarkSearching` and the live `ConnectionDot` animate, and Reduce Motion —
   the state in which they rest — cannot be forced from a test because

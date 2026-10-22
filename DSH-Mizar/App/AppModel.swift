@@ -332,10 +332,13 @@ final class AppModel {
     /// keep in step for no gain. `nil`-ing `syncProgress` between the phases of
     /// a sync is why this cannot simply be `syncProgress != nil`.
     private(set) var firstLoad = false
+    /// Changes even when navigation leaves and later returns to the same id.
+    private var selectionGeneration: UInt64 = 0
     /// The session the conversation screen is showing.
     var selectedSessionId: String? {
         didSet {
             guard selectedSessionId != oldValue else { return }
+            selectionGeneration &+= 1
             // Dropped rather than kept: the cards on screen belong to the session
             // being left, and the read below is what puts this one's up.
             pendingState.clear()
@@ -557,8 +560,38 @@ final class AppModel {
     /// This is the accessor ``HostScoped`` has a `held` for.
     private var recentHostEventsForArchive: [HostSummary.Event] { recentHostEventState.held ?? [] }
 
+    /// Official DSH wallets are distinct from the Mizar relay subscription account.
+    let deepSeekBalance = DeepSeekBalanceController()
+    var balanceConnectionTag: HostTag? { phase == .ready ? currentTag : nil }
+
+    func refreshDeepSeekBalance() async {
+        guard let connection, let tag = balanceConnectionTag else {
+            deepSeekBalance.configure(tag: nil)
+            return
+        }
+        if deepSeekBalance.connectionTag != tag {
+            deepSeekBalance.configure(
+                tag: tag,
+                readHost: { try await connection.call("host.info", as: HostInfo.self) },
+                readBalance: {
+                    try await connection.call(
+                        "account.balance",
+                        payload: .object(["client": .object([
+                            "version": .string(Self.appVersion),
+                            "locale": .string(Locale.current.identifier),
+                            "timezoneOffsetSeconds": .number(Double(TimeZone.current.secondsFromGMT())),
+                        ])]),
+                        as: DeepSeekBalanceResponse.self,
+                    )
+                },
+            )
+        }
+        await deepSeekBalance.refresh()
+    }
+
     private var connection: MizarConnection? {
         didSet {
+            if connection !== oldValue { deepSeekBalance.configure(tag: nil) }
             // Stamped here, the one place every socket passes through, so "how
             // long has this been up" cannot disagree with the socket in use.
             if connection == nil {
@@ -1934,6 +1967,37 @@ final class AppModel {
             phase = .failed(Self.describe(error, authority: host?.authority))
             return nil
         }
+    }
+
+    /// Branch through the selected turn's exact inclusive log boundary.
+    /// A host or selection change while the request is away must not navigate
+    /// the operator back to a conversation they have already left.
+    func forkSession(sessionId: String, atSeq: Int) async throws {
+        guard let connection else {
+            throw NSError(domain: "MizarBranch", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: String(localized: "Not connected to the computer."),
+            ])
+        }
+        let epoch = connectionEpoch
+        let navigation = selectionGeneration
+        let hostId = host?.hostId
+        let payload = JSONValue.object([
+            "sessionId": .string(sessionId),
+            "atSeq": .number(Double(atSeq)),
+        ])
+        struct ForkResult: Decodable, Sendable { let sessionId: String }
+        let result = try await loggedCall("session.fork", payload: payload, on: connection, as: ForkResult.self)
+        guard !Task.isCancelled, connectionEpoch == epoch, host?.hostId == hostId,
+              selectionGeneration == navigation, selectedSessionId == sessionId else { return }
+        await refreshSessions()
+        guard !Task.isCancelled, connectionEpoch == epoch, host?.hostId == hostId,
+              selectionGeneration == navigation, selectedSessionId == sessionId else { return }
+        guard !result.sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NSError(domain: "MizarBranch", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: String(localized: "The conversation was not branched. Try again."),
+            ])
+        }
+        selectedSessionId = result.sessionId
     }
 
     /// Start a session in a directory and give it its first prompt, in that
