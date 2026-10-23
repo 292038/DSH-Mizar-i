@@ -3307,9 +3307,34 @@ final class AppModel {
             hasMore: page.hasMore,
             turns: mergeTurns(cached: known.turns ?? [], fresh: page.conversationTurns()),
             oldestSeq: [known.oldestSeq, page.oldestSeq].compactMap { $0 }.min(),
-            stats: known.stats,
+            stats: statsFrame(carrying: page.context, over: known.stats),
             deliveredSeq: known.deliveredSeq,
         )
+    }
+
+    /// The stored usage frame with a page's context figure folded in.
+    ///
+    /// The page carries the context window and its breakdown on every refresh,
+    /// full and incremental alike (see ``SessionMessagesResult/context``), and
+    /// the composer reads the figure from the cached frame -- so the page's
+    /// figure has to land there or it is thrown away with the reply.
+    ///
+    /// The rest of the frame is the previous one, field for field: a page says
+    /// nothing about token usage, title or model, and replacing it with a frame
+    /// that only carries `context` would blank the figures the screen already
+    /// had. A page without a figure (an older plugin) leaves the frame alone:
+    /// absent is unknown, not zero.
+    ///
+    /// - Parameters:
+    ///   - context: the context figure the page carried, when it carried one.
+    ///   - previous: the frame the cache already held.
+    /// - Returns: the frame to store, or `nil` when there is nothing to store.
+    private nonisolated static func statsFrame(
+        carrying context: ContextPressure?,
+        over previous: SessionStatsFrame?,
+    ) -> SessionStatsFrame? {
+        guard let context else { return previous }
+        return SessionStatsFrame(context: context).merging(previous)
     }
 
     /// Read a session's conversation from the phone's own storage.
@@ -3412,12 +3437,27 @@ final class AppModel {
         syncProblem = lastError
     }
 
+    /// One forward page read, and the usage frame it left in the cache.
+    ///
+    /// The screen reads the context figure from its `stats` state, and the page
+    /// is what carries the fresh one -- so the read hands both halves back in
+    /// one answer rather than making the caller re-read the cache it just
+    /// wrote.
+    struct SyncedConversation {
+        /// The items now known, oldest first.
+        let items: [ConversationItem]
+        /// The cached usage frame after the page's context figure was folded
+        /// in, or `nil` when nothing is known yet.
+        let stats: SessionStatsFrame?
+    }
+
     /// Fetch one session's page and fold it into the cache.
     ///
     /// - Parameter sessionId: the session to sync.
-    /// - Returns: the items now known, oldest first.
+    /// - Returns: the items now known and the usage frame the cache holds after
+    ///   the page's context figure was folded in.
     @discardableResult
-    func syncConversation(for sessionId: String) async -> [ConversationItem] {
+    func syncConversation(for sessionId: String) async -> SyncedConversation {
         // What this phone holds decides what the host sends. A refresh used to
         // download the whole tail every time -- the phone already had every
         // record and paid for them again on every pull, reconnect and poll.
@@ -3462,9 +3502,12 @@ final class AppModel {
                     // what is already stored, and paging from the wrong end would
                     // re-fetch what is already here.
                     oldestSeq: [cached?.oldestSeq, older].compactMap { $0 }.min(),
-                    // Carried forward: this write replaces the whole file, and
-                    // dropping the frame here would undo the cache above.
-                    stats: cached?.stats,
+                    // The page's context figure, folded into the frame the
+                    // composer draws from: every refresh carries one, so the
+                    // occupancy ring moves with the turn instead of waiting for
+                    // the next full load. A page without one leaves the frame
+                    // alone -- see `statsFrame(carrying:over:)`.
+                    stats: Self.statsFrame(carrying: result.context, over: cached?.stats),
                     // Advanced, never replaced: the page starts at a position
                     // newer than what is stored, and the highest position this
                     // phone has seen is the only thing it may claim next time.
@@ -3491,9 +3534,11 @@ final class AppModel {
             // A repair folded older records in, and the screen draws the cache:
             // return what is on disk now rather than the page before the repair,
             // so "what is on screen and what is stored" stay the same answer.
-            return repaired
-                ? await conversations.load(sessionId: sessionId)?.items ?? stored.items
-                : stored.items
+            let known = repaired ? await conversations.load(sessionId: sessionId) : nil
+            return SyncedConversation(
+                items: known?.items ?? stored.items,
+                stats: known?.stats ?? stored.stats,
+            )
         } catch {
             // A cancelled read is not a failure to report. It is a phone being
             // suspended -- or, now, a background sync that ran out of its
@@ -3503,7 +3548,7 @@ final class AppModel {
             // moment the app could ask again.
             if Task.isCancelled {
                 log.add(.cache, "session \(sessionId): read cancelled; nothing changed")
-                return []
+                return SyncedConversation(items: [], stats: nil)
             }
             let message = Self.describe(error, authority: host?.authority ?? host?.baseURL)
             if !message.isEmpty { lastError = message }
@@ -3515,7 +3560,10 @@ final class AppModel {
             conversationError = message.isEmpty
                 ? "The computer did not answer. Pull down to try again."
                 : message
-            return await conversations.load(sessionId: sessionId)?.items ?? []
+            return SyncedConversation(
+                items: await conversations.load(sessionId: sessionId)?.items ?? [],
+                stats: nil,
+            )
         }
     }
 

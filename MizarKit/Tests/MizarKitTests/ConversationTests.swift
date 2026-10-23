@@ -18,6 +18,32 @@ private func page(_ json: String) throws -> SessionMessagesResult {
 
 @Suite("Conversation")
 struct ConversationTests {
+    @Test("a page carries the context figure, and a page without one is unknown")
+    func pageContext() throws {
+        // Every page carries it -- full refresh and data-saving incremental
+        // refresh alike, from the same projection baseline that names the cut --
+        // which is what keeps the composer's occupancy figure current while a
+        // turn runs.
+        let withContext = try page("""
+        {"sessionId":"s1","asOfSeq":17,"hasMore":false,"context":{
+          "window":128000,"pressureTokens":60000,"projectedTokens":64000,"percent":50,
+          "breakdown":{"systemTokens":1000,"toolsTokens":2000,"messageTokens":3000}},
+         "records":[]}
+        """)
+        #expect(withContext.context?.window == 128_000)
+        #expect(withContext.context?.pressureTokens == 60_000)
+        #expect(withContext.context?.projectedTokens == 64_000)
+        #expect(withContext.context?.percent == 50)
+        #expect(withContext.context?.breakdown?.messageTokens == 3_000)
+
+        // An older plugin omits the key. That is unknown, not an empty window:
+        // the app must keep whatever frame it already had.
+        let withoutContext = try page("""
+        {"sessionId":"s1","asOfSeq":17,"hasMore":false,"records":[]}
+        """)
+        #expect(withoutContext.context == nil)
+    }
+
     @Test("a user message becomes a bubble")
     func userMessage() throws {
         let result = try page("""

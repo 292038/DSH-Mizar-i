@@ -308,8 +308,8 @@ struct SubagentBoard: View {
         var pageArrived = false
         if row.running || pageStale || neverRead {
             pagesRequested.insert(row.sessionId)
-            let items = await model.syncConversation(for: row.sessionId)
-            pageArrived = !items.isEmpty
+            let synced = await model.syncConversation(for: row.sessionId)
+            pageArrived = !synced.items.isEmpty
         }
         let cached = pageArrived
             ? await model.cachedConversation(for: row.sessionId)

@@ -42,6 +42,15 @@ public struct SessionMessagesResult: Decodable, Sendable, Equatable {
     public let asOfSeq: Int?
     public let records: [SessionRecord]
     public let hasMore: Bool
+    /// Context-window occupancy and its breakdown, as of this page's cut.
+    ///
+    /// Every page carries it -- the host derives it from the same projection
+    /// baseline that names the cut, so a full refresh and a data-saving
+    /// incremental refresh both bring it -- which is what keeps the composer's
+    /// occupancy ring and its detail popover current while a turn runs. `nil`
+    /// means the host did not send one (an older plugin, or a deployment with no
+    /// token-meter projection): unknown, never zero.
+    public let context: ContextPressure?
 }
 
 /// What the phone claims to hold when it asks for a page.

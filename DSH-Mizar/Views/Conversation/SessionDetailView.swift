@@ -1231,13 +1231,22 @@ struct SessionDetailView: View {
             conversationLoads -= 1
             let cached = await model.cachedConversation(for: sessionId)
             withMizarAnimation(.mizarSmooth) {
-                if !synced.isEmpty {
-                    items = synced
+                if !synced.items.isEmpty {
+                    items = synced.items
                     conversationSessionId = sessionId
                 }
                 if let cached {
                     show(turns: cached.turns ?? [])
                 }
+            }
+            // The page carries the context figure on every refresh, so the
+            // bar's occupancy ring and its popover move with the turn instead
+            // of waiting for the next full load. Put it up whether or not the
+            // sent text has landed yet: the figure is this reply's, and the
+            // send poll is the first refresh that runs after a prompt.
+            if let frame = synced.stats {
+                stats = frame
+                statsSessionId = sessionId
             }
             let arrived = shownItems.contains { item in
                 if case .message(_, .user, let text, _) = item { return text == sent }
@@ -1261,10 +1270,10 @@ struct SessionDetailView: View {
     /// Refresh the conversation rows on a running-poll tick.
     ///
     /// The model's tick has already re-read the session list; this is the screen
-    /// taking the second half of it. Only the conversation page is fetched -- the
-    /// figures above the composer change with a model answering, not with a turn
-    /// ending -- so a tick costs at most one conversation page, never a stats
-    /// read as well.
+    /// taking the second half of it. Only the conversation page is fetched, and
+    /// that page also carries the current context figure -- so a tick costs one
+    /// conversation page, never an extra stats read, and the occupancy ring and
+    /// its breakdown still move with the running turn.
     ///
     /// **Skipped, not queued.** A load already in flight owns the socket, and a
     /// tick that joined a queue behind it would be a second load stacked on the
@@ -1293,13 +1302,21 @@ struct SessionDetailView: View {
         // this is the moment a running turn becomes a finished one and its
         // answer rises into place.
         withMizarAnimation(.mizarSmooth) {
-            if !synced.isEmpty {
-                items = synced
+            if !synced.items.isEmpty {
+                items = synced.items
                 conversationSessionId = sessionId
             }
             if let cached {
                 show(turns: cached.turns ?? [])
             }
+        }
+        // The context figure above the composer, from the same page. This is the
+        // tick that keeps it live while a turn runs: the token-meter projection
+        // moves with every model request, and the page carries the current
+        // occupancy rather than a figure frozen at the last full load.
+        if let frame = synced.stats {
+            stats = frame
+            statsSessionId = sessionId
         }
     }
 
@@ -1605,11 +1622,18 @@ struct SessionDetailView: View {
         // Synced rather than merely read: the result is folded into the cache,
         // so what is on screen and what is on disk are the same thing.
         let conversationResult = await model.syncConversation(for: sessionId)
+        // The page's context figure landed after the stats read above and comes
+        // from the same read that named the page's cut, so it is the fresher of
+        // the two -- and it arrives even when the stats read did not.
+        if let frame = conversationResult.stats {
+            stats = frame
+            statsSessionId = sessionId
+        }
         // Only replace what is on screen when there is something to replace it
         // with. A read that failed returns the cache rather than nothing, but a
         // cache can be empty on a first visit -- and assigning that over a
         // populated screen is what "pull to refresh loses my history" was.
-        let fresh = conversationResult
+        let fresh = conversationResult.items
         if !fresh.isEmpty {
             items = fresh
             conversationSessionId = sessionId
