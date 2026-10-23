@@ -411,6 +411,16 @@ public struct Throughput: Codable, Sendable, Equatable {
 public struct ModelSelectionPair: Codable, Sendable, Equatable {
     public let lastUsed: ModelSelection?
     public let next: ModelSelection?
+
+    /// Build a pair rather than only decoding one, so a caller that already
+    /// knows the route (the phone's own accepted switch) can say so.
+    /// - Parameters:
+    ///   - lastUsed: the route the last request used.
+    ///   - next: the pending change for the next request.
+    public init(lastUsed: ModelSelection? = nil, next: ModelSelection? = nil) {
+        self.lastUsed = lastUsed
+        self.next = next
+    }
 }
 
 /// A provider, model and optional reasoning effort.
@@ -418,6 +428,18 @@ public struct ModelSelection: Codable, Sendable, Equatable, Hashable {
     public let provider: String
     public let model: String
     public let reasoningEffort: String?
+
+    /// Build a selection from the parts the app holds. Decoding is the other
+    /// way in; a route the phone chose itself never comes off the wire.
+    /// - Parameters:
+    ///   - provider: the provider id.
+    ///   - model: the model id.
+    ///   - reasoningEffort: the reasoning level, or `nil` for the provider default.
+    public init(provider: String, model: String, reasoningEffort: String? = nil) {
+        self.provider = provider
+        self.model = model
+        self.reasoningEffort = reasoningEffort
+    }
 }
 
 // MARK: - Model catalog

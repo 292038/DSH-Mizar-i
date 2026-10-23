@@ -404,6 +404,29 @@ final class AppModel {
         newSessionModel = ModelChoice(provider: provider, model: model, effort: effort)
     }
 
+    /// The route this phone last had the host accept, in the kit's own shape.
+    ///
+    /// The composer bar and the model picker both name the route through this,
+    /// so the button behind the sheet and the sheet itself cannot disagree.
+    ///
+    /// - Parameter sessionId: the session, or `nil` for the session the home
+    ///   screen is about to start.
+    /// - Returns: the accepted route, or `nil` when this phone has chosen nothing.
+    func chosenModelSelection(for sessionId: String?) -> ModelSelection? {
+        let choice: ModelChoice?
+        if let sessionId {
+            choice = modelChoice[sessionId]
+        } else {
+            choice = newSessionModel
+        }
+        guard let choice else { return nil }
+        return ModelSelection(
+            provider: choice.provider,
+            model: choice.model,
+            reasoningEffort: choice.effort,
+        )
+    }
+
     /// The models this host offers, and which host said so.
     ///
     /// Read once per connection and kept, so the machine it was read from is

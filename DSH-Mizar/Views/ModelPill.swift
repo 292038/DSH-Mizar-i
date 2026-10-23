@@ -17,6 +17,7 @@
 //
 
 import SwiftUI
+import MizarKit
 
 /// `deepseek-v4 · High`, as a route is named on a pill.
 ///
@@ -31,6 +32,33 @@ import SwiftUI
 func modelPillLabel(model: String, effort: String?) -> String {
     guard let effort, !effort.isEmpty else { return model }
     return "\(model) · \(effort.capitalized)"
+}
+
+/// The route a session will actually use, as the app and the host agree on it.
+///
+/// Four sources, most specific first. The switch this phone made and the host
+/// accepted is the newest: the host has no "what is this session using" read on
+/// this side of the protocol, and its stats frame only catches up on the next
+/// read -- on an idle session nothing asks it to. The host's own pending change
+/// (`next`) is what the following turn will use, its `lastUsed` is the route the
+/// previous turn took, and the catalogue default names a session that has never
+/// run.
+///
+/// One function rather than the same precedence in the composer bar and in the
+/// picker: the two copies drifted, and after a switch the bar went on naming the
+/// model the session had been on before it.
+///
+/// - Parameters:
+///   - chosen: the route this phone last had the host accept, when there is one.
+///   - reported: the host's model pair from the session's stats frame.
+///   - fallback: the route a new session would take.
+/// - Returns: the selection to name, or `nil` when nothing can name it.
+func agreedModelSelection(
+    chosen: ModelSelection?,
+    reported: ModelSelectionPair?,
+    fallback: ModelSelection? = nil,
+) -> ModelSelection? {
+    chosen ?? reported?.next ?? reported?.lastUsed ?? fallback
 }
 
 /// A capsule naming the model in force, which opens the picker.

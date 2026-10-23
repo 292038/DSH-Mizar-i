@@ -143,7 +143,7 @@ struct ModelPickerView: View {
                 guard chosenModel == nil, let choice = sessionChoice else { return }
                 chosenProvider = choice.provider
                 chosenModel = choice.model
-                chosenEffort = choice.effort
+                chosenEffort = choice.reasoningEffort
             }
             // The choice on screen can move without this sheet having moved it. A
             // switch the host refused puts the previous value back on the model,
@@ -154,7 +154,7 @@ struct ModelPickerView: View {
                 guard let choice else { return }
                 chosenProvider = choice.provider
                 chosenModel = choice.model
-                chosenEffort = choice.effort
+                chosenEffort = choice.reasoningEffort
             }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -167,16 +167,16 @@ struct ModelPickerView: View {
 
     /// The route this session is on, as the app and the host agree on it.
     ///
-    /// The app's own record first. The host has no "what is this session using"
-    /// read on this side of the protocol, so for a session this phone has
-    /// switched, what it asked for is the only account there is. Failing that,
-    /// what the host last reported, which is the same thing on a phone that has
-    /// switched nothing.
+    /// Through the same function the composer bar names its model with, so the
+    /// pill behind this sheet and the sheet's own "in force" line cannot
+    /// disagree. The app's own accepted switch first -- the host has no "what is
+    /// this session using" read on this side of the protocol -- then the host's
+    /// own report.
     private var agreedSelection: (provider: String, model: String, effort: String?)? {
-        if let choice = sessionChoice {
-            return (choice.provider, choice.model, choice.effort)
-        }
-        guard let selection = stats?.model?.next ?? stats?.model?.lastUsed else { return nil }
+        guard let selection = agreedModelSelection(
+            chosen: sessionChoice,
+            reported: stats?.model,
+        ) else { return nil }
         return (selection.provider, selection.model, selection.reasoningEffort)
     }
 
@@ -185,9 +185,8 @@ struct ModelPickerView: View {
     /// The session's own last choice, or -- with no session yet -- the model the
     /// home screen will start one with. One property rather than two branches in
     /// four places, and it is what lets the same sheet serve both.
-    private var sessionChoice: AppModel.ModelChoice? {
-        guard let sessionId else { return model.newSessionModel }
-        return model.modelChoice[sessionId]
+    private var sessionChoice: ModelSelection? {
+        model.chosenModelSelection(for: sessionId)
     }
 
     /// That route, with the names the catalogue spells it with.

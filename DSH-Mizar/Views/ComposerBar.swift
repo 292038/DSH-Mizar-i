@@ -79,19 +79,25 @@ struct ComposerBar: View {
         .animation(.mizarSmooth, value: focused)
     }
 
-    /// `deepseek-v4 · High`, as the host reports the route it is using.
+    /// `deepseek-v4 · High`, for the route this session will actually use.
+    ///
+    /// The same resolution the picker's "in force" line uses, because the two
+    /// used to disagree: after a switch this bar read only the host's stats
+    /// frame, which is refreshed on the next read -- and on an idle session
+    /// nothing asks -- so it went on naming the model the session was on before
+    /// the switch while the picker named the new one.
     private var modelLabel: String {
-        // A pending change wins: it is what the next turn will use.
-        guard let selection = stats?.model?.next ?? stats?.model?.lastUsed ?? fallbackSelection else {
+        guard let selection = agreedModelSelection(
+            chosen: model.chosenModelSelection(for: sessionId),
+            reported: stats?.model,
+            // The button naming nothing but "Model" is the one thing it must
+            // never do, so a session with no stats frame falls back to the
+            // route a new turn would take.
+            fallback: model.modelCatalog?.defaultSelection,
+        ) else {
             return String(localized: "Model")
         }
         return modelPillLabel(model: selection.model, effort: selection.reasoningEffort)
-    }
-
-    /// The route a new turn would take, when this session has not chosen one.
-    /// The button naming nothing but "Model" is the one thing it must never do.
-    private var fallbackSelection: ModelSelection? {
-        model.modelCatalog?.defaultSelection
     }
 
     private var modelPill: some View {
