@@ -83,6 +83,8 @@ let withPending = process.env['MIZAR_MOCK_PENDING'] !== '0'
 // therefore cannot accidentally issue balance queries or expose account data.
 let balanceVariant = 'old'
 let longReaderFixture = false
+let markdownReaderFixture = false
+const performanceMarkdown = (turn, role) => `# 固定性能样本 ${turn} ${role}\n\n正文 **强调** 与中文，保持布局可重复。\n\n- 第一项\n- 第二项\n\n\`\`\`swift\nlet value = ${turn}\n\`\`\`\n\n| 列A | 列B |\n| --- | --- |\n| 甲 | 乙 |`
 const forkRequests = []
 
 /**
@@ -1378,7 +1380,7 @@ function answer(frame) {
         let seq = 0
         for (let turn = 1; turn <= 24; turn += 1) {
           const rec = (type, data) => ({ type: 'event', event: { type, seq: seq++, time: Date.now() - (25 - turn) * 60000, data } })
-          records.push(rec('turn/start', { turn }), rec('user/message', { role: 'user', content: [{ type: 'text', text: `Reader prompt ${turn}. ` + 'Earlier conversation body. '.repeat(10) }], source: { kind: 'user' } }), rec('assistant/message', { turn, message: { role: 'assistant', content: [{ type: 'text', text: `Reader answer ${turn}. ` + 'Stable visible message anchor. '.repeat(10) }] } }), rec('turn/end', { turn, reason: { kind: 'completed' }, mizarTokenUsage: { totalTokens: 12345 }, mizarBranchUnavailable: false }))
+          records.push(rec('turn/start', { turn }), rec('user/message', { role: 'user', content: [{ type: 'text', text: markdownReaderFixture ? performanceMarkdown(turn, 'user') : `Reader prompt ${turn}. ` + 'Earlier conversation body. '.repeat(10) }], source: { kind: 'user' } }), rec('assistant/message', { turn, message: { role: 'assistant', content: [{ type: 'text', text: markdownReaderFixture ? performanceMarkdown(turn, 'assistant') : `Reader answer ${turn}. ` + 'Stable visible message anchor. '.repeat(10) }] } }), rec('turn/end', { turn, reason: { kind: 'completed' }, mizarTokenUsage: { totalTokens: 12345 }, mizarBranchUnavailable: false }))
         }
         return { v: 1, type: 'ok', id, result: { sessionId: frame.payload?.sessionId, throughSeq: seq - 1, hasMore: false, records } }
       }
@@ -2219,8 +2221,10 @@ const server = createServer((request, response) => {
   }
   if (request.url?.startsWith('/reader')) {
     longReaderFixture = (request.url ?? '').includes('long=1')
+    markdownReaderFixture = (request.url ?? '').includes('markdown=1')
+    const texts = markdownReaderFixture ? Array.from({ length: 24 }, (_, i) => [performanceMarkdown(i + 1, 'user'), performanceMarkdown(i + 1, 'assistant')]).flat() : []
     response.writeHead(200, { 'content-type': 'application/json' })
-    response.end(JSON.stringify({ ok: true, long: longReaderFixture }))
+    response.end(JSON.stringify({ ok: true, long: longReaderFixture, markdown: markdownReaderFixture, markdownMessages: texts.length, utf8Bytes: texts.reduce((n, text) => n + Buffer.byteLength(text, 'utf8'), 0) }))
     return
   }
   if (request.url?.startsWith('/balance')) {
@@ -2269,6 +2273,7 @@ const server = createServer((request, response) => {
     createdSessions.length = 0
     forkRequests.length = 0
     longReaderFixture = false
+    markdownReaderFixture = false
     balanceVariant = /balance=([\w-]+)/.exec(request.url ?? '')?.[1] ?? 'old'
     failMethod = null
     statsVariant = 'full'

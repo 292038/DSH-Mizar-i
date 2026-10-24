@@ -97,6 +97,153 @@ final class AppFlowNavigationTests: AppFlowTestBase {
         expect(rows.firstMatch, "a diagonal leftward drag did not open the turn index")
     }
 
+    /// Non-visual performance loop. Real XCUI drags exercise DrawerPanRecognizer;
+    /// metric results are simulator observations, never a physical-device FPS claim.
+    @available(iOS 26.0, *)
+    func testDrawerGesturePerformanceOffline() {
+        let app = launch(pending: false, running: false)
+        let markdownFixture = ProcessInfo.processInfo.environment["MIZAR_PERF_MARKDOWN_FIXTURE"] == "1"
+        let fixture = DispatchSemaphore(value: 0)
+        let fixtureQuery = markdownFixture ? "long=1&markdown=1" : "long=1"
+        final class FixtureResult: @unchecked Sendable {
+            private let lock = NSLock()
+            private var succeeded = false
+            func set(_ value: Bool) { lock.withLock { succeeded = value } }
+            func get() -> Bool { lock.withLock { succeeded } }
+        }
+        let fixtureResult = FixtureResult()
+        let request = URLSession.shared.dataTask(with: URL(string: "http://127.0.0.1:\(Self.mockPort)/reader?\(fixtureQuery)")!) { _, response, error in
+            fixtureResult.set(error == nil && (response as? HTTPURLResponse)?.statusCode == 200)
+            fixture.signal()
+        }
+        request.resume()
+        guard fixture.wait(timeout: .now() + 5) == .success, fixtureResult.get() else {
+            request.cancel()
+            XCTFail("Performance fixture request timed out or did not return HTTP 200")
+            return
+        }
+        app.terminate()
+        app.launch()
+        let editor = app.textViews["composer.field"]
+        let anchor = app.staticTexts["turn.24.usage"]
+        let latest = app.buttons["conversation.jumpToLatest"]
+        let sidebar = app.buttons["sessions.new"]
+        let index = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "turnIndex.entry.")).firstMatch
+        let drawerDismiss = app.buttons["shell.dismissSidebar"]
+        let dismiss = app.buttons["composer.dismissKeyboard"]
+        func diagnose(_ phase: String) {
+            print("[sidebar-perf-invalid] phase=\(phase) keyboard=\(app.keyboards.firstMatch.exists) anchorExists=\(anchor.exists) jumpExists=\(latest.exists) drawerDismissExists=\(drawerDismiss.exists) drawerDismissHittable=\(drawerDismiss.isHittable) leftHittable=\(sidebar.isHittable) rightHittable=\(index.isHittable) dismissExists=\(dismiss.exists) dismissHittable=\(dismiss.isHittable) editorExists=\(editor.exists) editorHittable=\(editor.isHittable)")
+            // One bounded textual tree, no screenshot; only this offline fixture.
+            print(String(app.debugDescription.prefix(18000)))
+        }
+        func require(_ condition: Bool, _ phase: String) -> Bool {
+            guard condition else {
+                diagnose(phase)
+                XCTFail("Invalid performance setup: \(phase)")
+                return false
+            }
+            return true
+        }
+        func waitUntil(_ condition: () -> Bool, timeout: TimeInterval = 8) -> Bool {
+            let deadline = Date().addingTimeInterval(timeout)
+            repeat {
+                if condition() { return true }
+                Thread.sleep(forTimeInterval: 0.25)
+            } while Date() < deadline
+            return false
+        }
+        func phase(_ name: String) {
+            let frame = anchor.exists ? anchor.frame : .zero
+            print("[sidebar-perf-phase] \(name) anchorExists=\(anchor.exists) hittable=\(anchor.isHittable) y=\(frame.midY) height=\(frame.height) jump=\(latest.exists) drawerDismissExists=\(drawerDismiss.exists) drawerDismissHittable=\(drawerDismiss.isHittable) leftHittable=\(sidebar.isHittable) rightHittable=\(index.isHittable) dismissExists=\(dismiss.exists) dismissHittable=\(dismiss.isHittable) editorExists=\(editor.exists) editorHittable=\(editor.isHittable)")
+        }
+        guard require(editor.waitForExistence(timeout: Self.patience), "composer-ready") else { return }
+        phase("beforeDrawerNormalize")
+        if drawerDismiss.exists {
+            guard require(waitUntil({ drawerDismiss.isHittable }, timeout: 5), "drawer-dismiss-button") else { return }
+            drawerDismiss.tap()
+        }
+        guard require(waitUntil {
+            !drawerDismiss.exists && !sidebar.isHittable && !index.isHittable
+        }, "drawers-normalized") else { return }
+        phase("afterDrawerNormalize")
+        phase("beforeDismiss")
+        if app.keyboards.firstMatch.exists {
+            if !dismiss.isHittable {
+                phase("beforeComposerFocus")
+                guard require(waitUntil({ editor.isHittable }, timeout: 5), "composer-focus-editor") else { return }
+                editor.tap()
+                phase("afterComposerFocus")
+            }
+            guard require(waitUntil({ dismiss.exists && dismiss.isHittable }, timeout: 5), "dismiss-button") else { return }
+            dismiss.tap()
+        }
+        guard require(waitUntil {
+            !app.keyboards.firstMatch.exists && !dismiss.exists
+        }, "keyboard-and-dismiss-hidden") else { return }
+        phase("afterDismiss")
+        func positionLatest(_ name: String) -> CGRect? {
+            // Collapse can change height. Allow the existing jump control to arrive,
+            // but never scroll blindly or treat absence as proof of latest position.
+            guard require(waitUntil {
+                (anchor.exists && anchor.isHittable) || (latest.exists && latest.isHittable)
+            }, "\(name)-latest-control-or-anchor") else { return nil }
+            if latest.exists && latest.isHittable { latest.tap() }
+            guard require(waitUntil {
+                anchor.exists && anchor.isHittable && anchor.frame.height > 0 && app.frame.intersects(anchor.frame)
+                    && !app.otherElements["session.placement.failed"].exists
+            }, "\(name)-visible-anchor") else { return nil }
+            let initial = anchor.frame
+            for _ in 0..<3 {
+                Thread.sleep(forTimeInterval: 0.5)
+                guard require(anchor.exists && anchor.isHittable && abs(anchor.frame.midY - initial.midY) <= 0.5,
+                              "\(name)-stable-anchor") else { return nil }
+            }
+            guard require(!app.keyboards.firstMatch.exists, "\(name)-keyboard-hidden") else { return nil }
+            phase(name)
+            return anchor.frame
+        }
+        guard positionLatest("afterLatest") != nil else { return }
+
+        func drag(_ from: CGFloat, _ to: CGFloat) {
+            app.coordinate(withNormalizedOffset: CGVector(dx: from, dy: 0.42))
+                .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: to, dy: 0.42)))
+            // Identical settling allowance in every baseline/candidate. No AX polling
+            // during the measured cycle: accessibility snapshots themselves cost CPU.
+            Thread.sleep(forTimeInterval: 0.65)
+        }
+        @discardableResult func cycle(prove: Bool) -> Bool {
+            drag(0.10, 0.90)
+            if prove && !require(sidebar.isHittable, "left-open") { return false }
+            drag(0.90, 0.10)
+            if prove && !require(!sidebar.isHittable, "left-close") { return false }
+            drag(0.90, 0.10)
+            if prove && !require(index.isHittable, "right-open") { return false }
+            drag(0.10, 0.90)
+            if prove && !require(!index.isHittable, "right-close") { return false }
+            return true
+        }
+        phase("beforeWarmProof")
+        guard cycle(prove: true) else { return }
+        phase("afterWarmProof")
+        guard let initialAnchor = positionLatest("preMeasure") else { return }
+        print("[sidebar-perf-setup] latestAnchorY=\(initialAnchor.midY) height=\(initialAnchor.height) screenHeight=\(app.frame.height)")
+        let options = XCTMeasureOptions()
+        options.iterationCount = 3
+        measure(metrics: [XCTHitchMetric(application: app), XCTCPUMetric(application: app), XCTClockMetric()], options: options) {
+            cycle(prove: false)
+        }
+        phase("afterMeasure")
+        guard require(anchor.exists && anchor.isHittable && abs(anchor.frame.midY - initialAnchor.midY) <= 2,
+                      "measured-anchor-delta") else { return }
+        phase("beforePostProof")
+        guard cycle(prove: true) else { return }
+        phase("afterPostProof")
+        guard require(editor.exists && !app.keyboards.firstMatch.exists, "final-editor-and-keyboard") else { return }
+        guard require(anchor.exists && anchor.isHittable && abs(anchor.frame.midY - initialAnchor.midY) <= 2,
+                      "postproof-anchor-delta") else { return }
+        print("[sidebar-perf] markdownFixture=\(markdownFixture) fixed24turns warmup=1 measuredCycles=3 dragsPerCycle=4 settleSeconds=0.65 finalAnchorDelta=\(anchor.frame.midY - initialAnchor.midY)")
+    }
+
     // MARK: - Model and permission switching
 
     func testTheModelPickerListsTheHostsProviders() {
