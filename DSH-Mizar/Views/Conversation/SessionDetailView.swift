@@ -154,6 +154,14 @@ struct SessionDetailView: View {
     /// nobody asked to see.
     @State private var distanceFromBottom: CGFloat = 0
     @State private var scrollViewportHeight: CGFloat = 0
+    /// Whether a finger has the conversation, or let go of it and it is still
+    /// coasting or bouncing. Every correction below stands down while it does:
+    /// an instant scroll in the middle of a bounce is the page jumping out
+    /// from under the thumb instead of springing back.
+    @State private var userScrolling = false
+    /// Which bottom seek is current, so a later one takes over from an
+    /// earlier one instead of the two of them aiming in turns.
+    @State private var bottomSeek = 0
     /// Whether the composer's expand or collapse animation is still playing.
     /// While it is, the bottom anchor and the composer-height correction are
     /// suspended -- see `defaultScrollAnchor` below.
@@ -195,6 +203,35 @@ struct SessionDetailView: View {
     private var shownTurns: [ConversationTurn] {
         conversationSessionId == sessionId ? turns : []
     }
+
+    /// Whether the lazy stack has built the newest turn.
+    ///
+    /// The bottom of a lazy conversation is only where the stack *estimates*
+    /// it is until the rows down there exist: a turn here can be one line or
+    /// thirty screens, and an aim at the end of the page against estimated
+    /// heights lands in space the stack has not filled -- the blank page that
+    /// a swipe or two by hand used to fix. Being at the bottom is only
+    /// believed once the newest turn is built. A flat list has no turn to ask
+    /// about and goes by the geometry alone.
+    private var newestIsBuilt: Bool {
+        guard let newest = shownTurns.last?.id else { return true }
+        return turnIndex.sessionId == sessionId && turnIndex.realized.contains(newest)
+    }
+
+    /// What changes when something arrives at the end of the conversation --
+    /// a new turn, or an answer in the last one -- and not when an older page
+    /// arrives at the top.
+    private var newestContent: NewestContent {
+        NewestContent(
+            turn: shownTurns.last?.id,
+            steps: shownTurns.last?.steps.count ?? 0,
+            item: shownItems.last?.id,
+        )
+    }
+
+    /// How close to the newest message counts as reading it, for keeping the
+    /// page there as the content under it changes.
+    static let pinnedDistance: CGFloat = 40
 
     /// The coordinate space the send's flight is measured in.
     static let space = "session.detail"
@@ -480,8 +517,21 @@ struct SessionDetailView: View {
         // jump while the composer's own animation was still easing, and
         // the instant jumps and the easing fought the whole way down --
         // the shudder that followed every collapse.
+        //
+        // And suspended while the operator is scrolling. The rows a scroll
+        // brings into view are built as it goes, at heights that differ from
+        // the stack's estimates, and every one of them is a size change: held
+        // to the bottom, each re-measure moved the page under the thumb, and a
+        // scroll towards the newest message was pulled back again and again.
         .defaultScrollAnchor(.bottom, for: .initialOffset)
-        .defaultScrollAnchor(jumping || composerAnimating ? nil : .bottom, for: .sizeChanges)
+        .defaultScrollAnchor(jumping || composerAnimating || userScrolling ? nil : .bottom, for: .sizeChanges)
+        .onScrollPhaseChange { _, phase in
+            // Whatever the finger set going: a drag, the coast after it, and
+            // the spring back from past either end. Not `.animating`, which
+            // is this screen's own scrolls.
+            userScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
+            if userScrolling { bottomSeek &+= 1 }
+        }
         // Dragging the conversation puts the keyboard away, which is what
         // every messaging app does and what a thumb already expects.
         .scrollDismissesKeyboard(.interactively)
@@ -518,7 +568,11 @@ struct SessionDetailView: View {
             // A jump owns the position until it lands: its staged turn is
             // deliberately a short page, which reads as past the end, and
             // correcting then is a second scroll fighting the first.
-            guard overshoot, placement == .ready, !jumping, !composerAnimating, !shownItems.isEmpty else { return }
+            //
+            // Nor while the operator is scrolling: past the end is also where
+            // a bounce goes, and an instant scroll there is the page jumping
+            // back instead of springing back.
+            guard overshoot, placement == .ready, !jumping, !composerAnimating, !userScrolling, !shownItems.isEmpty else { return }
             reachBottomNow(proxy)
         }
         // How far the operator is from the newest message, kept current so
@@ -568,7 +622,7 @@ struct SessionDetailView: View {
         .onChange(of: composerHeight) { _, _ in
             // The dock arriving or the field growing is the bottom moving
             // up; a reader who was at the bottom stays at it.
-            guard !jumping, !composerAnimating, !farFromBottom, didReachBottom else { return }
+            guard !jumping, !composerAnimating, !userScrolling, !farFromBottom, didReachBottom else { return }
             withMizarAnimation(.mizarSmooth) {
                 proxy.scrollTo(Self.endAnchor, anchor: .bottom)
             }
@@ -602,6 +656,14 @@ struct SessionDetailView: View {
             // the viewport" is where the page is by construction, not a
             // message that arrived while somebody was reading.
             if farFromBottom, placementRevealed, new > old, old > 0 { unseen += new - old }
+        }
+        .onChange(of: newestContent) { _, _ in
+            holdAtBottom(proxy: proxy)
+        }
+        // The placement waits for the newest turn to be built as well as for
+        // the geometry; this is the other half arriving last.
+        .onChange(of: newestIsBuilt) { _, _ in
+            finishInitialPlacement()
         }
         // Tapping the conversation puts the keyboard away. On a tap catcher
         // behind the content, not a gesture on the scroll view: as a
@@ -656,10 +718,16 @@ struct SessionDetailView: View {
         // initial placement has settled there is no such thing as "on screen"
         // -- the page sits at the top by construction until it is placed --
         // so the question is not asked until the placement says where the
-        // conversation starts. `nil` is the existing way to say "could not be
-        // asked right now", and the row is not drawn at all.
+        // conversation starts.
+        //
+        // The row is drawn all the same, and only its asking waits. It used to
+        // be left out until the placement settled, which made the reveal an
+        // insertion at the very top of a lazy stack scrolled to its very
+        // bottom -- and the stack answered that by throwing away the rows on
+        // screen and building nothing in their place: the blank page that
+        // opened a session, until a swipe made it look again.
         let canReadHistory = placement == .ready || placement == .navigating
-        let onLoadOlder: (() async -> Int?)? = canReadHistory ? {
+        let onLoadOlder: () async -> Int? = {
             guard !Task.isCancelled, placement == .ready || placement == .navigating else { return nil }
             let arrived = await model.loadOlder(sessionId: sessionId)
             guard !Task.isCancelled else { return nil }
@@ -673,7 +741,7 @@ struct SessionDetailView: View {
                 show(turns: cached.turns ?? [])
             }
             return arrived
-        } : nil
+        }
         return ConversationView(
             sessionId: sessionId,
             items: shownItems,
@@ -682,6 +750,7 @@ struct SessionDetailView: View {
             loading: loadingConversation,
             failure: shownItems.isEmpty ? model.conversationError : nil,
             onLoadOlder: onLoadOlder,
+            historyReady: canReadHistory,
             typingAnswerId: typingAnswerId,
             onAnswerTypingStarted: noteAnswerTypingStarted,
         )
@@ -795,8 +864,12 @@ struct SessionDetailView: View {
     /// - Parameter proxy: the conversation's scroll view.
     private func returnToLatest(proxy: ScrollViewProxy) {
         guard distanceFromBottom > max(600, scrollViewportHeight * 2) else {
-            withMizarAnimation(.mizarSmooth) {
+            withAnimation(Motion.pick(.mizarSmooth)) {
                 proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+            } completion: {
+                // The spring aimed at where the end was when it started; the
+                // rows it brought into view may have moved the end since.
+                holdAtBottom(proxy: proxy)
             }
             return
         }
@@ -806,10 +879,11 @@ struct SessionDetailView: View {
     /// The long way back to the newest message: the page dips, the scroll
     /// jumps with no animation at all, and the page arrives from above.
     ///
-    /// The bottom anchor is always in the hierarchy, so unlike ``travel(to:anchor:proxy:generation:)``
-    /// there is no staged turn to build -- only the dip, the jump, and the
-    /// return. `jumping` still runs: it suspends the bottom anchor and the
-    //  corrections that would fight the jump for the whole of the move.
+    /// The same staging as ``travel(to:anchor:proxy:generation:)``, for the
+    /// newest turn: the bottom anchor is always in the hierarchy, but where it
+    /// is, from a long way up, is an estimate. `jumping` runs throughout: it
+    /// suspends the bottom anchor and the corrections that would fight the
+    /// jump for the whole of the move.
     private func travelToBottom(proxy: ScrollViewProxy) async {
         jumpGeneration &+= 1
         let generation = jumpGeneration
@@ -830,14 +904,24 @@ struct SessionDetailView: View {
             jumping = false
             return
         }
-        proxy.scrollTo(Self.endAnchor, anchor: .bottom)
-        await settleLayout()
+        // Not an aim at the end of the page. From a long way up, everything
+        // between here and the end is estimated, the end of a long
+        // conversation can be tens of thousands of points of estimate away
+        // from where the rows really end, and an aim at it landed in space the
+        // stack had built nothing for: the blank page that a few swipes by
+        // hand used to fix. So the newest turn is staged first -- drawn alone,
+        // at the top of the content, where a lazy stack always builds it --
+        // and the scroll is aimed at the built row, exactly as a long turn
+        // jump does (see ``travel(to:anchor:proxy:generation:)``). The rest of
+        // the conversation comes back with the row still built and on screen.
+        await stageNewest(proxy: proxy) { isCurrentJump(generation) }
+        // Then down to the true end, below the room left for the composer, and
+        // until the geometry says it is there.
+        await seekBottom(proxy: proxy, attempts: 24) { isCurrentJump(generation) }
         guard isCurrentJump(generation) else {
             jumping = false
             return
         }
-        // A second aim, for the rows that settled their heights in between.
-        proxy.scrollTo(Self.endAnchor, anchor: .bottom)
 
         jumpShift = Motion.reduced ? 0 : 18
         withAnimation(Motion.pick(.mizarSmooth)) {
@@ -846,6 +930,8 @@ struct SessionDetailView: View {
         }
         try? await Task.sleep(for: .milliseconds(220))
         jumping = false
+        // The rows whose heights settled while the page was arriving.
+        holdAtBottom(proxy: proxy)
     }
 
     /// The workspace this session belongs to, for the subtitle.
@@ -1003,25 +1089,22 @@ struct SessionDetailView: View {
         await settleLayout()
         guard !Task.isCancelled, placement == .placing(generation: generation) else { return }
 
-        // The anchors have the first frame's intent; this aim is the fine-tune
-        // for rows that settle their heights after it, and it must not inherit
-        // an animation from whatever transaction is running -- the sidebar
-        // closing is the one that used to carry the initial position.
-        var transaction = Transaction()
-        transaction.animation = nil
-        transaction.disablesAnimations = true
-        for _ in 0..<Self.placementAttempts {
-            withTransaction(transaction) {
-                proxy.scrollTo(Self.endAnchor, anchor: .bottom)
-            }
-            // A sleep that came back nil is a cancellation: the session
-            // changed, or the page is going away. Stop, rather than scrolling
-            // a view nobody is waiting on.
-            guard (try? await Task.sleep(for: .milliseconds(Self.placementAttemptSpacing))) != nil else { return }
-            guard !Task.isCancelled, placement == .placing(generation: generation) else { return }
-            // Every aim, including the last, gets a layout interval before
-            // being judged. Hidden content cannot be dragged away by a reader.
-            guard placementGeometry?.isAtBottom(tolerance: Self.placementTolerance) == true else { continue }
+        // The anchors have the first frame's intent; these aims are the
+        // fine-tune for rows that settle their heights after it, and they must
+        // not inherit an animation from whatever transaction is running -- the
+        // sidebar closing is the one that used to carry the initial position.
+        // Hidden content cannot be dragged away by a reader, so the whole
+        // budget is the seek's.
+        //
+        // The first frame's anchor can land, like the long way back, on an
+        // end the stack has built nothing for. Then the newest turn is staged
+        // first, as it is there.
+        if !newestIsBuilt {
+            await stageNewest(proxy: proxy) { placement == .placing(generation: generation) }
+        }
+        if await seekBottom(proxy: proxy, attempts: Self.placementAttempts, while: {
+            placement == .placing(generation: generation)
+        }) {
             finishInitialPlacement()
             return
         }
@@ -1033,7 +1116,7 @@ struct SessionDetailView: View {
 
     /// Reveal the placed conversation, once.
     private func finishInitialPlacement() {
-        guard !Task.isCancelled, !shownItems.isEmpty,
+        guard !Task.isCancelled, !shownItems.isEmpty, newestIsBuilt,
               placement.finishIfPositioned(placementGeometry, tolerance: Self.placementTolerance) else { return }
         // The one-shot claim the composer's corrections read: the placement
         // *is* the appearance's jump to the newest message.
@@ -1050,8 +1133,108 @@ struct SessionDetailView: View {
             // One turn of the runloop, so the lazy stack has laid the rows out
             // and there is something to scroll to.
             await Task.yield()
-            guard !Task.isCancelled, placement == .ready, !jumping, !composerAnimating else { return }
+            guard !Task.isCancelled, placement == .ready, !jumping, !composerAnimating, !userScrolling else { return }
             proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+        }
+    }
+
+    /// Put the page at its newest message, and keep aiming until it is there.
+    ///
+    /// One aim is not an arrival. A lazy stack places what it has not built at
+    /// estimated heights, so an aim at the end of the page lands where the
+    /// estimate puts the end; the rows down there are then built at their real
+    /// heights, the end moves, and the page is left above it -- or below it,
+    /// in space nothing was drawn into. So the aim is repeated until the
+    /// geometry says the page is at the bottom with the newest turn built.
+    ///
+    /// That converges from close by, where the estimates are few. From a long
+    /// way up it does not: each aim corrects only the rows it lands on, and
+    /// the end of a long conversation can be tens of thousands of points of
+    /// estimate away from where the rows really end. The long way back stages
+    /// the newest turn first for that reason -- see ``travelToBottom(proxy:)``.
+    ///
+    /// Always at the end anchor, which is outside the lazy stack. An aim at the
+    /// newest turn itself, from a page that has not built it, made the stack
+    /// lay out every turn on the way there: seconds of a frozen screen on a
+    /// long conversation.
+    ///
+    /// No animation: this is a correction, and the moves are small once the
+    /// first has landed.
+    ///
+    /// - Parameters:
+    ///   - proxy: the conversation's scroll view.
+    ///   - attempts: how many aims it may spend.
+    ///   - wanted: whether the seek is still wanted, asked after every aim.
+    /// - Returns: whether the page arrived.
+    @discardableResult
+    private func seekBottom(proxy: ScrollViewProxy, attempts: Int, while wanted: () -> Bool) async -> Bool {
+        var transaction = Transaction()
+        transaction.animation = nil
+        transaction.disablesAnimations = true
+        for _ in 0..<attempts {
+            withTransaction(transaction) {
+                proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+            }
+            // A sleep that came back nil is a cancellation.
+            guard (try? await Task.sleep(for: .milliseconds(Self.placementAttemptSpacing))) != nil,
+                  !Task.isCancelled, wanted() else { return false }
+            if newestIsBuilt,
+               placementGeometry?.isAtBottom(tolerance: Self.placementTolerance) == true {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Bring the newest turn into the stack and the page to it, from wherever
+    /// the page is: the newest turn drawn alone first, at the top of the
+    /// content, where a lazy stack always builds it; the scroll aimed at it;
+    /// then the rest of the conversation put back, with the row still built
+    /// and on screen, and the scroll aimed at it again.
+    ///
+    /// Nothing to do when the turn is already built, or for a flat list.
+    ///
+    /// - Parameters:
+    ///   - proxy: the conversation's scroll view.
+    ///   - wanted: whether the move is still wanted.
+    private func stageNewest(proxy: ScrollViewProxy, while wanted: () -> Bool) async {
+        guard !newestIsBuilt, let newest = shownTurns.last?.id else { return }
+        var transaction = Transaction()
+        transaction.animation = nil
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { stagedTurn = newest }
+        await settleLayout()
+        guard wanted() else {
+            stagedTurn = nil
+            return
+        }
+        withTransaction(transaction) { proxy.scrollTo(newest, anchor: .bottom) }
+        await settleLayout()
+        withTransaction(transaction) {
+            stagedTurn = nil
+            proxy.scrollTo(newest, anchor: .bottom)
+        }
+        await settleLayout()
+    }
+
+    /// Keep a reader who is at the newest message there, as what is under it
+    /// changes: the host's answer replacing the cached page, a new turn, an
+    /// answer arriving in the last one.
+    ///
+    /// The size-change anchor is the first line of this and usually enough;
+    /// this is the second, for the rows whose real heights arrive a frame
+    /// after the change. Never while the operator is scrolling, and never for
+    /// a reader who has scrolled away.
+    private func holdAtBottom(proxy: ScrollViewProxy) {
+        guard placement == .ready, !jumping, !composerAnimating, !userScrolling,
+              distanceFromBottom <= Self.pinnedDistance else { return }
+        bottomSeek &+= 1
+        let seek = bottomSeek
+        Task { @MainActor in
+            await settleLayout()
+            await seekBottom(proxy: proxy, attempts: 8) {
+                bottomSeek == seek && placement == .ready && !jumping && !composerAnimating && !userScrolling
+            }
         }
     }
 
@@ -1740,6 +1923,13 @@ enum InitialPlacement: Equatable {
         case .waitingForContent, .placing, .positioningFailed: return false
         }
     }
+}
+
+/// The end of a conversation, as something `onChange` can watch.
+private struct NewestContent: Equatable {
+    var turn: String?
+    var steps: Int
+    var item: String?
 }
 
 /// One round of initial placement, as something a `.task(id:)` can watch.

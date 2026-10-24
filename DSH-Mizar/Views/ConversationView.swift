@@ -52,6 +52,14 @@ struct ConversationView: View {
     /// the two were conflated, so a single badly-timed attempt ended the list
     /// permanently.
     var onLoadOlder: (() async -> Int?)?
+    /// Whether the older-page row may ask by itself yet.
+    ///
+    /// False while the screen is still putting the conversation at its newest
+    /// message: the row is drawn then, so that the screen's reveal changes
+    /// nothing in the stack, but where it is on screen means nothing until the
+    /// page has been placed. Part of the asking task's identity, so a row that
+    /// was in view all along asks the moment it may.
+    var historyReady = true
 
     /// The answer currently being typed, decided by the screen above.
     ///
@@ -81,7 +89,7 @@ struct ConversationView: View {
     /// Ask for the page before this one, once.
     private func fetchOlder(_ fetch: () async -> Int?, automatic: Bool = false) async {
         guard !Task.isCancelled, !loadingOlder else { return }
-        if automatic, !olderRowVisible || automaticPages >= Self.automaticPageLimit { return }
+        if automatic, !historyReady || !olderRowVisible || automaticPages >= Self.automaticPageLimit { return }
         if automatic { automaticPages += 1 }
         loadingOlder = true
         defer { loadingOlder = false }
@@ -215,7 +223,7 @@ struct ConversationView: View {
             olderRowVisible = visible
             if !visible { automaticPages = 0 }
         }
-        .task(id: OlderPageTrigger(itemCount: items.count, visible: olderRowVisible)) {
+        .task(id: OlderPageTrigger(itemCount: items.count, visible: olderRowVisible, ready: historyReady)) {
             guard olderRowVisible, !Task.isCancelled else { return }
             await fetchOlder(onLoadOlder, automatic: true)
         }
@@ -814,4 +822,5 @@ private struct Shimmer: ViewModifier {
 private struct OlderPageTrigger: Equatable {
     var itemCount: Int
     var visible: Bool
+    var ready: Bool
 }

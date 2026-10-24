@@ -669,6 +669,19 @@ final class AppFlowTurnLifecycleTests: AppFlowTestBase {
         XCTAssertEqual(field.value as? String, "half a thought for the first session")
 
         let loadOlder = app.buttons["conversation.loadOlder"]
+        // The page asks for history when the row that asks is on screen, and
+        // the conversation opens at its newest message -- the row is above the
+        // fold until someone reads back. Scroll up the way that someone would,
+        // and the row reports the end of the history by going away.
+        // Drawn on the window rather than on `app.scrollViews.firstMatch`,
+        // which matches the sidebar's own list -- off screen on a phone, and
+        // still the first in the hierarchy. Downwards is towards older
+        // messages.
+        let window = app.windows.firstMatch
+        for _ in 0..<3 {
+            window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+                .press(forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8)))
+        }
         let exhausted = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"),
             object: loadOlder,
