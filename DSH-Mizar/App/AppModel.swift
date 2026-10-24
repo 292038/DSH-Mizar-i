@@ -141,6 +141,18 @@ final class AppModel {
     /// a transient error could cost the operator their setup entirely.
     private(set) var lastError: String?
 
+    /// Why the connection itself is down, when it is.
+    ///
+    /// One slot was not enough. A reconnect that fails writes the reason here,
+    /// and the request that failed *because* the socket is gone then writes its
+    /// own, smaller reason into ``lastError`` -- so the banner explained the
+    /// computer by way of one dropped read. The connection's own sentence wins
+    /// while the connection is down, because it is the one that is about the
+    /// thing the operator is trying to fix.
+    ///
+    /// Cleared the moment a socket opens, so it cannot outlive its cause.
+    private(set) var connectionError: String?
+
     /// Whether the relay said this account has spent its daily traffic.
     ///
     /// Set from the socket's close reason, because that is where the relay puts
@@ -319,8 +331,10 @@ final class AppModel {
     ///
     /// One accessor for two sources -- a failure of the connection itself and a
     /// request that did not land -- because the screen shows one banner and does
-    /// not care which of them it is describing.
+    /// not care which of them it is describing. The connection comes first:
+    /// when the socket is down, the request that noticed is a symptom.
     var problem: String? {
+        if let connectionError { return connectionError }
         if case .failed(let message) = phase { return lastError ?? message }
         return lastError
     }
@@ -1091,7 +1105,7 @@ final class AppModel {
             LastOpenedHostStore.store(stored.hostId)
             try await connect(using: stored)
         } catch {
-            phase = .failed(Self.describe(error, authority: host?.authority))
+            failConnection(error, authority: host?.authority)
         }
     }
 
@@ -1120,7 +1134,7 @@ final class AppModel {
         do {
             try await connect(using: next)
         } catch {
-            phase = .failed(Self.describe(error, authority: next.authority ?? next.baseURL))
+            failConnection(error, authority: next.authority ?? next.baseURL)
         }
     }
 
@@ -3228,6 +3242,8 @@ final class AppModel {
             .connection,
             "routes: " + routes.map(Self.routeName).joined(separator: " -> "),
         )
+        // The failure worth showing, kept across attempts. See the catch below.
+        var shown: RouteFailure?
         for attempt in 0..<attempts {
             if attempt > 0 {
                 let pause = patient ? min(4_000, 400 << attempt) : 400 * attempt
@@ -3259,6 +3275,7 @@ final class AppModel {
                 nextConnectionEpoch += 1
                 connectionEpoch = nextConnectionEpoch
                 lastError = nil
+                connectionError = nil
                 log.add(.connection, "reconnected after \(attempt + 1) attempt(s)")
                 startInteractionPoll()
                 // `phase` decides which screen is on. This never touched it, so
@@ -3277,16 +3294,28 @@ final class AppModel {
                 // either refreshes for itself or is about to.
                 return true
             } catch {
-                let message = Self.describe(error, authority: host.authority ?? host.baseURL)
+                let failed = RouteFailure(
+                    isRelay: ReconnectPlan.isRelay(route),
+                    address: Self.routeDescription(route).address,
+                    error: error,
+                )
+                let message = Self.describe(failed)
                 log.add(
                     .connection,
                     "reconnect attempt \(attempt + 1)/\(attempts) over \(Self.routeName(route)) failed: \(message)",
                 )
-                lastError = message.isEmpty ? nil : message
+                // The most informative failure so far, not the latest. With two
+                // routes the last one is usually the direct address timing out
+                // six seconds after the relay already answered, and the relay's
+                // answer is the one that explains the screen.
+                if shown == nil || Self.weight(failed) >= Self.weight(shown!) { shown = failed }
+                let reported = shown.map { Self.describe($0) } ?? message
+                connectionError = reported.isEmpty ? nil : reported
+                lastError = reported.isEmpty ? nil : reported
                 // Keep the screen's text current. A retry that fails for a new
                 // reason -- no internet rather than the computer being unreachable --
                 // should say so instead of repeating the line from before.
-                if case .failed = phase, !message.isEmpty { phase = .failed(message) }
+                if case .failed = phase, !reported.isEmpty { phase = .failed(reported) }
             }
         }
         log.add(.connection, "reconnect gave up after \(attempts) attempts")
@@ -3463,14 +3492,16 @@ final class AppModel {
             // Reported rather than silently skipped. The window is already up
             // by the time this runs, and doing nothing looks exactly like having
             // nothing to do.
-            syncProblem = lastError ?? "Not connected to the computer."
+            // The connection's own reason first: a pass that never started is
+            // explained by why there is no socket, not by the read that noticed.
+            syncProblem = connectionError ?? lastError ?? "Not connected to the computer."
             return
         }
         guard !sessions.isEmpty else {
             log.add(.sync, "history sync: the computer listed no sessions, or the list could not be read")
             // Either the computer listed nothing or the read failed. Both are worth
             // saying out loud; neither is "up to date".
-            syncProblem = lastError ?? "The computer listed no sessions."
+            syncProblem = connectionError ?? lastError ?? "The computer listed no sessions."
             return
         }
 
@@ -3504,9 +3535,9 @@ final class AppModel {
         // session being the one whose page was just fetched, which is the one
         // case the per-page refresh above cannot notice.
         await refreshLiveActivity()
-        // The pass ran to the end. Whatever went wrong inside it is already in
-        // `lastError`, and this is the line that lets the window stop saying it.
-        syncProblem = lastError
+        // The pass ran to the end. Whatever went wrong inside it is already
+        // recorded, and this is the line that lets the window stop saying it.
+        syncProblem = connectionError ?? lastError
     }
 
     /// One forward page read, and the usage frame it left in the cache.
@@ -4293,12 +4324,17 @@ final class AppModel {
                 log.add(
                     .connection,
                     "pairing route \(Self.routeName(attempt.route.endpoint)) failed: "
-                        + Self.describe(attempt.error, authority: attempt.route.address),
+                        + Self.describe(
+                            attempt.error,
+                            authority: attempt.route.address,
+                            throughServer: attempt.route.isRelay,
+                        ),
                 )
             }
-            let answer = failure?.finalError ?? error
+            // The error itself, not its `finalError`: `describe` ranks the plan
+            // and knows which route each reason came from.
             let message = Self.describe(
-                answer,
+                error,
                 authority: failure?.attempts.last?.route.address
                     ?? target.authority ?? target.baseURL,
             )
@@ -4327,18 +4363,12 @@ final class AppModel {
     }
 
     /// Every route that failed, in the order the answers arrived.
+    ///
+    /// Carries the routes, not only the errors: which sentence the failure
+    /// deserves depends on whether the route went through the relay, and that is
+    /// known here and nowhere downstream.
     private struct LaunchFailure: Error, Sendable {
         let attempts: [(route: PairedHost.Endpoint, error: any Error)]
-
-        /// What to show for the failure: the last route's reason, because with
-        /// two routes that is the one the operator needs explained.
-        var finalError: any Error {
-            attempts.last?.error
-                ?? MizarError(code: "UNREACHABLE", message: "the host did not answer")
-        }
-
-        /// The route whose failure is being shown.
-        var lastRoute: PairedHost.Endpoint? { attempts.last?.route }
     }
 
     /// What one racing route came back with.
@@ -4346,6 +4376,21 @@ final class AppModel {
         case answered(Answered)
         case failed(route: PairedHost.Endpoint, error: any Error)
         case skipped
+    }
+
+    /// Put a connection failure on screen, and keep it apart from request errors.
+    ///
+    /// The two are shown by one banner (``problem``) but they are not the same
+    /// fact, and a request that fails because the socket is gone must not
+    /// overwrite the sentence that says why the socket is gone.
+    ///
+    /// - Parameters:
+    ///   - error: what the dial failed with.
+    ///   - authority: the address that was being dialled, when known.
+    private func failConnection(_ error: any Error, authority: String? = nil) {
+        let message = Self.describe(error, authority: authority)
+        connectionError = message.isEmpty ? nil : message
+        phase = .failed(message)
     }
 
     /// Open the socket and load the first screen's data.
@@ -4430,10 +4475,13 @@ final class AppModel {
             answer = try await firstAnswer(in: dials)
         } catch let failure as LaunchFailure {
             log.add(.connection, "no route reached \(host.hostName); \(endpoints.count) tried")
-            let address = failure.lastRoute.map { Self.routeDescription($0).address }
-                ?? host.authority ?? host.baseURL
-            phase = .failed(Self.describe(failure.finalError, authority: address))
-            throw failure.finalError
+            // The failure is thrown rather than its last error: the caller may
+            // have to describe it again, and only the plan knows which route
+            // each reason came from.
+            let message = Self.describe(failure)
+            connectionError = message.isEmpty ? nil : message
+            phase = .failed(message)
+            throw failure
         }
         await adopt(answer, host: host)
     }
@@ -4513,6 +4561,7 @@ final class AppModel {
                             + Self.describe(
                                 error,
                                 authority: Self.routeDescription(route).address,
+                                throughServer: ReconnectPlan.isRelay(route),
                             ),
                     )
                 case .skipped:
@@ -4554,6 +4603,9 @@ final class AppModel {
         if case .relay(let baseURL) = answer.endpoint, host.baseURL != baseURL {
             await rememberRelayBaseURL(baseURL)
         }
+        // A socket is open, so whatever the last dial failed with is no longer
+        // what is wrong.
+        connectionError = nil
         phase = .ready
         await refreshSessions()
         // After the session list, so the first screen is not waiting on a
@@ -4755,14 +4807,112 @@ final class AppModel {
     /// `_kCFStreamErrorCodeKey=-2102` that is accurate and useless. A failure to
     /// reach a tailnet address now says so and names the fix.
     ///
+    /// A plan of routes is described by the failure worth showing rather than by
+    /// whichever error reached this function: see ``describe(failure:)``.
+    ///
     /// - Parameters:
     ///   - error: the error to describe.
     ///   - authority: the address that was being reached, when known.
+    ///   - throughServer: whether a relay sat between this phone and the computer.
     /// - Returns: text to put in front of the operator.
-    private static func describe(_ error: any Error, authority: String? = nil) -> String {
+    private static func describe(
+        _ error: any Error,
+        authority: String? = nil,
+        throughServer: Bool = false,
+    ) -> String {
         if !isWorthReporting(error) { return "" }
-        if let mizar = error as? MizarError { return mizar.message }
+        // A plan of routes carries its own addresses; the caller's `authority` is
+        // one of them at best, and describing a relay's answer against the LAN
+        // address is how the wrong sentence used to win.
+        if let failure = error as? LaunchFailure {
+            return describe(
+                failure: failure.attempts.map {
+                    RouteFailure(
+                        isRelay: ReconnectPlan.isRelay($0.route),
+                        address: routeDescription($0.route).address,
+                        error: $0.error,
+                    )
+                },
+            )
+        }
+        if let failure = error as? PairingFailure {
+            return describe(
+                failure: failure.attempts.map {
+                    RouteFailure(isRelay: $0.route.isRelay, address: $0.route.address, error: $0.error)
+                },
+            )
+        }
+        if let mizar = error as? MizarError, !throughServer {
+            // A host's own refusal is its answer, and the hop cannot improve on
+            // it. Over a relay the diagnosis still runs, because a handshake
+            // that never completed is the one host-shaped failure that is really
+            // about the hop.
+            return mizar.message
+        }
         guard let authority else { return error.localizedDescription }
-        return ConnectionDiagnosis.of(error, authority: authority).message
+        return ConnectionDiagnosis.of(
+            error,
+            authority: authority,
+            over: throughServer ? .server : .direct,
+        ).message
+    }
+
+    /// One route's failure, as the picker below sees it.
+    private struct RouteFailure {
+        /// Whether this route went through the relay.
+        let isRelay: Bool
+        /// The address that route dialled.
+        let address: String
+        /// What it failed with.
+        let error: any Error
+    }
+
+    /// The sentence for one route's failure.
+    ///
+    /// - Parameter failure: the route that failed.
+    /// - Returns: text for the operator.
+    private static func describe(_ failure: RouteFailure) -> String {
+        describe(failure: [failure])
+    }
+
+    /// The sentence to show for a plan in which every route failed.
+    ///
+    /// Not the last failure to arrive: with the launch race that is usually the
+    /// direct address timing out six seconds after the relay already said the
+    /// computer is not connected, and the relay's answer is the one that
+    /// explains the screen. So the failures are ranked by what they prove.
+    ///
+    /// - Parameter attempts: every route's failure.
+    /// - Returns: the sentence for the most informative one.
+    private static func describe(failure attempts: [RouteFailure]) -> String {
+        var best: RouteFailure?
+        for attempt in attempts {
+            if best == nil || weight(attempt) >= weight(best!) { best = attempt }
+        }
+        guard let best else { return "" }
+        return describe(best.error, authority: best.address, throughServer: best.isRelay)
+    }
+
+    /// How much a failure says about what is wrong.
+    ///
+    /// Four means the far end answered, which is always the most specific thing
+    /// available: the relay saying "this room has no computer", or the computer
+    /// itself refusing the token. Two and one are both "nothing answered", and
+    /// the relay is ranked above the direct address because it is the route that
+    /// is supposed to work from anywhere -- if it cannot be reached, that is the
+    /// answer to "why can I not get to my computer".
+    ///
+    /// A `MizarError` only counts as an answer when its code is one this app
+    /// knows. The dial-level ones (`CONNECTION_CLOSED`, `REQUEST_TIMEOUT`) are
+    /// this side describing a socket that never got that far, and ranking them
+    /// with the answers would let "the host closed the connection" beat a relay
+    /// that said the computer is switched off.
+    ///
+    /// - Parameter failure: one route's failure.
+    /// - Returns: its rank.
+    private static func weight(_ failure: RouteFailure) -> Int {
+        if failure.error is WebSocketUpgradeRefused { return 4 }
+        if let mizar = failure.error as? MizarError, mizar.known != nil { return 4 }
+        return failure.isRelay ? 2 : 1
     }
 }

@@ -23,6 +23,7 @@ actor StubTransport: WebSocketTransport {
     private var waiting: [CheckedContinuation<String?, any Error>] = []
     private var closed = false
     private var connectFailure: (any Error)?
+    private var receiveFailure: (any Error)?
 
     /// Every frame this socket was asked to send.
     private(set) var sent: [String] = []
@@ -40,6 +41,15 @@ actor StubTransport: WebSocketTransport {
     /// Make the next ``connect(url:)`` fail.
     func failConnect(with error: any Error) {
         connectFailure = error
+    }
+
+    /// Make the next ``receive()`` throw, the way a refused upgrade does.
+    ///
+    /// A refused upgrade does not fail the dial: `URLSessionWebSocketTask`
+    /// resumes happily and reports the status from the first read (or write), so
+    /// this is the path a real 404 takes.
+    func failReceive(with error: any Error) {
+        receiveFailure = error
     }
 
     /// Push a frame as if the host sent it.
@@ -71,6 +81,10 @@ actor StubTransport: WebSocketTransport {
     }
 
     func receive() async throws -> String? {
+        if let receiveFailure {
+            self.receiveFailure = nil
+            throw receiveFailure
+        }
         if !queued.isEmpty {
             return queued.removeFirst()
         }

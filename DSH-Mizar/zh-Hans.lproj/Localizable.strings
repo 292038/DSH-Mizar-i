@@ -141,6 +141,11 @@
 "No context figure yet." = "暂无上下文数据。";
 "Add a computer" = "添加电脑";
 "Cannot reach the computer" = "无法连接电脑";
+/* Which half of the trip failed: the relay answered and the computer behind it did not. */
+"Connected to the server, but not to the computer." = "已连接服务器，但未能连接到电脑";
+/* Which half of the trip failed: the relay itself could not be reached. */
+"Could not reach the server." = "未能连接到服务器";
+"This device has no network connection." = "本机没有网络连接。";
 "Could not load the conversation" = "无法加载对话";
 "Could not switch model" = "无法切换模型";
 "Thinking: %@" = "思考等级：%@";

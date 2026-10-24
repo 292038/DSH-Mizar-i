@@ -88,3 +88,102 @@ struct DiagnosisTests {
         }
     }
 }
+
+/// The two halves of a relayed trip.
+///
+/// The relay answers a WebSocket upgrade with a status when it is up and
+/// something behind it is not: `404` for a room with no computer attached. That
+/// answer used to reach the screen as `URLError(-1011)`, whose only sentence is
+/// "there was a bad response from the server" -- true of a computer that is
+/// switched off and of a server that cannot be reached, which are the two
+/// situations an operator needs told apart.
+@Suite("Relayed connection diagnosis")
+struct RelayedDiagnosisTests {
+    @Test("a relay that answers 404 means the computer is not connected")
+    func computerAbsent() {
+        let diagnosis = ConnectionDiagnosis.of(
+            WebSocketUpgradeRefused(status: 404, url: URL(string: "wss://relay.example/r/ROOM")!),
+            authority: "https://relay.example",
+            over: .server,
+        )
+        #expect(diagnosis == .serverReachedComputerAbsent)
+        #expect(!diagnosis.message.isEmpty)
+    }
+
+    @Test("410 says the same thing in the other vocabulary")
+    func gone() {
+        #expect(WebSocketUpgradeRefused(status: 410).meansComputerAbsent)
+        #expect(!WebSocketUpgradeRefused(status: 402).meansComputerAbsent)
+        #expect(!WebSocketUpgradeRefused(status: 503).meansComputerAbsent)
+    }
+
+    @Test("a server that refuses for its own reasons is not the computer's fault")
+    func serverRefused() {
+        for status in [402, 403, 429, 500, 503] {
+            let diagnosis = ConnectionDiagnosis.of(
+                WebSocketUpgradeRefused(status: status),
+                authority: "https://relay.example",
+                over: .server,
+            )
+            #expect(diagnosis == .serverUnreachable, "status \(status)")
+        }
+    }
+
+    @Test("a relay that cannot be reached is not the computer's fault either")
+    func serverUnreachable() {
+        for code in [URLError.timedOut, .cannotConnectToHost, .networkConnectionLost, .cannotFindHost] {
+            let diagnosis = ConnectionDiagnosis.of(URLError(code), authority: "https://relay.example", over: .server)
+            #expect(diagnosis == .serverUnreachable, "\(code)")
+        }
+    }
+
+    @Test("no network is still said plainly, whichever hop failed")
+    func offlineOverServer() {
+        #expect(
+            ConnectionDiagnosis.of(
+                URLError(.notConnectedToInternet),
+                authority: "https://relay.example",
+                over: .server,
+            ) == .offline,
+        )
+    }
+
+    @Test("a handshake that never completed over a relay is the computer, not the server")
+    func silentHandshake() {
+        // The relay defers its upgrade until the computer accepts, so this is
+        // rare -- and it is the one host-shaped failure that is really about the
+        // hop: the server accepted the socket and nothing behind it said hello.
+        let diagnosis = ConnectionDiagnosis.of(
+            MizarError(code: "REQUEST_TIMEOUT", message: "the host did not say hello in time", retryable: true),
+            authority: "https://relay.example",
+            over: .server,
+        )
+        #expect(diagnosis == .serverReachedComputerAbsent)
+    }
+
+    @Test("a host's own refusal is still its own words")
+    func hostRefusal() {
+        let diagnosis = ConnectionDiagnosis.of(
+            MizarError(code: "UNAUTHENTICATED", message: "this device is not paired"),
+            authority: "https://relay.example",
+            over: .server,
+        )
+        #expect(diagnosis == .other(detail: "this device is not paired"))
+    }
+
+    @Test("a direct route keeps the diagnosis it always had")
+    func directUnchanged() {
+        // No server in the middle, so a refusal is another program on that port
+        // and the advice is the one an address that does not answer gets.
+        #expect(
+            ConnectionDiagnosis.of(
+                WebSocketUpgradeRefused(status: 404),
+                authority: "192.168.1.5:19390",
+            ) == .silent(authority: "192.168.1.5:19390"),
+        )
+        #expect(
+            ConnectionDiagnosis.of(URLError(.timedOut), authority: "192.168.1.5:19390")
+                == .silent(authority: "192.168.1.5:19390"),
+        )
+    }
+}

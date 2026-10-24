@@ -117,6 +117,16 @@ public actor MizarConnection {
     /// spent` means the day's bytes are gone, which is a different screen from
     /// "the network dropped".
     private var lastCloseReason: String?
+    /// What ended the socket, kept as the error rather than as its description.
+    ///
+    /// A refused upgrade carries the HTTP status that says which half of the
+    /// trip failed, and `String(describing:)` throws that away: a relay
+    /// answering `404` for a room with no computer attached and a server that
+    /// cannot be reached both became the same sentence by the time the screen
+    /// saw them. The state below still holds text, because a state is a thing to
+    /// display; this holds the reason, because the caller may need to know more
+    /// than the text says.
+    private var failureError: (any Error)?
 
     /// Unary calls awaiting their answer, keyed by correlation id.
     private var pending: [String: CheckedContinuation<JSONValue?, any Error>] = [:]
@@ -195,6 +205,9 @@ public actor MizarConnection {
     public func connect() async throws -> WelcomeFrame {
         if let welcome = state.welcome { return welcome }
         state = .connecting
+        // A new attempt is a new answer; the reason the last one ended belongs
+        // to the last one.
+        failureError = nil
 
         guard let endpoint = configuration.endpoint else {
             let error = MizarError(code: "BAD_AUTHORITY", message: "no address to dial")
@@ -225,7 +238,8 @@ public actor MizarConnection {
         do {
             try await socket.connect(url: url, headers: configuration.relayHeaders)
         } catch {
-            state = .failed(String(describing: error))
+            failureError = error
+            state = .failed(Self.reason(error))
             throw error
         }
 
@@ -244,8 +258,11 @@ public actor MizarConnection {
         do {
             try await socket.send(text: try Self.encode(hello))
         } catch {
-            state = .failed(String(describing: error))
+            // Closing first, then recording: the close would otherwise write its
+            // own reason over the one that actually ended this attempt.
             await closeSocket()
+            failureError = error
+            state = .failed(Self.reason(error))
             throw error
         }
 
@@ -256,6 +273,7 @@ public actor MizarConnection {
             // socket left behind is one nobody reads and nobody closes, and the
             // caller is already dialling the next route.
             await closeSocket()
+            failureError = error
             state = .failed(Self.reason(error))
             throw error
         }
@@ -323,8 +341,10 @@ public actor MizarConnection {
     private func settledHandshake() -> Result<WelcomeFrame, any Error>? {
         if let welcome = state.welcome { return .success(welcome) }
         if case .failed(let reason) = state {
+            // The reason itself when there is one: a refused upgrade says which
+            // hop failed, and a sentence rebuilt from `reason` would not.
             return .failure(
-                MizarError(code: "CONNECTION_CLOSED", message: reason, retryable: true),
+                failureError ?? MizarError(code: "CONNECTION_CLOSED", message: reason, retryable: true),
             )
         }
         return nil
@@ -472,18 +492,18 @@ public actor MizarConnection {
 
     /// Read frames until the socket closes, then tear down.
     private func receiveLoop(_ socket: WebSocketTransport) async {
-        var failure: String?
+        var failure: (any Error)?
         while !Task.isCancelled {
             do {
                 guard let text = try await socket.receive() else { break }
                 guard await route(text) else { return }
             } catch {
-                if !Task.isCancelled { failure = String(describing: error) }
+                if !Task.isCancelled { failure = error }
                 break
             }
         }
         guard !Task.isCancelled else { return }
-        await handleClosed(reason: failure)
+        await handleClosed(error: failure)
     }
 
     /// Dispatch one decoded frame.
@@ -498,7 +518,7 @@ public actor MizarConnection {
             // A version mismatch is fatal for this socket: continuing would mean
             // reading fields this build misinterprets. Returning false stops the
             // read loop rather than leaving it reading an abandoned socket.
-            await handleClosed(reason: error.message)
+            await handleClosed(error: error)
             return false
         } catch {
             // A frame that will not decode is not fatal. Dropping one is better
@@ -537,16 +557,27 @@ public actor MizarConnection {
     }
 
     /// Fail everything in flight and tell subscribers the stream ended.
-    private func handleClosed(reason: String?) async {
-        let message = reason ?? "the host closed the connection"
+    ///
+    /// - Parameter error: what ended the socket, or `nil` when it ended without
+    ///   saying why.
+    private func handleClosed(error: (any Error)?) async {
+        let failure = error ?? MizarError(
+            code: "CONNECTION_CLOSED",
+            message: "the host closed the connection",
+            retryable: true,
+        )
+        let message = Self.reason(failure)
         lastCloseReason = message
+        failureError = failure
         state = .failed(message)
 
         if let continuation = handshake {
             handshake = nil
-            continuation.resume(
-                throwing: MizarError(code: "CONNECTION_CLOSED", message: message, retryable: true),
-            )
+            // The reason, not a sentence about it: a caller that has to choose
+            // between "the server is not answering" and "the server says this
+            // computer is not here" needs the status, and this is the only place
+            // it is still attached to the failure.
+            continuation.resume(throwing: failure)
         }
 
         for (id, continuation) in pending {
@@ -562,6 +593,17 @@ public actor MizarConnection {
         subscribers.removeAll()
 
         transport = nil
+    }
+
+    /// Fail everything in flight, given a reason as text.
+    ///
+    /// - Parameter reason: what to say, or `nil` for the default sentence.
+    private func handleClosed(reason: String?) async {
+        await handleClosed(
+            error: reason.map {
+                MizarError(code: "CONNECTION_CLOSED", message: $0, retryable: true)
+            },
+        )
     }
 
     /// Close the socket and fail anything in flight.

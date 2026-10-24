@@ -31,6 +31,16 @@ public enum ConnectionDiagnosis: Sendable, Equatable {
     case offline
     /// A name that could not be resolved.
     case unknownHost(authority: String)
+    /// The server answered, and said the computer behind it is not there.
+    ///
+    /// The relay's `404` for a room with no live tunnel. Its own comment says
+    /// why it answers at all rather than dropping the socket: the two halves of
+    /// the trip -- the server, and the computer behind it -- fail for different
+    /// reasons and only one of them is fixed by anything the operator can do to
+    /// the phone.
+    case serverReachedComputerAbsent
+    /// The server itself could not be reached.
+    case serverUnreachable
     /// Anything else, with whatever the system said.
     case other(detail: String)
 
@@ -63,7 +73,7 @@ public enum ConnectionDiagnosis: Sendable, Equatable {
             network as the computer.
             """
         case .offline:
-            return "This device has no network connection."
+            return String(localized: "This device has no network connection.")
         case .unknownHost(let authority):
             return """
             Could not find \(authority).
@@ -71,10 +81,28 @@ public enum ConnectionDiagnosis: Sendable, Equatable {
             If you entered it by hand, check it against the pairing code shown \
             on the computer.
             """
+        case .serverReachedComputerAbsent:
+            return String(localized: "Connected to the server, but not to the computer.")
+        case .serverUnreachable:
+            return String(localized: "Could not reach the server.")
         case .other(let detail):
             return detail
         }
     }
+}
+
+/// Which half of the trip a failure belongs to.
+///
+/// A pairing reaches the computer one of two ways, and the same `URLError` means
+/// different things on each. Directly, nothing is in between: if nothing
+/// answers, the computer is not there. Through a relay there are two hops, and
+/// the relay's own answer is what tells them apart — which is why this has to be
+/// passed to the diagnosis rather than guessed from the error.
+public enum ConnectionHop: Sendable, Equatable {
+    /// Straight to `host:port`: the same Wi-Fi, or a tailnet.
+    case direct
+    /// Through the relay, which can be up while the computer behind it is not.
+    case server
 }
 
 extension ConnectionDiagnosis {
@@ -109,14 +137,69 @@ extension ConnectionDiagnosis {
     /// nowhere, which is a different problem from a host that is present and not
     /// answering — and only one of the two is fixed by opening an app.
     ///
+    /// The hop decides what a failure *proves*. Directly, nothing is in between,
+    /// so every failure is about the computer. Through a relay, a failure with
+    /// no HTTP answer is about the server, and an HTTP answer is about whatever
+    /// is behind it — which is the distinction the screen was missing: a
+    /// computer that is switched off and a server that cannot be reached both
+    /// arrived as "there was a bad response from the server".
+    ///
     /// - Parameters:
     ///   - error: the error the transport threw.
     ///   - authority: the address that was being reached.
+    ///   - hop: whether a relay sat in between.
     /// - Returns: the diagnosis.
-    public static func of(_ error: any Error, authority: String) -> ConnectionDiagnosis {
+    public static func of(
+        _ error: any Error,
+        authority: String,
+        over hop: ConnectionHop = .direct,
+    ) -> ConnectionDiagnosis {
+        // An upgrade the far end refused is the one failure that names the hop,
+        // because the far end took the trouble to answer.
+        if let refused = error as? WebSocketUpgradeRefused {
+            switch hop {
+            case .server:
+                // 404/410 is the relay saying "this room has no computer".
+                // Anything else -- a 402 from the paid gate, a 5xx from the
+                // server itself -- is the server refusing, not the computer.
+                return refused.meansComputerAbsent ? .serverReachedComputerAbsent : .serverUnreachable
+            case .direct:
+                // Nothing in this product answers 404 on the computer's own
+                // socket path, so this is another program on that port or a
+                // plugin too old to serve it. The advice is the same as an
+                // address that does not answer: check the address.
+                return .silent(authority: authority)
+            }
+        }
+
+        if let mizar = error as? MizarError {
+            // A handshake that times out over a relay is the server accepting
+            // the socket and the computer never saying hello. The relay defers
+            // its upgrade until the computer accepts, so this is rare — but it
+            // is the one case where the two hops are distinguishable and the
+            // answer is worth saying.
+            if hop == .server, mizar.code == handshakeTimeoutCode {
+                return .serverReachedComputerAbsent
+            }
+            return .other(detail: mizar.message)
+        }
+
         guard let urlError = error as? URLError else {
             return .other(detail: error.localizedDescription)
         }
+
+        if hop == .server {
+            // The server never answered, so nothing here is a fact about the
+            // computer. A phone with no network is still worth saying plainly:
+            // it is the one failure whose fix is on this device.
+            switch urlError.code {
+            case .notConnectedToInternet, .dataNotAllowed:
+                return .offline
+            default:
+                return .serverUnreachable
+            }
+        }
+
         switch urlError.code {
         case .timedOut:
             // A tailnet address that does not answer is nearly always a peer that
@@ -135,4 +218,10 @@ extension ConnectionDiagnosis {
             return .other(detail: urlError.localizedDescription)
         }
     }
+
+    /// The code ``MizarConnection`` fails a silent handshake with.
+    ///
+    /// Not a host code — nothing on the far side sent it — which is why it is
+    /// not in ``MizarErrorCode``.
+    private static let handshakeTimeoutCode = "REQUEST_TIMEOUT"
 }

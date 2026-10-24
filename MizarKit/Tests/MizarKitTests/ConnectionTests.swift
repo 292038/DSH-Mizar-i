@@ -291,6 +291,26 @@ struct ConnectionTests {
         }
     }
 
+    @Test("keeps the status of a refused upgrade instead of describing it")
+    func refusedUpgrade() async throws {
+        // The reported bug: a relay answering 404 for a room with no computer
+        // attached reached the screen as "there was a bad response from the
+        // server", which is also what a server that cannot be reached says. The
+        // status is the only thing that tells the two apart, so it has to survive
+        // the read loop -- which used to flatten every failure to a string.
+        let transport = StubTransport(responder: { _ in [] })
+        await transport.failReceive(with: WebSocketUpgradeRefused(status: 404))
+        let connection = makeConnection(transport: transport, timeout: .milliseconds(500))
+
+        do {
+            _ = try await connection.connect()
+            Issue.record("expected the handshake to fail")
+        } catch let refusal as WebSocketUpgradeRefused {
+            #expect(refusal.status == 404)
+            #expect(refusal.meansComputerAbsent)
+        }
+    }
+
     @Test("refuses to dial an authority it cannot parse")
     func badAuthority() async throws {
         let transport = StubTransport(responder: responder())

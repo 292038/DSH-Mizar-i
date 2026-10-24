@@ -141,6 +141,11 @@
 "No context figure yet." = "No context figure yet.";
 "Add a computer" = "Add a computer";
 "Cannot reach the computer" = "Cannot reach the computer";
+/* Which half of the trip failed: the relay answered and the computer behind it did not. */
+"Connected to the server, but not to the computer." = "Connected to the server, but not to the computer.";
+/* Which half of the trip failed: the relay itself could not be reached. */
+"Could not reach the server." = "Could not reach the server.";
+"This device has no network connection." = "This device has no network connection.";
 "Could not load the conversation" = "Could not load the conversation";
 "Could not switch model" = "Could not switch model";
 "Thinking: %@" = "Thinking: %@";
