@@ -24,8 +24,6 @@ struct WorkspaceSection: View {
     let onNewHere: () -> Void
 
     @Environment(AppModel.self) private var model
-    /// Read in the body, so the pulse's hold tracks the drawers.
-    @Environment(\.drawersStill) private var drawersStill
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -116,10 +114,7 @@ struct WorkspaceSection: View {
                 if waiting > 0 {
                     // Pulses only while the drawers are still: the frames a
                     // drawer is moving belong to the card.
-                    Image(systemName: "hand.raised.fill")
-                        .font(.caption)
-                        .foregroundStyle(Theme.waiting)
-                        .symbolEffect(.pulse, options: .repeat(.continuous), isActive: drawersStill)
+                    WaitingPulseGlyph()
                         .transition(.pop)
                 }
                 Text("\(group.sessions.count)")
@@ -153,6 +148,22 @@ struct WorkspaceSection: View {
         let ids = Set(group.sessions.map(\.sessionId))
         return pending.approvals.count { $0.sessionId.map(ids.contains) ?? false }
             + pending.questions.count { $0.sessionId.map(ids.contains) ?? false }
+    }
+}
+
+/// The heading's "someone is waiting" hand, pulsing at rest.
+///
+/// The drawer gate is read on the glyph rather than by ``WorkspaceSection``:
+/// the hold is this decoration's, and the section's insertion transition stays
+/// on the call site, where it was.
+private struct WaitingPulseGlyph: View {
+    @Environment(\.drawersStill) private var drawersStill
+
+    var body: some View {
+        Image(systemName: "hand.raised.fill")
+            .font(.caption)
+            .foregroundStyle(Theme.waiting)
+            .symbolEffect(.pulse, options: .repeat(.continuous), isActive: drawersStill)
     }
 }
 

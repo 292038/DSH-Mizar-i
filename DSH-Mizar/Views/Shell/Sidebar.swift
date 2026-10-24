@@ -29,8 +29,6 @@ struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @Environment(ShellState.self) private var shell
     @Environment(\.horizontalSizeClass) private var sizeClass
-    /// Read in the body, so the sync spinner holds while a drawer moves.
-    @Environment(\.drawersStill) private var drawersStill
     @State private var query = ""
     @FocusState private var searching: Bool
     /// How many sessions each workspace shows before offering more.
@@ -118,9 +116,7 @@ struct SidebarView: View {
                 Task { await model.syncAllConversations() }
             } label: {
                 GlassCircleLabel(size: 38) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 15, weight: .semibold))
-                        .symbolEffect(.rotate, options: .repeat(.continuous), isActive: model.isSyncing && drawersStill)
+                    SyncingRefreshGlyph(active: model.isSyncing)
                 }
             }
             .buttonStyle(.plain)
@@ -435,6 +431,23 @@ struct SidebarView: View {
             limits[group.path] = index + 1
         }
         loadTitles(for: group)
+    }
+}
+
+/// The header's refresh arrow, turning while a sync runs.
+///
+/// Read the drawer gate on the glyph so this direct environment dependency
+/// stays with the decoration. The sidebar can still update for its other
+/// inputs.
+private struct SyncingRefreshGlyph: View {
+    let active: Bool
+
+    @Environment(\.drawersStill) private var drawersStill
+
+    var body: some View {
+        Image(systemName: "arrow.clockwise")
+            .font(.system(size: 15, weight: .semibold))
+            .symbolEffect(.rotate, options: .repeat(.continuous), isActive: active && drawersStill)
     }
 }
 

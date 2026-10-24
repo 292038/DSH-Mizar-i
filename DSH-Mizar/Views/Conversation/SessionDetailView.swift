@@ -32,9 +32,6 @@ struct SessionDetailView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Read in the body (the refresh spinner), so the drawer-motion holds
-    /// below track it.
-    @Environment(\.drawersStill) private var drawersStill
     @State private var stats: SessionStatsFrame?
     /// The session `stats` was read for.
     ///
@@ -359,8 +356,7 @@ struct SessionDetailView: View {
                         refreshing = false
                     }
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                        .symbolEffect(.rotate, options: .repeat(.continuous), isActive: refreshing && drawersStill)
+                    SessionRefreshLabel(active: refreshing)
                 }
                 .disabled(refreshing)
                 .accessibilityIdentifier("session.refresh")
@@ -1858,6 +1854,21 @@ struct SessionDetailView: View {
         // answer, but an empty page on a screen showing another session's rows
         // means the read did not arrive.
         return statsLanded && conversationSessionId == sessionId
+    }
+}
+
+/// The toolbar's refresh glyph, turning while a by-hand reload runs.
+///
+/// Read the drawer gate on the glyph so this direct environment dependency
+/// stays with the decoration. The page can still update for its other inputs.
+private struct SessionRefreshLabel: View {
+    let active: Bool
+
+    @Environment(\.drawersStill) private var drawersStill
+
+    var body: some View {
+        Label("Refresh", systemImage: "arrow.clockwise")
+            .symbolEffect(.rotate, options: .repeat(.continuous), isActive: active && drawersStill)
     }
 }
 
