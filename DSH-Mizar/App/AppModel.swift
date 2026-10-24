@@ -4238,24 +4238,68 @@ final class AppModel {
         }
     }
 
+    /// How long the relay waits while a direct route is being dialled.
+    ///
+    /// The launch race's only ordering rule. A computer on the same network
+    /// answers a WebSocket upgrade in tens of milliseconds, so this is generous
+    /// enough that a direct route which *can* answer always wins -- and short
+    /// enough that a direct address which cannot answer stops being the thing
+    /// the operator is waiting for.
+    private static let launchRelayHeadStart: Duration = .milliseconds(400)
+
+    /// One route's answer in the launch race.
+    private struct Answered: Sendable {
+        let endpoint: PairedHost.Endpoint
+        let connection: MizarConnection
+        let welcome: WelcomeFrame
+    }
+
+    /// Every route that failed, in the order the answers arrived.
+    private struct LaunchFailure: Error, Sendable {
+        let attempts: [(route: PairedHost.Endpoint, error: any Error)]
+
+        /// What to show for the failure: the last route's reason, because with
+        /// two routes that is the one the operator needs explained.
+        var finalError: any Error {
+            attempts.last?.error
+                ?? MizarError(code: "UNREACHABLE", message: "the host did not answer")
+        }
+
+        /// The route whose failure is being shown.
+        var lastRoute: PairedHost.Endpoint? { attempts.last?.route }
+    }
+
+    /// What one racing route came back with.
+    private enum LaunchDial: Sendable {
+        case answered(Answered)
+        case failed(route: PairedHost.Endpoint, error: any Error)
+        case skipped
+    }
+
     /// Open the socket and load the first screen's data.
     ///
-    /// Every route the pairing knows about is tried in order, direct first,
-    /// because the two fail for entirely different reasons and only one of them
-    /// is usually available. A computer on the same Wi-Fi answers on its LAN address;
-    /// a computer on a network that blocks inbound traffic answers only through the
-    /// relay. One QR code carries both, and this is what makes that useful.
+    /// Every route the pairing knows about is dialled **at the same time**, and
+    /// the first one to answer wins. That is the fix for a launch that felt
+    /// broken on a phone that had left its own network: the routes used to be
+    /// tried one after another, so a dead LAN address was paid for in full --
+    /// the direct leash, six seconds -- before the relay that would have
+    /// answered in one was even started, and the operator watched the sum of
+    /// two attempts when only one of them could ever have worked.
+    ///
+    /// The order still means something, and this is now the only thing it
+    /// means: **a direct route gets a head start**. The relay is held back by
+    /// ``launchRelayHeadStart``, so a computer on the same network answers first
+    /// and the phone stays off the relay -- faster, and unmetered. When the
+    /// direct address is dead the relay is already dialling by the time the
+    /// first packet would have been lost, so the fallback costs the head start
+    /// instead of the direct timeout.
+    ///
+    /// A loser is cancelled and closed, never left half-open: a race that leaked
+    /// a socket would leave the host with a second device session for every
+    /// launch.
     ///
     /// A pairing that has just completed passes the route it paired over as
-    /// `preferred`, so the first socket is dialled where the pairing was just
-    /// answered rather than at the route that may be the one that cannot be
-    /// reached. ``ReconnectPlan`` still owns the order: the preferred route goes
-    /// first and the rest of the pairing follows, so the two routes remain each
-    /// other's fallback.
-    ///
-    /// A failed attempt costs its own timeout, so the direct attempt is given a
-    /// short one. Waiting the full default before falling back would make every
-    /// connection on a hostile network feel broken.
+    /// `preferred`, so it races in front of the rest of the pairing.
     ///
     /// - Parameters:
     ///   - host: the pairing to connect with.
@@ -4284,45 +4328,185 @@ final class AppModel {
             throw error
         }
 
-        var lastError: (any Error)?
-        var lastEndpoint: PairedHost.Endpoint?
-        for (index, endpoint) in endpoints.enumerated() {
-            do {
-                try await open(host: host, endpoint: endpoint)
-                return
-            } catch {
-                lastError = error
-                lastEndpoint = endpoint
-                log.add(
-                    .connection,
-                    "route \(Self.routeName(endpoint)) failed: "
-                        + Self.describe(error, authority: Self.routeDescription(endpoint).address),
-                )
-                // Nothing left to fall back to, so this is the answer.
-                guard index < endpoints.count - 1 else { break }
-                // Back to connecting rather than failed: the next route has
-                // not been tried yet, and showing a failure while an attempt is
-                // in flight is a lie the operator would act on.
-                phase = .connecting
+        // Only a relay is ever held back, and only when there is a direct route
+        // to beat it. A pairing with no direct address -- the usual one for a
+        // computer that listens only on loopback -- has nothing to prefer, so
+        // its relays all start at once.
+        let hasDirect = endpoints.contains { !ReconnectPlan.isRelay($0) }
+        let dials = endpoints.map { endpoint in
+            (
+                endpoint: endpoint,
+                connection: makeConnection(host: host, endpoint: endpoint),
+                delay: hasDirect && ReconnectPlan.isRelay(endpoint)
+                    ? Self.launchRelayHeadStart
+                    : .zero,
+            )
+        }
+
+        // One line for the whole race, in the order the dials start: the log
+        // used to carry a "dialling" line per attempt, and with the attempts
+        // overlapping that is now a plan rather than a sequence.
+        let plan = dials.map { dial in
+            dial.delay > .zero
+                ? "\(Self.routeName(dial.endpoint)) after \(dial.delay)"
+                : Self.routeName(dial.endpoint)
+        }
+        log.add(.connection, "dialling " + plan.joined(separator: " and "))
+
+        let answer: Answered
+        do {
+            answer = try await firstAnswer(in: dials)
+        } catch let failure as LaunchFailure {
+            log.add(.connection, "no route reached \(host.hostName); \(endpoints.count) tried")
+            let address = failure.lastRoute.map { Self.routeDescription($0).address }
+                ?? host.authority ?? host.baseURL
+            phase = .failed(Self.describe(failure.finalError, authority: address))
+            throw failure.finalError
+        }
+        await adopt(answer, host: host)
+    }
+
+    /// Dial every route at once and return the first one that answers.
+    ///
+    /// The winner is decided by arrival, not by list position -- the list only
+    /// decides who starts first (see ``connect(using:preferring:)``). Losing
+    /// routes are cancelled the moment the winner is known, and each closes its
+    /// own socket on the way out, so the group drains at the speed of a
+    /// cancellation rather than at the speed of a timeout.
+    ///
+    /// - Parameter dials: the routes, each with the connection to dial it on and
+    ///   how long to wait before starting.
+    /// - Returns: the first route to complete its handshake.
+    /// - Throws: ``LaunchFailure`` carrying one reason per route when none
+    ///   answered.
+    private func firstAnswer(
+        in dials: [(endpoint: PairedHost.Endpoint, connection: MizarConnection, delay: Duration)],
+    ) async throws -> Answered {
+        var failures: [(route: PairedHost.Endpoint, error: any Error)] = []
+        var winner: Answered?
+
+        await withTaskGroup(of: LaunchDial.self) { group in
+            for dial in dials {
+                group.addTask {
+                    if dial.delay > .zero {
+                        do {
+                            try await Task.sleep(for: dial.delay)
+                        } catch {
+                            // Cancelled before it started: the head start was
+                            // still running when another route answered.
+                            return .skipped
+                        }
+                    }
+                    if Task.isCancelled { return .skipped }
+                    do {
+                        let welcome = try await dial.connection.connect()
+                        return .answered(
+                            Answered(
+                                endpoint: dial.endpoint,
+                                connection: dial.connection,
+                                welcome: welcome,
+                            ),
+                        )
+                    } catch {
+                        // A route that lost the race was cancelled rather than
+                        // answered. Its socket goes with it: a half-open one is
+                        // a socket nobody reads and nobody closes.
+                        await dial.connection.disconnect()
+                        return Task.isCancelled
+                            ? .skipped
+                            : .failed(route: dial.endpoint, error: error)
+                    }
+                }
+            }
+            for await result in group {
+                switch result {
+                case .answered(let answer):
+                    guard winner == nil else {
+                        // A second route finished in the same tick. The first
+                        // one answered first, so this one is closed.
+                        await answer.connection.disconnect()
+                        continue
+                    }
+                    winner = answer
+                    // Cancels the sleepers and aborts the handshakes still
+                    // waiting; each of those closes its own socket as it unwinds.
+                    group.cancelAll()
+                case .failed(let route, let error):
+                    // After a winner these are cancellations, not answers.
+                    guard winner == nil else { continue }
+                    failures.append((route, error))
+                    log.add(
+                        .connection,
+                        "route \(Self.routeName(route)) failed: "
+                            + Self.describe(
+                                error,
+                                authority: Self.routeDescription(route).address,
+                            ),
+                    )
+                case .skipped:
+                    break
+                }
             }
         }
 
-        let failure = lastError ?? MizarError(code: "UNREACHABLE", message: "the host did not answer")
-        log.add(.connection, "no route reached \(host.hostName); \(endpoints.count) tried")
-        // The route that failed last, not the host's first address: with two
-        // routes the last one is the answer the operator needs explained.
-        let address = lastEndpoint.map { Self.routeDescription($0).address }
-            ?? host.authority ?? host.baseURL
-        phase = .failed(Self.describe(failure, authority: address))
-        throw failure
+        guard let winner else { throw LaunchFailure(attempts: failures) }
+        return winner
     }
 
-    /// Open one connection over one route, and load the first screen's data.
+    /// Make an answered route the app's connection, and load the first screen.
+    ///
+    /// Everything that follows a handshake, in the order the screens need it:
+    /// the socket becomes the app's, the route becomes the one the footer and
+    /// the next reconnect read, and only then is the first data asked for.
     ///
     /// - Parameters:
-    ///   - host: the pairing to connect with.
-    ///   - endpoint: which route to take.
+    ///   - answer: the route that answered, with its open connection.
+    ///   - host: the pairing it belongs to.
+    private func adopt(_ answer: Answered, host: PairedHost) async {
+        // A new subject, before the state below rather than after it:
+        // everything here reads and writes host-scoped state, and the epoch is
+        // what says which socket that state belongs to.
+        nextConnectionEpoch += 1
+        connectionEpoch = nextConnectionEpoch
+        connection = answer.connection
+        welcome = answer.welcome
+        log.add(
+            .connection,
+            "connected to \(answer.welcome.hostName), protocol "
+                + "\(answer.welcome.protocolVersion), over \(Self.routeName(answer.endpoint))",
+        )
+        activeEndpoint = answer.endpoint
+        // A connection that landed on the alternate relay is the repair for a
+        // stale stored URL: remember the one that actually answered before the
+        // next reconnect starts from the old address again.
+        if case .relay(let baseURL) = answer.endpoint, host.baseURL != baseURL {
+            await rememberRelayBaseURL(baseURL)
+        }
+        phase = .ready
+        await refreshSessions()
+        // After the session list, so the first screen is not waiting on a
+        // registration the operator never asked for. A round trip, not a
+        // dependency: the app works identically whether or not it lands.
+        await syncPushRegistration()
+        // The plan may have changed while the app was unpaired or offline; the
+        // first live socket is the first chance to align the tunnel's relay.
+        await syncRelayTier()
+        startInteractionPoll()
+
+        if let requested = Self.launchSelectedSession {
+            selectedSessionId = requested == "first" ? sessions.first?.sessionId : requested
+        }
+    }
+
     /// Build a connection for one route, not yet opened.
+    ///
+    /// The leash is per route, and it is what bounds a launch that has only one
+    /// way in: the direct address gets six seconds because a local network that
+    /// is going to answer at all answers quickly, and the relay gets twenty
+    /// because a relay that is reachable but slow is still worth waiting for.
+    /// When both are racing, the losing route is cancelled rather than timed
+    /// out, so these numbers decide the lone-route case and the winner's
+    /// patience -- not how long a fallback takes.
     ///
     /// - Parameters:
     ///   - host: the pairing to connect with.
@@ -4394,52 +4578,6 @@ final class AppModel {
             configuration: configuration,
             makeTransport: { URLSessionWebSocketTransport(timeout: timeout) },
         )
-    }
-
-    /// Open one connection over one route, and load the first screen's data.
-    ///
-    /// - Parameters:
-    ///   - host: the pairing to connect with.
-    ///   - endpoint: which route to take.
-    private func open(host: PairedHost, endpoint: PairedHost.Endpoint) async throws {
-        let connection = makeConnection(host: host, endpoint: endpoint)
-        self.connection = connection
-        // A new subject, before the handshake rather than after it: everything
-        // below reads and writes host-scoped state, and the epoch is what says
-        // which socket that state belongs to. Incremented here so that a read
-        // started over the *previous* socket -- still in flight, and about to be
-        // answered -- is not applied to this one.
-        nextConnectionEpoch += 1
-        connectionEpoch = nextConnectionEpoch
-
-        log.add(.connection, "dialling \(Self.routeName(endpoint))")
-        let welcome = try await connection.connect()
-        self.welcome = welcome
-        log.add(
-            .connection,
-            "connected to \(welcome.hostName), protocol \(welcome.protocolVersion), over \(Self.routeName(endpoint))",
-        )
-        self.activeEndpoint = endpoint
-        // A connection that landed on the alternate relay is the repair for a
-        // stale stored URL: remember the one that actually answered before the
-        // next reconnect starts from the old address again.
-        if case .relay(let baseURL) = endpoint, host.baseURL != baseURL {
-            await rememberRelayBaseURL(baseURL)
-        }
-        phase = .ready
-        await refreshSessions()
-        // After the session list, so the first screen is not waiting on a
-        // registration the operator never asked for. A round trip, not a
-        // dependency: the app works identically whether or not it lands.
-        await syncPushRegistration()
-        // The plan may have changed while the app was unpaired or offline; the
-        // first live socket is the first chance to align the tunnel's relay.
-        await syncRelayTier()
-        startInteractionPoll()
-
-        if let requested = Self.launchSelectedSession {
-            selectedSessionId = requested == "first" ? sessions.first?.sessionId : requested
-        }
     }
 
     /// Why the last usage read failed, when it did.
