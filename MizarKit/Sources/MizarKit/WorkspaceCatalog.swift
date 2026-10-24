@@ -135,12 +135,28 @@ public enum WorkspaceCatalog {
         var claimed = Set<String>()
         let groups = workspaces.compactMap { workspace -> WorkspaceGroup? in
             guard seen.insert(workspace.path).inserted else { return nil }
-            let held = drawn.filter { session in
-                // Membership when the host sent it. Paths only when it did not:
-                // a host from before this existed names the directory and
-                // nothing else, and the phone is no worse off matching on it.
-                guard let members = workspace.sessionIds else { return session.cwd == workspace.path }
-                return members.contains(session.sessionId)
+            // Membership when the host sent it. Paths only when it did not:
+            // a host from before this existed names the directory and
+            // nothing else, and the phone is no worse off matching on it.
+            //
+            // The membership list is scanned once per drawn session. Above
+            // ``membershipIndexThreshold`` members the list is indexed once
+            // per workspace instead: a set costs an allocation and a hash per
+            // session, and saves a scan of the whole list each time. Below it
+            // the scan stays -- the set would cost more than the comparisons
+            // it saves. A refresh with nothing drawn takes the scan either
+            // way: there is no session to look up, so a set would be built
+            // and never asked.
+            let held: [SessionRow]
+            if let members = workspace.sessionIds,
+               !drawn.isEmpty,
+               members.count >= Self.membershipIndexThreshold {
+                let index = Set(members)
+                held = drawn.filter { index.contains($0.sessionId) }
+            } else if let members = workspace.sessionIds {
+                held = drawn.filter { members.contains($0.sessionId) }
+            } else {
+                held = drawn.filter { $0.cwd == workspace.path }
             }
             for session in held { claimed.insert(session.sessionId) }
             return WorkspaceGroup(
@@ -159,6 +175,22 @@ public enum WorkspaceCatalog {
         guard !unclaimed.isEmpty else { return groups }
         return groups + [unclaimedGroup(unclaimed)]
     }
+
+    /// The membership-list length from which a per-workspace set replaces the
+    /// array scan.
+    ///
+    /// Measured on 2026-10-23 in release on this Apple-silicon host, against a
+    /// frozen copy of the old scan, on synthetic shapes -- not a real host's
+    /// workspace list, and not a device measurement. Per-shape medians for the
+    /// shipped function, the frozen scan and each membership strategy are in
+    /// `docs/evidence/ios-workspace-catalog-benchmark-2026-10-23.json`.
+    ///
+    /// Not a universal crossover: the win depends on sessions and workspaces
+    /// as well as on the list length, and only the shapes in that file were
+    /// measured. Eight is the first member count at which the set won at both
+    /// measured session scales, and it is a member-count rule -- not one that
+    /// knows how many sessions will be looked up.
+    private static let membershipIndexThreshold = 8
 
     /// The sessions no workspace claims, under one heading.
     ///
