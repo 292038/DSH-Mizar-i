@@ -490,6 +490,14 @@ final class AppModel {
     private(set) var runningPollTicks = 0
     /// The task consuming host-pushed events.
     private var eventListener: Task<Void, Never>?
+    /// The resident task that asks the local network whether the computer is on
+    /// it. See ``lanWatchTick()``.
+    ///
+    /// Alive only while the app is on screen: iOS suspends the process in the
+    /// background, so a timer there would wake to find itself frozen rather than
+    /// useful. Nothing here touches the screen -- the switch it makes is the same
+    /// one a manual refresh makes, and its record is the log.
+    private var lanWatch: Task<Void, Never>?
 
     /// Host events that mean the pending set moved.
     ///
@@ -1282,6 +1290,7 @@ final class AppModel {
         guard active != appIsActive else { return }
         appIsActive = active
         updateRunningPoll()
+        updateLanWatch()
     }
 
     /// Tell the running poll what the open conversation is drawing.
@@ -2792,6 +2801,69 @@ final class AppModel {
         activeEndpoint = previousEndpoint
         if let previousEndpoint { _ = await reconnect(over: previousEndpoint) }
         return false
+    }
+
+    /// How often the app asks whether its computer is on the local network.
+    ///
+    /// Slow on purpose. This is not a health check -- the socket already knows
+    /// whether it is alive -- it is the one question a phone cannot be told the
+    /// answer to: "am I back on my own Wi-Fi". Half a minute is fast enough to
+    /// feel automatic when somebody walks back into the house, and slow enough
+    /// that a phone out on cellular spends almost nothing on it.
+    private static let lanWatchInterval: Duration = .seconds(30)
+
+    /// Start or stop the resident LAN watch from whether the app is on screen.
+    ///
+    /// The task sleeps first, so a return to the foreground does not scan twice:
+    /// ``refreshAfterReturning()`` has just asked the same question. iOS freezes
+    /// the process in the background, so there is nothing to keep running there.
+    private func updateLanWatch() {
+        guard appIsActive else {
+            guard lanWatch != nil else { return }
+            lanWatch?.cancel()
+            lanWatch = nil
+            return
+        }
+        guard lanWatch == nil else { return }
+        if settings.values.localNetworkFirst {
+            log.add(.connection, "LAN watch: started, one probe every \(Self.lanWatchInterval)")
+        }
+        lanWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: Self.lanWatchInterval)
+                } catch {
+                    // Cancellation is the stop path; there is nothing to report.
+                    return
+                }
+                guard !Task.isCancelled, let self else { return }
+                await self.lanWatchTick()
+            }
+        }
+    }
+
+    /// Ask the local network, on a slow clock, whether the computer is on it.
+    ///
+    /// The relay is the route that works from anywhere, which is exactly why a
+    /// phone ends up on it and stays there: a reconnect dials whichever route
+    /// worked last, and carrying the phone back into its own Wi-Fi does not
+    /// change that by itself. So the app asks on a timer, and moves the pairing
+    /// to the direct address the moment one answers -- which is also the moment
+    /// the relay stops metering this phone's traffic.
+    ///
+    /// Silent by design: a scan that finds nothing changes nothing on screen and
+    /// says nothing to the operator; its own log lines are the record. Nothing
+    /// is asked when the answer is already known -- a direct link in use, no
+    /// socket to be on the relay in the first place, or a reconnect already
+    /// choosing a route -- and nothing is asked when the operator has turned
+    /// local-network priority off, because that switch is their answer to this
+    /// exact question.
+    private func lanWatchTick() async {
+        guard appIsActive, host != nil else { return }
+        guard settings.values.localNetworkFirst else { return }
+        guard connection != nil, !reconnecting else { return }
+        guard activeEndpoint?.isLocalNetwork != true else { return }
+        await scanForLocalNetwork()
     }
 
     /// Refresh the session list, reconnecting first when the socket is gone.
