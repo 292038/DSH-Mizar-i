@@ -180,7 +180,17 @@ struct SessionRowButton: View {
 
     var body: some View {
         Button {
-            withMizarAnimation(.mizarSmooth) {
+            // The selection changes with no animation, deliberately. The
+            // choosing happens inside the shell's own animation -- the pill
+            // slides to the row that was tapped, and that is the one thing
+            // worth animating here -- but the same animation reaches the
+            // conversation, where the page for the previous session is
+            // replaced: both conversations were drawn at once, blurred and
+            // one over the other, for as long as it ran. The slide the
+            // operator wants is put back on the pill itself below.
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
                 model.selectedSessionId = session.sessionId
             }
         } label: {
@@ -220,6 +230,9 @@ struct SessionRowButton: View {
                 }
             }
             .contentShape(.rect)
+            // The selection pill's slide, on the pill rather than on
+            // everything the tap changes. See the button's action.
+            .animation(.mizarSmooth, value: isSelected)
         }
         .buttonStyle(.pressable(scale: 0.98))
         .contextMenu {
