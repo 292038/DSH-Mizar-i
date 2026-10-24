@@ -16,11 +16,11 @@
 //  conversation, the index beside it on the other side -- each slid away and
 //  back with its own button.
 //
-//  Both drawers and the conversation stay mounted the whole time and only render
-//  modifiers move: the card's offset, scale and corner are always applied, at
-//  identity values when closed. A modifier added and removed as a drawer opens
-//  would give the conversation a new identity -- rebuilding it, re-running its
-//  loads, and throwing away the draft and the scroll position.
+//  Both drawers and the conversation stay mounted the whole time, each in a
+//  hosting controller of its own inside a UIKit container
+//  (`DrawerContainer.swift`), and only Core Animation moves them. Nothing here
+//  follows the drag: a SwiftUI value that changed on every frame re-rendered the
+//  whole tree under it, and held the drawers to 60 Hz.
 //
 
 import SwiftUI
@@ -29,9 +29,15 @@ import MizarKit
 struct MizarShell: View {
     @Environment(AppModel.self) private var model
     @Environment(\.horizontalSizeClass) private var sizeClass
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @State private var shell = ShellState()
     @State private var turnIndex = TurnIndex()
+    /// What the three layers read that changes after they are made.
+    @State private var layers = ShellLayerContext()
+    /// The layers' roots, made once. Setting a hosting controller's root view
+    /// re-renders its whole tree, so they are never set again: everything that
+    /// changes reaches them through observation.
+    @State private var roots: ShellLayerRoots?
     @State private var placed = false
     #if DEBUG
     /// A debug launch asked for the right drawer; it is opened once a session
@@ -51,20 +57,30 @@ struct MizarShell: View {
             let leading = sidebarWidth(in: size, compact: compact)
             let trailing = indexWidth(in: size, compact: compact)
             // The card is the whole screen, under the status bar and the home
-            // indicator. The container's edges only: the keyboard's is the
-            // composer's to ride. The reader itself stays inside the safe area
-            // so it can say what the insets are, and the drawers are handed them
-            // back by hand -- a scroll view inside a view that ignores them does
-            // not see them.
-            layout(leading: leading, trailing: trailing, size: size, insets: insets, compact: compact)
+            // indicator. The reader itself stays inside the safe area so it can
+            // say how big the screen is; each layer's hosting controller takes
+            // its own safe area, and the keyboard's, from the window.
+            DrawerContainer(
+                shell: shell,
+                compact: compact,
+                leadingWidth: leading,
+                trailingWidth: trailing,
+                pinnedVisible: shell.pinnedVisible,
+                indexColumnShown: indexColumnShown,
+                roots: roots ?? makeRoots(),
+                layers: layers,
+            )
                 .frame(width: size.width, height: size.height)
-                .ignoresSafeArea(.container)
+                .ignoresSafeArea()
                 .onChange(of: leading, initial: true) { _, width in shell.leadingWidth = width }
                 .onChange(of: trailing, initial: true) { _, width in shell.trailingWidth = width }
                 .onChange(of: size.width, initial: true) { _, width in shell.containerWidth = width }
+                .onChange(of: compact, initial: true) { _, compact in layers.compact = compact }
         }
         .environment(shell)
         .environment(turnIndex)
+        .onChange(of: scenePhase, initial: true) { _, phase in layers.scenePhase = phase }
+        .onAppear { if roots == nil { roots = makeRoots() } }
         // Whether the drawers are moving, published to the motion that
         // yields to it: the shimmer, the twin star, the typewriter --
         // anything that redraws every frame it runs -- holds for the
@@ -132,83 +148,21 @@ struct MizarShell: View {
 
     // MARK: - Layout
 
-    @ViewBuilder
-    private func layout(leading: CGFloat, trailing: CGFloat, size: CGSize, insets: EdgeInsets, compact: Bool) -> some View {
-        let p = compact ? shell.progress : 0
-        let lead = compact ? max(0, min(1, p)) : (shell.pinnedVisible ? 1 : 0)
-        let trail = compact ? max(0, min(1, -p)) : (indexColumnShown ? 1 : 0)
-        // Which drawer, if any, the phone is revealing: decided by the sign
-        // of the drag, so it changes once per gesture rather than once per
-        // frame. A drawer that is not the one being shown sits behind an
-        // opaque card, so its value never shows -- and a constant opacity
-        // lets the render server move a cached layer instead of compositing
-        // two full-screen blends on every frame of the drag.
-        let leadingShown = compact && trail < lead
-        let trailingShown = compact && lead < trail
-        ZStack(alignment: .topLeading) {
-            Theme.sidebarBackground.ignoresSafeArea()
-
-            SidebarView()
-                .safeAreaPadding(EdgeInsets(top: insets.top, leading: insets.leading, bottom: insets.bottom, trailing: 0))
-                .frame(width: leading)
-                // The sidebar comes forward as the card leaves: a little travel
-                // and a little light, so the two read as layers rather than as
-                // one strip sliding sideways.
-                .offset(x: compact ? -(1 - lead) * 44 : -(1 - lead) * leading)
-                .opacity(compact ? (leadingShown ? 1 : 0) : 1)
-                // The edge of a gesture is a fade rather than a cut: this
-                // changes only when the drag crosses from one drawer to the
-                // other, never while the finger moves.
-                .animation(Motion.pick(.mizarSmooth), value: leadingShown)
-                .accessibilityHidden(lead < 0.5)
-                .allowsHitTesting(lead > 0.5)
-                .gesture(SidebarPan(shell: shell, compact: compact))
-
-            // The mirror image, on the right: one plane of three pages --
-            // turns, subagents, preview -- that the conversation card slides
-            // over. The card is drawn after this panel, which is what makes
-            // the plane's off-focus pages read as passing under it.
-            SessionSidePlane(onPick: {})
-                .safeAreaPadding(EdgeInsets(top: insets.top, leading: 0, bottom: insets.bottom, trailing: insets.trailing))
-                .frame(width: trailing, height: size.height)
-                .offset(x: size.width - trailing + (compact ? (1 - trail) * 44 : (1 - trail) * trailing))
-                .opacity(compact ? (trailingShown ? 1 : 0) : 1)
-                .animation(Motion.pick(.mizarSmooth), value: trailingShown)
-                .accessibilityHidden(trail < 0.5)
-                .allowsHitTesting(trail > 0.5)
-                .gesture(SidebarPan(shell: shell, compact: compact))
-
-            pane(leading: leading, trailing: trailing, size: size, compact: compact, lead: lead, trail: trail)
-
-            // The card, while it is pushed aside, is one big button back.
-            // Always mounted on a phone, rather than inserted at the first
-            // percent of a drag: a view arriving in the hierarchy is a
-            // structural diff and a fresh gesture recognizer installed into
-            // the very frames the drag begins in -- the hitch the first two
-            // frames of every swipe carried, together with the keyboard
-            // resign and the corner's arrival. At rest the button is clear,
-            // untouchable, and hidden from accessibility: a layer with
-            // nothing in it.
-            if compact {
-                let shift = lead > 0.02 ? leading * p : trailing * p
-                Button {
-                    shell.close()
-                } label: {
-                    Color.clear.contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .frame(width: max(0, size.width - abs(shift)), height: size.height)
-                .offset(x: max(0, shift))
-                .gesture(SidebarPan(shell: shell, compact: compact))
-                .accessibilityLabel(Text(lead > 0.02 ? "Close sidebar" : "Close turns"))
-                .accessibilityIdentifier("shell.dismissSidebar")
-                .allowsHitTesting(lead > 0.5 || trail > 0.5)
-                .accessibilityHidden(!(lead > 0.5 || trail > 0.5))
-            }
+    /// The three layers' SwiftUI content, each with what it reads from above
+    /// the container.
+    private func makeRoots() -> ShellLayerRoots {
+        let model = model
+        let shell = shell
+        let turnIndex = turnIndex
+        let layers = layers
+        func root(_ edges: Edge.Set, _ content: @escaping (Bool) -> some View) -> AnyView {
+            AnyView(ShellLayer(model: model, shell: shell, turnIndex: turnIndex, context: layers, edges: edges, content: content))
         }
-        .accessibilityAction(.escape) {
-            if compact { shell.close() }
-        }
+        return ShellLayerRoots(
+            sidebar: root([.top, .leading, .bottom]) { _ in SidebarView() },
+            plane: root([.top, .trailing, .bottom]) { _ in SessionSidePlane(onPick: {}) },
+            card: root(.all) { compact in ShellPane(compact: compact) },
+        )
     }
 
     /// Whether the iPad's index column is out: only beside a conversation.
@@ -216,29 +170,78 @@ struct MizarShell: View {
         shell.indexPinnedVisible && model.selectedSessionId != nil
     }
 
-    private func pane(
-        leading: CGFloat,
-        trailing: CGFloat,
-        size: CGSize,
-        compact: Bool,
-        lead: CGFloat,
-        trail: CGFloat,
-    ) -> some View {
-        let reveal = max(lead, trail)
-        let towardsTrailing = trail > lead
-        // The corner is the screen's own or it is nothing. At rest it hides
-        // inside the display's mask, and the moment the card moves it wants
-        // the full radius -- a corner that grew with the drag only ever
-        // showed a square one in the first frames of the movement. Two
-        // values, so the mask is laid out at most once per gesture and the
-        // render server keeps it for the frames in between.
-        let corner = compact && reveal > 0.001 ? Self.cardCorner : 0
-        let shape = RoundedRectangle(cornerRadius: corner, style: .continuous)
-        let offset: CGFloat = compact
-            ? (towardsTrailing ? -trailing * trail : leading * shell.progress)
-            : leading * lead
-        let width = compact ? size.width : max(0, size.width - leading * lead - trailing * trail)
-        return NavigationStack {
+    private func sidebarWidth(in size: CGSize, compact: Bool) -> CGFloat {
+        compact ? min(330, size.width * 0.84) : min(340, max(280, size.width * 0.3))
+    }
+
+    private func indexWidth(in size: CGSize, compact: Bool) -> CGFloat {
+        compact ? min(320, size.width * 0.82) : min(320, max(260, size.width * 0.26))
+    }
+}
+
+/// What the layers read that changes after they are made.
+@MainActor
+@Observable
+final class ShellLayerContext {
+    var compact = true
+    var scenePhase: ScenePhase = .active
+    /// The screen's safe area, from the untransformed container, on a phone;
+    /// `nil` where the layers take UIKit's own (see `DrawerContainer`).
+    var screenInsets: EdgeInsets?
+}
+
+/// The roots of the three hosting controllers.
+struct ShellLayerRoots {
+    let sidebar: AnyView
+    let plane: AnyView
+    let card: AnyView
+}
+
+/// A layer's root: its content, with the environment the shell sets up.
+///
+/// Each layer is the root of a hosting controller of its own, so the
+/// environment above the container does not reach it by itself: the model,
+/// the shell, the turn index and whether the drawers are moving are handed
+/// down here. The scene phase too, which a hosting controller that is not
+/// the scene's own does not otherwise follow.
+private struct ShellLayer<Content: View>: View {
+    let model: AppModel
+    let shell: ShellState
+    let turnIndex: TurnIndex
+    let context: ShellLayerContext
+    /// Which of the screen's insets this layer is given: the card all of them,
+    /// each drawer all but the edge the card covers.
+    let edges: Edge.Set
+    let content: (Bool) -> Content
+
+    var body: some View {
+        content(context.compact)
+            .safeAreaPadding(padding)
+            .environment(model)
+            .environment(shell)
+            .environment(turnIndex)
+            .environment(\.drawersStill, !shell.isDragging && !shell.isSettling)
+            .environment(\.scenePhase, context.scenePhase)
+    }
+
+    private var padding: EdgeInsets {
+        guard let insets = context.screenInsets else { return EdgeInsets() }
+        return EdgeInsets(
+            top: edges.contains(.top) ? insets.top : 0,
+            leading: edges.contains(.leading) ? insets.leading : 0,
+            bottom: edges.contains(.bottom) ? insets.bottom : 0,
+            trailing: edges.contains(.trailing) ? insets.trailing : 0,
+        )
+    }
+}
+
+/// The conversation, or the home screen, in its navigation stack.
+private struct ShellPane: View {
+    let compact: Bool
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        NavigationStack {
             Group {
                 if let sessionId = model.selectedSessionId {
                     // Keyed on the session, which is what makes every piece of
@@ -253,6 +256,10 @@ struct MizarShell: View {
                     HomeView()
                 }
             }
+            // The soft edge under the bar, as the window's own hosting view
+            // gives it. In a hosting controller of its own the automatic style
+            // turns hard, and a hard edge draws a line under the bar.
+            .scrollEdgeEffectStyle(.soft, for: .top)
             // Declared here, outside the keyed view, so switching sessions does
             // not rebuild the bar and its glass.
             .toolbar {
@@ -267,76 +274,6 @@ struct MizarShell: View {
             }
         }
         .background(Theme.paneBackground)
-        .frame(width: width)
-        .clipShape(shape)
-        .overlay {
-            // A shade, and a faint rim of the accent on the edge that faces the
-            // open drawer: the card catching the light of the list behind it.
-            // Both ride a single opacity rather than a colour that changes:
-            // a shape whose alpha changes is redrawn every frame, while one
-            // whose opacity changes is blended from the shape already drawn.
-            shape
-                .fill(Color.black.opacity(colorScheme == .dark ? 0.32 : 0.05))
-                .opacity(compact ? reveal : 0)
-                .allowsHitTesting(false)
-            shape
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [Color.accentColor.opacity(0.45), .white.opacity(0.06), .clear],
-                        startPoint: towardsTrailing ? .trailing : .leading,
-                        endPoint: towardsTrailing ? .leading : .trailing,
-                    ),
-                    lineWidth: 1,
-                )
-                .opacity(compact ? reveal : 0)
-                .allowsHitTesting(false)
-        }
-        // The shadow is a shape of its own rather than an effect on the
-        // card. A `.shadow` derives its blur from the layer's content, so
-        // every frame the content changes -- a shimmer sweeping, a
-        // typewriter character, a clock tick -- re-derives and re-blurs a
-        // full-screen Gaussian while the card is mid-drag. A blurred shape
-        // behind the card draws the same picture from a static input --
-        // measured against `.shadow` at these very numbers, a mean pixel
-        // difference of 0.3/255 -- and only its opacity moves, a blend the
-        // render server keeps. Fixed at its settled size and offset, as
-        // before.
-        .background {
-            shape
-                .fill(Color.black.opacity(colorScheme == .dark ? 0.5 : 0.16))
-                .blur(radius: 30)
-                .offset(x: towardsTrailing ? 8 : -8)
-                .opacity(compact ? reveal : 0)
-                .allowsHitTesting(false)
-        }
-        // The shrink arrives early -- over the first third of the drawer's
-        // travel, the way the corner does -- and then holds. From there the
-        // card only translates, which the render server does to a cached
-        // layer instead of re-drawing one every frame.
-        .scaleEffect(compact ? 1 - Self.cardShrink * min(1, reveal * 3) : 1, anchor: towardsTrailing ? .trailing : .leading)
-        .offset(x: offset)
-        .gesture(SidebarPan(shell: shell, compact: compact))
-        .accessibilityHidden(compact && reveal > 0.5)
-    }
-
-    /// The card's corner once pushed aside.
-    ///
-    /// Not the display's own radius -- that is private API -- but the smallest
-    /// radius of any Face ID iPhone, so at rest the corner is hidden inside the
-    /// display's mask on every device, and pushed aside it matches closely
-    /// enough that the card reads as the screen itself.
-    private static let cardCorner: CGFloat = 39
-
-    /// How far the card shrinks once pushed aside, over the first third of
-    /// the drawer's travel.
-    private static let cardShrink: CGFloat = 0.06
-
-    private func sidebarWidth(in size: CGSize, compact: Bool) -> CGFloat {
-        compact ? min(330, size.width * 0.84) : min(340, max(280, size.width * 0.3))
-    }
-
-    private func indexWidth(in size: CGSize, compact: Bool) -> CGFloat {
-        compact ? min(320, size.width * 0.82) : min(320, max(260, size.width * 0.26))
     }
 }
 
@@ -364,8 +301,7 @@ struct SidebarToggle: View {
         Button {
             shell.toggle(compact: compact)
         } label: {
-            SidebarGlyph(progress: compact ? max(0, min(1, shell.progress)) : (shell.pinnedVisible ? 1 : 0))
-                .stroke(.primary, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            SidebarGlyphView(shell: shell, compact: compact, pinned: shell.pinnedVisible)
                 .frame(width: 20, height: 16)
                 .padding(4)
                 .contentShape(.rect)
@@ -428,5 +364,126 @@ struct SidebarGlyph: Shape {
         path.move(to: point(CGPoint(x: 0.05, y: 0.72), CGPoint(x: 0.62, y: 0.9)))
         path.addLine(to: point(CGPoint(x: 0.6, y: 0.72), CGPoint(x: 0.24, y: 0.5)))
         return path
+    }
+}
+
+/// The glyph, drawn by a shape layer that follows the drawers' progress
+/// itself: frame by frame under a finger, and for a settle as the same
+/// keyframes the shell's layers play. A SwiftUI shape that read the progress
+/// re-rendered the toolbar -- and bridged its bar button items again -- on
+/// every frame of a drag.
+private struct SidebarGlyphView: UIViewRepresentable {
+    let shell: ShellState
+    let compact: Bool
+    /// On a regular width the glyph shows whether the sidebar column is out.
+    let pinned: Bool
+
+    func makeUIView(context: Context) -> GlyphLayerView {
+        let view = GlyphLayerView()
+        view.configure(compact: compact, pinned: pinned, animated: false, reduced: false)
+        shell.attach(view)
+        return view
+    }
+
+    func updateUIView(_ view: GlyphLayerView, context: Context) {
+        view.configure(
+            compact: compact,
+            pinned: pinned,
+            animated: true,
+            reduced: context.environment.accessibilityReduceMotion,
+        )
+    }
+}
+
+@MainActor
+private final class GlyphLayerView: UIView, DrawerSurface {
+    private let shape = CAShapeLayer()
+    private var compact = true
+    private var pinned = true
+    private var progress: CGFloat = 0
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        shape.fillColor = nil
+        shape.lineWidth = 2
+        shape.lineCap = .round
+        shape.lineJoin = .round
+        layer.addSublayer(shape)
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
+            self.shape.strokeColor = UIColor.label.resolvedColor(with: self.traitCollection).cgColor
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    func configure(compact: Bool, pinned: Bool, animated: Bool, reduced: Bool) {
+        let changed = compact != self.compact || pinned != self.pinned
+        self.compact = compact
+        self.pinned = pinned
+        guard changed, !compact else {
+            if changed { redraw() }
+            return
+        }
+        // The iPad's toggle: the smooth spring, as the column it follows.
+        let from = shape.presentation()?.path ?? shape.path
+        redraw()
+        guard animated, let from else { return }
+        let animation: CABasicAnimation
+        if reduced {
+            animation = CABasicAnimation(keyPath: "path")
+            animation.duration = 0.22
+            animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        } else {
+            let spring = CASpringAnimation(perceptualDuration: 0.5, bounce: 0)
+            spring.keyPath = "path"
+            spring.duration = spring.settlingDuration
+            animation = spring
+        }
+        animation.fromValue = from
+        animation.toValue = shape.path
+        shape.add(animation, forKey: "glyph.toggle")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        shape.frame = bounds
+        shape.strokeColor = UIColor.label.resolvedColor(with: traitCollection).cgColor
+        redraw()
+    }
+
+    func show(progress: CGFloat) {
+        self.progress = progress
+        guard compact else { return }
+        redraw()
+    }
+
+    func play(_ path: DrawerPath) {
+        progress = path.target
+        guard compact, bounds.width > 0 else { return }
+        redraw()
+        let animation = CAKeyframeAnimation(keyPath: "path")
+        animation.values = path.samples.map { glyph(at: $0) }
+        animation.duration = path.duration
+        animation.beginTime = path.beginTime
+        animation.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
+        shape.add(animation, forKey: "glyph.settle")
+    }
+
+    func stopPlaying() {
+        shape.removeAnimation(forKey: "glyph.settle")
+    }
+
+    private func redraw() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shape.path = glyph(at: compact ? progress : (pinned ? 1 : 0))
+        CATransaction.commit()
+    }
+
+    private func glyph(at progress: CGFloat) -> CGPath {
+        SidebarGlyph(progress: max(0, min(1, progress))).path(in: bounds).cgPath
     }
 }

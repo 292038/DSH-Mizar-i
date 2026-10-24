@@ -122,5 +122,13 @@
 	<array>
 		<string>fetch</string>
 	</array>
+	<!--
+	  Animations may run faster than 60 Hz on an iPhone with a ProMotion display.
+	  Without this key the system may hold an app's animations to 60 Hz, whatever
+	  frame rate they ask for -- and the drawers ask for 120. A boolean, but here
+	  rather than a build setting: Xcode has no INFOPLIST_KEY_ for it.
+	-->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 </dict>
 </plist>

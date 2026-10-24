@@ -12,11 +12,13 @@
 //  version of this rewrite used a raw gesture recognizer and only ever saw
 //  `touchesBegan`.
 //
-//  It is installed on each of the four surfaces that can be under the finger --
-//  the card, the sidebar, the index and the dismiss surface -- because a single
-//  recognizer on the shell root is also outside the scroll views' gesture
-//  arena. The four copies share this one implementation and the same shell
-//  state; each surface is disjoint, so there is no first-recognizer race.
+//  One recognizer, on the root view of the shell's UIKit container
+//  (`DrawerContainer.swift`). Every surface that can be under the finger -- the
+//  card, the sidebar, the index and the dismiss surface -- is a UIKit view
+//  inside it, so UIKit delivers each touch to this pan as well as to the scroll
+//  view under it. (When the surfaces were SwiftUI views, a recognizer on the
+//  shell root was outside the scroll views' gesture arena, and each surface
+//  carried a copy of its own.)
 //
 //  The pan deliberately does not let UIKit decide when to begin. It receives
 //  touches while it is still possible, watches the axis, and only forwards a
@@ -38,49 +40,20 @@
 import SwiftUI
 import UIKit
 
-struct SidebarPan: UIGestureRecognizerRepresentable {
+/// The pan's delegate, and the way from the pan to the shell it drives.
+@MainActor
+final class DrawerPanCoordinator: NSObject, UIGestureRecognizerDelegate {
     let shell: ShellState
-    /// Whether the shell is in its phone layout. On a regular width the drawers
-    /// are columns, so there is nothing to drag.
-    let compact: Bool
 
-    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator {
-        Coordinator(shell: shell)
+    init(shell: ShellState) {
+        self.shell = shell
     }
 
-    func makeUIGestureRecognizer(context: Context) -> DrawerPanRecognizer {
-        let recognizer = DrawerPanRecognizer(target: nil, action: nil)
-        recognizer.coordinator = context.coordinator
-        recognizer.delegate = context.coordinator
-        recognizer.isEnabled = compact
-        return recognizer
-    }
-
-    func updateUIGestureRecognizer(_ recognizer: DrawerPanRecognizer, context: Context) {
-        recognizer.coordinator = context.coordinator
-        recognizer.isEnabled = compact
-    }
-
-    func handleUIGestureRecognizerAction(_ recognizer: DrawerPanRecognizer, context: Context) {
-        // The recognizer drives the shell from its own touch callbacks: it has
-        // to inspect intermediate samples and decide when to become a drag,
-        // which a target/action on state changes cannot express.
-    }
-
-    @MainActor
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        let shell: ShellState
-
-        init(shell: ShellState) {
-            self.shell = shell
-        }
-
-        func gestureRecognizer(
-            _ gestureRecognizer: UIGestureRecognizer,
-            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer,
-        ) -> Bool {
-            false
-        }
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer,
+    ) -> Bool {
+        false
     }
 }
 
@@ -94,7 +67,7 @@ struct SidebarPan: UIGestureRecognizerRepresentable {
 /// edge, then to the drawer.
 @MainActor
 final class DrawerPanRecognizer: UIPanGestureRecognizer {
-    weak var coordinator: SidebarPan.Coordinator?
+    weak var coordinator: DrawerPanCoordinator?
 
     private enum Axis {
         case horizontal
