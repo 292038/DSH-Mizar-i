@@ -50,6 +50,7 @@ App 不引用 `Net/` 下任何类型，只在未来通过 `P2PWebSocketTransport
 |---|---|
 | `MizarKitTests/MizarNetFixtureEmitter.swift` | 写出 `protocol/fixtures/p2p/wire.json`（`MIZAR_P2P_FIXTURES=1` 门控）；同时断言 `sessionKeys` 与 `sessionKeyBytes` 两种推导给出相同字节 |
 | `Net/MizarNetCrypto.swift` | 新增 `sessionKeyBytes(sharedSecret:salt:localIsDialer:)`：字节级 HKDF，供第二份实现复现 |
+| `Net/MizarNetPortMapping.swift` | 端口映射：NAT-PMP、UPnP-IGD（SSDP + SOAP，HTTP 可注入）、编排；引擎在 `start()` 后申请、半租约续租、`shutdown()` 删除（见 §4.5） |
 | `MizarKit/Probe/main.swift` | `mizar-net-probe` 命令行端点：`accept` / `dial`，**只用 MizarKit 公开 API**，给跨语言测试当对端 |
 | 插件仓库 `dsh/src/transport/p2p/` | TypeScript 完整引擎：`encoding` / `wire` / `crypto` / `socket` / `stun` / `session` / `engine` / `policy`，规范见 `dsh/docs/p2p-wire-v1.md` |
 
@@ -204,6 +205,29 @@ CGNAT 四格正如"外层决定命运"：`portRestricted over portRestricted →
 UPnP/NAT-PMP 的存在（沙箱是纯对称模型）；(c) 真实丢包/重排/MTU 黑洞（回环不丢包）。
 这三件事只有真机 + 真网能回答，是计划 §8 的真机矩阵。
 
+### 4.5 端口映射：矩阵里那一行判决的唯一解
+
+矩阵的结论里有一条是硬的：**对称型接受方打不通**。它的映射随目的地址变化，任何一方从
+STUN 学到的地址对它自己都不成立——再多打轮次也翻不过来。
+
+`MizarNetPortMapping.swift` 走另一条路：不问 NAT，直接请路由器开一个转发口。
+
+- **NAT-PMP**：12 字节请求打到网关 5351，三次重试共 750ms；删除就是 lifetime 0。
+- **UPnP-IGD**：SSDP 组播发现 → 读描述文档 → SOAP `AddPortMapping`。HTTP 走一个可注入
+  的 `MizarNetHTTPClient`，测试因此不需要在本机起一个 HTTP 服务器。
+- 两种协议**都不返回外部 IP**，所以映射只提供端口，地址仍来自 STUN；引擎把
+  `(srflx 地址, 映射端口)` 配成一个候选（局部优先级 1，排在普通 srflx 之前）。
+  没有 STUN 就没有地址可配，映射会被**主动撤销**——不能留一扇开着的门。
+- 租约按半租约续租；续租失败立刻撤下候选并停表。
+
+失败是常态：关掉 UPnP 的路由器、公司网关、封锁组播的访客 Wi-Fi，都返回 nil，
+打洞照原样进行。15 个测试覆盖了答应 / 拒绝（含 UPnP 718）/ 不应答 / 无地址可配四种结局。
+
+**一个踩到的坑**：`MizarNetUDPSocket.receive(timeout:)` 最初用任务组包 `AsyncStream`，
+超时那一路会取消 `next()`——而取消会把迭代器永久结束，于是第一次没应答之后这个 socket
+就再也收不到包，三次重试塌缩成一次。现在改成 socket 内部的收件箱 + 定时过期，
+读取本身不被取消。
+
 ## 5. SDK 陷阱记录（2026-10-25，Xcode 27 / Swift 6.4）
 
 - `CryptoKit.ChaCha20Poly1305` 已更名 `ChaChaPoly`；`MizarNetCrypto.swift` 用
@@ -227,11 +251,32 @@ UPnP/NAT-PMP 的存在（沙箱是纯对称模型）；(c) 真实丢包/重排/M
    （工作区计划 §5.5），上线后 iOS 侧接线 `WebSocketSignalingTransport`。
 3. **App 接线**：`ReconnectPlan` 增加 p2p 路由、配对 URI / `host.info` 增加端点公钥
    可选字段（纯加法）、设置项开关。
-4. **桌面侧收尾**：TypeScript 引擎已在回环上与 Swift 真连接互通；剩下的只有
-   **端口映射（UPnP-IGD / NAT-PMP）**——桌面是接受方，这是提高直连率最有效的一环。
-   之后再谈与 relay 的接线和 App 的 `ReconnectPlan` 路由。
+4. **端口映射两端都已完成**（iOS `Net/MizarNetPortMapping.swift`、桌面
+   `dsh/src/transport/p2p/portmap.ts`）。剩下的接线工作见 §6.1。
 5. **丢包/乱序注入测试**：沙箱的回环不丢包，重传与重排路径仍只有代码审读级覆盖。
    下一步给 `SimulatedNAT` 加一档"丢包/乱序"行为，把它也纳入矩阵。
+
+### 6.1 接线进度
+
+桌面侧已接通（2026-10-25）：
+
+1. ✅ **插件常驻引擎**：`dsh/src/net/p2p.ts` 的 `P2PService`，身份由 tunnel secret 派生
+   （`SHA-256(secret ‖ "mizar-net/host/v1" ‖ 0x01)`），插件挂载时启动、卸载时关闭。
+2. ✅ **流适配**：`StreamChannel` 把 p2p 流包装成监听器认的 `MizarChannel`；监听器的
+   连接处理抽成了 `#serve(channel:remote:forgetSocket:)`，WebSocket 与 p2p 走**同一份**
+   鉴权与方法分发——直连只是换了一条传输，不是第二套协议。
+3. ✅ **信令端点**：监听器在 `/mizar-net/signal` 上开第二个 `WebSocketServer`，
+   `P2PService.attachSignal` 收 phone 的 hello/candidates 并回自己的候选。
+   relay 无需改动（房间桥接按任意路径转发，`dsh-relay/test/relay.test.ts` 钉住）。
+   `host.info` 增加可选 `netEndpointId`（纯加法，老客户端忽略）。
+4. ⬜ **App 路由**：`ReconnectPlan` 增加 p2p 尝试。**这一步比看起来大**——
+   `PairedHost.Endpoint` 是持久化模型，加一个 `p2p` 分支要迁移已存的配对记录，
+   还要接进连接编排与 `makeTransport`。值得单独一个单元，配迁移测试。
+
+另外一条默认值上的决定：插件的 p2p 引擎**默认不查 STUN**（`stunServers: []`）。
+绑定一个 UDP socket 很便宜，但"让第三方知道我这条连接从哪来"不该是安装即发生的事。
+没有 STUN 时只广播 host 候选（局域网可用），跨网仍走中继——和今天一样。
+打开它应当指向本项目自建的 STUN，属于 App 灰度那一步。
 
 ## 7. 包体（2026-10-25 实测，A/B 构建）
 
