@@ -334,7 +334,7 @@ struct SettingsView: View {
                 get: { model.settings.values.directConnection },
                 set: { model.settings.values.directConnection = $0 },
             )) {
-                Label("P2P direct connection", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                Label("P2P direct connection (Experimental)", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
             }
             .accessibilityIdentifier("settings.transfer.directConnection")
         } header: {
