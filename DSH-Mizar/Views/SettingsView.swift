@@ -38,12 +38,17 @@ struct SettingsView: View {
     @State private var exporting = false
     /// What iOS thinks of this app's notifications, read when the screen opens.
     @State private var permission: NotificationPermission?
+    /// Bumped after the cache is cleared, so the tap has a haptic to play on.
+    @State private var mizarSuccess = false
     /// Closes the sheet this screen is presented in.
     var onDone: (() -> Void)?
     /// The one switch every haptic in the app answers to.
     @AppStorage(Haptics.storageKey) private var hapticsEnabled = true
     /// The paid-plan explanation, from either this screen or the account screen.
     @State private var showingPlanDetail = false
+    /// The preview cache, for the 文件 section. Optional because the snapshot
+    /// suite renders this screen without the shell's environment around it.
+    @Environment(PreviewCenter.self) private var preview: PreviewCenter?
 
     var body: some View {
         NavigationStack {
@@ -54,6 +59,7 @@ struct SettingsView: View {
                 notificationsSection
                 liveActivitySection
                 transferSection
+                filesSection
                 feelSection
                 logsSection
                 aboutSection
@@ -347,6 +353,67 @@ struct SettingsView: View {
                 )
             }
         }
+    }
+
+    // MARK: - 文件
+
+    /// The files this phone has read, and the way to get the space back.
+    ///
+    /// A cache the operator cannot see is a cache they cannot trust: the number
+    /// is here so "why is the app 300 MB" has an answer on the screen, and the
+    /// button is here because the answer to that question should be one tap
+    /// away. Nothing in the app depends on these files — every one of them can be
+    /// read from the computer again — so clearing them needs no confirmation.
+    private var filesSection: some View {
+        Section {
+            LabeledContent {
+                Text(cacheSummary)
+                    .monospacedDigit()
+                    .accessibilityIdentifier("settings.files.size")
+            } label: {
+                Label("Previewed files", systemImage: "doc.text.magnifyingglass")
+            }
+
+            Button(role: .destructive) {
+                Task {
+                    await preview?.clearCache()
+                    mizarSuccess = true
+                }
+            } label: {
+                Label("Clear file cache", systemImage: "trash")
+            }
+            .disabled((preview?.cacheFiles ?? 0) == 0)
+            .accessibilityIdentifier("settings.files.clear")
+            .mizarFeedback(.success, trigger: mizarSuccess)
+        } header: {
+            Text("Files")
+        } footer: {
+            Text(
+                String(
+                    localized: "Files the model delivered are kept on this phone so a second look does not send them again. Clearing them frees the space; the next preview reads the file from the computer.",
+                ),
+            )
+        }
+        .task { await preview?.refreshCacheUsage() }
+    }
+
+    /// What the cache holds, as one line.
+    private var cacheSummary: String {
+        let files = preview?.cacheFiles ?? 0
+        guard files > 0 else { return String(localized: "Empty") }
+        let bytes = preview?.cacheBytes ?? 0
+        return String(format: String(localized: "%lld files · %@"), files, Self.size(bytes))
+    }
+
+    /// A byte count, the way the log export says it.
+    ///
+    /// - Parameter bytes: how many bytes.
+    /// - Returns: a short human figure.
+    static func size(_ bytes: Int) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: Int64(bytes))
     }
 
     // MARK: - 日志

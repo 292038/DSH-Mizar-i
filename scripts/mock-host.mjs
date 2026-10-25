@@ -79,6 +79,16 @@ const DEVICE_ID = SECOND_IDENTITY
  */
 let withPending = process.env['MIZAR_MOCK_PENDING'] !== '0'
 
+/**
+ * Whether the fixture's first turn declares a delivered file.
+ *
+ * Off by default so every suite that existed before this feature measures the
+ * same screen it measured then: the card is a row under the answer, and a row is
+ * enough to move everything below it. A test about previews turns it on with
+ * `/deliverables?on=1` and `/reset` turns it off again.
+ */
+let deliverablesPresent = false
+
 // Optional official-account fixture. Existing tests stay on an old plugin and
 // therefore cannot accidentally issue balance queries or expose account data.
 let balanceVariant = 'old'
@@ -455,6 +465,20 @@ const SUBAGENT_SESSION = {
   origin: 'subagent',
 }
 
+/**
+ * The file the fixture's first turn delivers, when `/deliverables?on=1`.
+ *
+ * Small on purpose: the preview page is asserted by finding a line of its text,
+ * and a fixture whose content is longer than a phone screen would make that
+ * assertion depend on scrolling.
+ */
+const DELIVERED_FILE = {
+  path: 'docs/delivered.md',
+  description: 'A delivered report',
+  body: '# Delivered report\n\nThis file was read from the computer.\n',
+  mediaType: 'text/markdown',
+}
+
 /** The extra sessions the list reports while `/forked?on=1` is set. */
 function forkedSessions() {
   return forkedSessionPresent ? [FORKED_SESSION, SUBAGENT_SESSION] : []
@@ -824,6 +848,58 @@ function answer(frame) {
           complete: true,
         },
       }
+    case 'file.stat':
+      // The other direction of `upload.*`: what the phone needs before it pays
+      // for a document's bytes. Only the delivered fixture answers; anything
+      // else is refused exactly as the real host refuses a path outside the
+      // session's workspace.
+      if (frame.payload?.path !== DELIVERED_FILE.path) {
+        return {
+          v: 1,
+          type: 'error',
+          id,
+          error: { code: 'FILE_UNKNOWN', message: 'no such file in this fixture' },
+        }
+      }
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: {
+          path: DELIVERED_FILE.path,
+          name: 'delivered.md',
+          byteSize: Buffer.byteLength(DELIVERED_FILE.body),
+          modifiedAt: 1_760_000_000_000,
+          mediaType: DELIVERED_FILE.mediaType,
+          previewable: true,
+        },
+      }
+    case 'file.read': {
+      if (frame.payload?.path !== DELIVERED_FILE.path) {
+        return {
+          v: 1,
+          type: 'error',
+          id,
+          error: { code: 'FILE_UNKNOWN', message: 'no such file in this fixture' },
+        }
+      }
+      const body = Buffer.from(DELIVERED_FILE.body, 'utf8')
+      const offset = Math.max(0, Number(frame.payload?.offset ?? 0))
+      const length = Math.max(0, Math.min(Number(frame.payload?.length ?? 0), body.length - offset))
+      const slice = body.subarray(offset, offset + length)
+      return {
+        v: 1,
+        type: 'ok',
+        id,
+        result: {
+          offset,
+          length: slice.length,
+          byteSize: body.length,
+          data: slice.toString('base64'),
+          eof: offset + slice.length >= body.length,
+        },
+      }
+    }
     case 'session.list':
       // Two sessions, one of them in a directory `workspace.list` does not
       // mention, so a test can tell "filtered by the host's workspace list"
@@ -1559,7 +1635,16 @@ function answer(frame) {
                 content: [{ type: 'text', text: MAIN_ANSWER }],
               },
             }),
-            record('turn/end', { turn: 1, reason: { kind: 'completed' } }),
+            record('turn/end', {
+              turn: 1,
+              reason: { kind: 'completed' },
+              ...(deliverablesPresent ? {
+                mizarDeliverables: [{
+                  path: DELIVERED_FILE.path,
+                  description: DELIVERED_FILE.description,
+                }],
+              } : {}),
+            }),
 
             // Turn 2: **ended badly with nothing to show for it**. That is the
             // shape a turn takes on a host with no provider credential -- the
@@ -2172,6 +2257,9 @@ const server = createServer((request, response) => {
     // Whether the session in the fixture is running, from now on. See
     // `sessionRunning`.
     sessionRunning = !(request.url ?? '').includes('running=0')
+    // `/reset` restores the whole fixture, the delivered file included: a test
+    // that leaves it on would put a card under every later test's answer.
+    deliverablesPresent = false
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify({ ok: true, sessionRunning }))
     return
@@ -2237,6 +2325,14 @@ const server = createServer((request, response) => {
     statsVariant = /variant=(\w+)/.exec(request.url ?? '')?.[1] ?? 'full'
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify({ ok: true, statsVariant }))
+    return
+  }
+  if (request.url?.startsWith('/deliverables')) {
+    // Turn the fixture's delivered file on or off. Off is the default so the
+    // suites that predate previews keep measuring the screen they measured.
+    deliverablesPresent = request.url.includes('on=1')
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ ok: true, deliverables: deliverablesPresent }))
     return
   }
   if (request.url?.startsWith('/fail')) {
@@ -2316,6 +2412,9 @@ const server = createServer((request, response) => {
     // process, and a suite that has to draw one is a suite that fails for reasons
     // that have nothing to do with what it is testing.
     sessionRunning = !(request.url ?? '').includes('running=0')
+    // `/reset` restores the whole fixture, the delivered file included: a test
+    // that leaves it on would put a card under every later test's answer.
+    deliverablesPresent = false
     // `?pending=0` takes the two interaction cards off the screen, for a test
     // that is about what is underneath them. The default is to offer them.
     withPending = !(request.url ?? '').includes('pending=0')

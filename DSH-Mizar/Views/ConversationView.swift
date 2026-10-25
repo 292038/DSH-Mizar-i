@@ -244,6 +244,10 @@ private struct TurnSection: View {
     /// Called when that answer's reveal begins.
     var onAnswerTypingStarted: (String) -> Void = { _ in }
     @Environment(TurnIndex.self) private var index
+    @Environment(PreviewCenter.self) private var preview
+    @Environment(ShellState.self) private var shell
+    @Environment(SidePlaneState.self) private var plane
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -267,6 +271,13 @@ private struct TurnSection: View {
                 )
                 .transition(.rise(distance: 14, blur: 6))
             }
+            // The files this turn declared, between the answer and its actions:
+            // the prose says what was done, the card is what was produced, and
+            // the toolbar belongs to the message. Drawn whether or not the turn
+            // ended with text, because a turn that only produced a file still
+            // produced something.
+            DeliveredFilesRow(turn: turn, sessionId: sessionId)
+
             if turn.endSeq != nil, !turn.isRunning, !turn.isEndInferred,
                let response = turn.steps.last(where: { item in
                    if case .message(_, .assistant, let text, _) = item { return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -275,6 +286,20 @@ private struct TurnSection: View {
                case .message(_, .assistant, let text, let at) = response {
                 TurnResponseToolbar(turn: turn, sessionId: sessionId, text: text, at: at)
             }
+        }
+        // A link in the prose that names a file on the computer opens the same
+        // preview a card does. Set here, around the whole turn, because the
+        // links are drawn deep inside the typewriter and the handler needs this
+        // turn's session.
+        .environment(\.openDeliveredFile) { path in
+            reveal(
+                DeliveredFile(path: path),
+                in: sessionId,
+                preview: preview,
+                shell: shell,
+                plane: plane,
+                compact: sizeClass != .regular,
+            )
         }
         .animation(.mizarSmooth, value: turn.steps.count)
         // Arrived at from the index: a soft light behind the turn, once.

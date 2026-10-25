@@ -1872,6 +1872,42 @@ final class AppModel {
         return ref
     }
 
+    /// Dispatch one bridge call for the preview page.
+    ///
+    /// Deliberately not the generic `call(_:payload:as:)` above: a preview is a
+    /// *sequence* of calls whose progress is the point (one `file.stat`, then a
+    /// slice per 256 KiB), and the retry that method performs would restart a
+    /// half-read document from the beginning. The caller decides what a failure
+    /// means — `PreviewCenter` falls back to its cached copy, or says which half
+    /// of the link is down.
+    ///
+    /// - Parameters:
+    ///   - method: `file.stat` or `file.read`.
+    ///   - payload: the method's arguments.
+    /// - Returns: the `result` of the answer.
+    /// - Throws: `MizarError` from the host, or one raised here when there is no
+    ///   socket at all.
+    func previewCall(_ method: String, _ payload: JSONValue?) async throws -> JSONValue? {
+        guard let connection else {
+            let failure = MizarError(
+                code: "NO_CONNECTION",
+                message: "not connected to the computer",
+                retryable: true,
+            )
+            logRequest(method, payload: payload, since: .now, error: failure)
+            throw failure
+        }
+        let started = ContinuousClock.now
+        do {
+            let value = try await connection.request(method, payload: payload)
+            logRequest(method, payload: payload, since: started, error: nil)
+            return value
+        } catch {
+            logRequest(method, payload: payload, since: started, error: error)
+            throw error
+        }
+    }
+
     /// The account's token changed, so the socket's identity headers are stale.
     ///
     /// A relay reads its traffic identity from the WebSocket upgrade request and

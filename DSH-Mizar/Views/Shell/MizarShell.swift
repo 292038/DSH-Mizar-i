@@ -32,6 +32,11 @@ struct MizarShell: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var shell = ShellState()
     @State private var turnIndex = TurnIndex()
+    /// Which of the drawer's three pages is in front, shared with the
+    /// conversation so a tap on a delivered file can turn the plane.
+    @State private var sidePlane = SidePlaneState()
+    /// What the preview page is showing, and the cache behind it.
+    @State private var preview = PreviewCenter()
     /// What the three layers read that changes after they are made.
     @State private var layers = ShellLayerContext()
     /// The layers' roots, made once. Setting a hosting controller's root view
@@ -79,6 +84,13 @@ struct MizarShell: View {
         }
         .environment(shell)
         .environment(turnIndex)
+        .environment(sidePlane)
+        .environment(preview)
+        // The reader captures the socket, so it is rebuilt whenever the computer
+        // changes and on the first frame. A stale closure would answer
+        // `SOCKET_CLOSED` for every preview until the app restarted.
+        .onAppear { attachPreviewReader() }
+        .onChange(of: model.host?.hostId) { _, _ in attachPreviewReader() }
         .onChange(of: scenePhase, initial: true) { _, phase in layers.scenePhase = phase }
         .onAppear { if roots == nil { roots = makeRoots() } }
         // Whether the drawers are moving, published to the motion that
@@ -156,13 +168,32 @@ struct MizarShell: View {
         let turnIndex = turnIndex
         let layers = layers
         func root(_ edges: Edge.Set, _ content: @escaping (Bool) -> some View) -> AnyView {
-            AnyView(ShellLayer(model: model, shell: shell, turnIndex: turnIndex, context: layers, edges: edges, content: content))
+            AnyView(ShellLayer(
+                model: model,
+                shell: shell,
+                turnIndex: turnIndex,
+                sidePlane: sidePlane,
+                preview: preview,
+                context: layers,
+                edges: edges,
+                content: content,
+            ))
         }
         return ShellLayerRoots(
             sidebar: root([.top, .leading, .bottom]) { _ in SidebarView() },
             plane: root([.top, .trailing, .bottom]) { _ in SessionSidePlane(onPick: {}) },
             card: root(.all) { compact in ShellPane(compact: compact) },
         )
+    }
+
+    /// Point the preview at this computer's socket.
+    private func attachPreviewReader() {
+        guard let host = model.host else { return }
+        let model = model
+        preview.attach(hostId: host.hostId) { method, payload in
+            try await model.previewCall(method, payload)
+        }
+        Task { await preview.refreshCacheUsage() }
     }
 
     /// Whether the iPad's index column is out: only beside a conversation.
@@ -208,6 +239,8 @@ private struct ShellLayer<Content: View>: View {
     let model: AppModel
     let shell: ShellState
     let turnIndex: TurnIndex
+    let sidePlane: SidePlaneState
+    let preview: PreviewCenter
     let context: ShellLayerContext
     /// Which of the screen's insets this layer is given: the card all of them,
     /// each drawer all but the edge the card covers.
@@ -220,6 +253,8 @@ private struct ShellLayer<Content: View>: View {
             .environment(model)
             .environment(shell)
             .environment(turnIndex)
+            .environment(sidePlane)
+            .environment(preview)
             .environment(\.drawersStill, !shell.isDragging && !shell.isSettling)
             .environment(\.scenePhase, context.scenePhase)
     }

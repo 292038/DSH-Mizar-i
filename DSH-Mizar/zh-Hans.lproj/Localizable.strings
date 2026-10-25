@@ -506,3 +506,33 @@
 
 /* 0.9.5 */
 "Turn this on if you use the app on the same local network; turning it off makes every reconnect faster." = "如果你需要在同一局域网内使用应用，则请打开该功能，否则关闭该功能有助于加快每次重连的速度。";
+
+/* 0.9.7 —— 交付文件的预览 */
+
+"No preview yet" = "还没有预览";
+"Nothing yet. Files the model delivers will be previewed here." = "还没有内容，模型交付的文件预览会在这里显示。";
+"Reading from the computer…" = "正在从电脑读取…";
+"Try again" = "重试";
+"This file" = "这个文件";
+"This kind of file cannot be previewed yet." = "这个类型的文件暂时还不支持预览。";
+"This kind of file cannot be previewed yet. It can still be opened on the computer." = "这个类型的文件暂时还不支持预览，你仍然可以在电脑上打开它。";
+"Saved copy — shown without asking the computer" = "本地副本 —— 未向电脑确认";
+"Opens the preview" = "打开预览";
+"%lld more" = "另有 %lld 个";
+"%lld pages" = "共 %lld 页";
+"The computer is not connected." = "电脑未连接。";
+"The file could not be read." = "文件读取失败。";
+"The file could not be saved on this phone." = "文件无法保存到这台手机上。";
+"The file is no longer on the computer." = "文件已经不在电脑上了。";
+"This file is outside the session's working folder, or is not a document the app may read." = "这个文件在会话工作目录之外，或者不是应用可以读取的文档。";
+"The file is larger than 32 MB, so it is not previewed here." = "文件超过 32 MB，这里不做预览。";
+"This computer's Mizar plugin is too old to send files. Update it to preview delivered files." = "这台电脑的 Mizar 插件版本过旧，无法发送文件。更新插件后即可预览交付的文件。";
+"This computer's plugin answered a preview request in a way this app does not understand. Update both." = "这台电脑的插件返回了应用看不懂的预览响应，请两端都更新到最新版本。";
+"This file is not text this app can read." = "这个文件不是应用可以读取的文本。";
+"The saved copy of this file could not be read." = "这份文件的本地副本无法读取。";
+"Previewed files" = "已预览的文件";
+"Clear file cache" = "清理文件缓存";
+"Files" = "文件";
+"Empty" = "空";
+"%lld files · %@" = "%lld 个文件 · %@";
+"Files the model delivered are kept on this phone so a second look does not send them again. Clearing them frees the space; the next preview reads the file from the computer." = "模型交付的文件会保存在这台手机上，再次查看时不必重新传输。清理可以释放空间，下次预览会重新从电脑读取。";

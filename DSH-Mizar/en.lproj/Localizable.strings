@@ -506,3 +506,33 @@
 
 /* 0.9.5 */
 "Turn this on if you use the app on the same local network; turning it off makes every reconnect faster." = "Turn this on if you use the app on the same local network; turning it off makes every reconnect faster.";
+
+/* 0.9.7 — previewing delivered files */
+
+"No preview yet" = "No preview yet";
+"Nothing yet. Files the model delivers will be previewed here." = "Nothing yet. Files the model delivers will be previewed here.";
+"Reading from the computer…" = "Reading from the computer…";
+"Try again" = "Try again";
+"This file" = "This file";
+"This kind of file cannot be previewed yet." = "This kind of file cannot be previewed yet.";
+"This kind of file cannot be previewed yet. It can still be opened on the computer." = "This kind of file cannot be previewed yet. It can still be opened on the computer.";
+"Saved copy — shown without asking the computer" = "Saved copy — shown without asking the computer";
+"Opens the preview" = "Opens the preview";
+"%lld more" = "%lld more";
+"%lld pages" = "%lld pages";
+"The computer is not connected." = "The computer is not connected.";
+"The file could not be read." = "The file could not be read.";
+"The file could not be saved on this phone." = "The file could not be saved on this phone.";
+"The file is no longer on the computer." = "The file is no longer on the computer.";
+"This file is outside the session's working folder, or is not a document the app may read." = "This file is outside the session's working folder, or is not a document the app may read.";
+"The file is larger than 32 MB, so it is not previewed here." = "The file is larger than 32 MB, so it is not previewed here.";
+"This computer's Mizar plugin is too old to send files. Update it to preview delivered files." = "This computer's Mizar plugin is too old to send files. Update it to preview delivered files.";
+"This computer's plugin answered a preview request in a way this app does not understand. Update both." = "This computer's plugin answered a preview request in a way this app does not understand. Update both.";
+"This file is not text this app can read." = "This file is not text this app can read.";
+"The saved copy of this file could not be read." = "The saved copy of this file could not be read.";
+"Previewed files" = "Previewed files";
+"Clear file cache" = "Clear file cache";
+"Files" = "Files";
+"Empty" = "Empty";
+"%lld files · %@" = "%lld files · %@";
+"Files the model delivered are kept on this phone so a second look does not send them again. Clearing them frees the space; the next preview reads the file from the computer." = "Files the model delivered are kept on this phone so a second look does not send them again. Clearing them frees the space; the next preview reads the file from the computer.";

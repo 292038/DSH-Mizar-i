@@ -20,6 +20,25 @@
 import SwiftUI
 import MizarKit
 
+/// What to do when a link in a message points at a file on the computer.
+///
+/// Carried in the environment rather than passed down through the typewriter:
+/// the typewriter redraws its blocks frame by frame while an answer arrives, and
+/// a closure in its initialiser would change identity on every one of those
+/// frames. The environment is read once by the block view that actually draws
+/// the links.
+private struct OpenDeliveredFileKey: EnvironmentKey {
+    static let defaultValue: (@MainActor (String) -> Void)? = nil
+}
+
+extension EnvironmentValues {
+    /// Called with the path when a tapped link names a file the app can preview.
+    var openDeliveredFile: (@MainActor (String) -> Void)? {
+        get { self[OpenDeliveredFileKey.self] }
+        set { self[OpenDeliveredFileKey.self] = newValue }
+    }
+}
+
 /// A message body drawn as the blocks it is made of.
 struct MarkdownMessage: View {
     /// The raw text, kept for VoiceOver: what is read is what was said, not the
@@ -52,6 +71,9 @@ struct MarkdownMessage: View {
 struct MarkdownBlocksView: View {
     let blocks: [MarkdownBlock]
 
+    /// Where a tapped local link goes, when this screen has somewhere to send it.
+    @Environment(\.openDeliveredFile) private var openDeliveredFile
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.sm + 2) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
@@ -59,6 +81,28 @@ struct MarkdownBlocksView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // One place decides what a link does, and it decides for every link in
+        // the message. A model writes file references as Markdown links --
+        // measured over 290 session logs, `[x](<Sources/App/A.swift#L12>)` and
+        // `[x](/absolute/path.pdf)`, never a `file://` URL -- so a plain
+        // `Text` link sent them to Safari, which cannot open a path on the
+        // computer and silently did nothing. A previewable one now opens the
+        // drawer's preview page instead.
+        .environment(\.openURL, OpenURLAction { url in
+            if let path = LocalFileLink.path(in: url),
+               PreviewKind(fileName: path).isPreviewable,
+               let openDeliveredFile {
+                openDeliveredFile(path)
+                return .handled
+            }
+            // A path on the computer this app cannot draw, or a scheme nothing
+            // here understands: swallowed rather than handed to Safari, which
+            // would offer to search the web for a file name.
+            if url.scheme == nil || url.scheme?.lowercased() == "file" {
+                return .discarded
+            }
+            return .systemAction
+        })
     }
 
     // MARK: - Blocks

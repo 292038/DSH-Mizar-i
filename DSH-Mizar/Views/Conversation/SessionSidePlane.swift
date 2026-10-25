@@ -70,10 +70,13 @@ struct SessionSidePlane: View {
     var onPick: () -> Void = {}
 
     @Environment(TurnIndex.self) private var index
-    /// The page the operator asked for. Drives the segmented control and the
+    /// The page the operator asked for, and the page a tap on a delivered file
+    /// can ask for from outside this view. Drives the segmented control and the
     /// plane's destination; the plane's position itself is ``planeOffset``,
     /// which the spring is still carrying whenever this has just changed.
-    @State private var selection: SidePage = .turns
+    @Environment(SidePlaneState.self) private var plane
+    /// The page in front, as the shared state has it.
+    private var selection: SidePlanePage { plane.page }
     /// Where the plane is right now, in points. Animated to
     /// `-selection * pageWidth` on every switch, and read by every page's
     /// ``PageFocus`` -- which is why this is a number rather than a derived
@@ -82,10 +85,6 @@ struct SessionSidePlane: View {
     /// The viewport's width, measured, because the pages are exactly one
     /// viewport wide and the plane's travel is counted in them.
     @State private var pageWidth: CGFloat = 0
-
-    enum SidePage: Int, CaseIterable {
-        case turns, subagents, preview
-    }
 
     /// The floating control's geometry, shared with the pages that place
     /// their own chrome below it. The control sizes itself; these numbers
@@ -129,6 +128,16 @@ struct SessionSidePlane: View {
             // the new size rather than sliding into it.
             planeOffset = -CGFloat(selection.rawValue) * width
         }
+        // A page chosen from outside -- a tap on a delivered file in the
+        // conversation -- travels the same spring as a tap on the control: one
+        // transaction carries the selection and the offset, so a page the
+        // operator did not ask for still arrives the way one they did.
+        .onChange(of: plane.page) { _, page in
+            guard pageWidth > 0 else { return }
+            withMizarAnimation(.mizarSmooth) {
+                planeOffset = -CGFloat(page.rawValue) * pageWidth
+            }
+        }
         .onAppear {
             // Debug-only: `alignWithDebugLaunchArgument` lives behind `#if
             // DEBUG`, and a Release build that calls it cannot compile.
@@ -159,11 +168,11 @@ struct SessionSidePlane: View {
     /// cannot tap a segment. The same pattern as `-mizarTypewriterDemo`.
     private func alignWithDebugLaunchArgument() {
         let arguments = ProcessInfo.processInfo.arguments
-        let page: SidePage? = arguments.contains("-mizarSidePageSubagents")
+        let page: SidePlanePage? = arguments.contains("-mizarSidePageSubagents")
             ? .subagents
             : (arguments.contains("-mizarSidePagePreview") ? .preview : nil)
         guard let page, pageWidth > 0, page != selection else { return }
-        selection = page
+        plane.show(page)
         planeOffset = -CGFloat(page.rawValue) * pageWidth
     }
     #endif
@@ -184,7 +193,7 @@ struct SessionSidePlane: View {
                 .frame(width: width, height: height, alignment: .top)
                 .pageFocus(distance: distance(of: 1, width: width))
                 .accessibilityHidden(selection != .subagents)
-            PreviewPage()
+            PreviewPane()
                 .frame(width: width, height: height, alignment: .top)
                 .pageFocus(distance: distance(of: 2, width: width))
                 .accessibilityHidden(selection != .preview)
@@ -209,10 +218,10 @@ struct SessionSidePlane: View {
     /// One transaction carries both halves of the switch: the selection (the
     /// control's lens slides as UIKit animates it) and the offset (the
     /// plane travels, and every page's focus scrub travels with it).
-    private func select(_ page: SidePage) {
+    private func select(_ page: SidePlanePage) {
         guard page != selection, pageWidth > 0 else { return }
         withMizarAnimation(.mizarSmooth) {
-            selection = page
+            plane.show(page)
             planeOffset = -CGFloat(page.rawValue) * pageWidth
         }
     }
@@ -234,7 +243,7 @@ struct SessionSidePlane: View {
 private struct PageSwitcher: UIViewRepresentable {
     /// The page the plane is showing, written by the control and, from
     /// outside it, by the debug launch argument.
-    @Binding var selection: SessionSidePlane.SidePage
+    @Binding var selection: SidePlanePage
     /// The turns segment's title, which carries the live count.
     let turnsTitle: String
 
@@ -275,14 +284,14 @@ private struct PageSwitcher: UIViewRepresentable {
 
     @MainActor
     final class Coordinator {
-        private let selection: Binding<SessionSidePlane.SidePage>
+        private let selection: Binding<SidePlanePage>
 
-        init(selection: Binding<SessionSidePlane.SidePage>) {
+        init(selection: Binding<SidePlanePage>) {
             self.selection = selection
         }
 
         @objc func valueChanged(_ sender: UISegmentedControl) {
-            guard let page = SessionSidePlane.SidePage(rawValue: sender.selectedSegmentIndex) else { return }
+            guard let page = SidePlanePage(rawValue: sender.selectedSegmentIndex) else { return }
             selection.wrappedValue = page
         }
     }
@@ -337,33 +346,5 @@ struct PageFocus: ViewModifier {
 extension View {
     func pageFocus(distance: CGFloat) -> some View {
         modifier(PageFocus(distance: distance))
-    }
-}
-
-// MARK: - The preview page
-
-/// The third page: a promise, kept honestly.
-///
-/// Built as a page of the plane rather than a hidden stub, so the plane is
-/// whole from the first build -- the travel across it is real today, and what
-/// arrives on it later is that page's business. Its centre sits below the
-/// floating control, in the space the eye reads as the page's own.
-private struct PreviewPage: View {
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "eye")
-                .font(.title2)
-                .foregroundStyle(.tertiary)
-            Text("Preview", tableName: SidePlaneTable.name)
-                .font(.headline)
-            Text("Under development — stay tuned.", tableName: SidePlaneTable.name)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-        }
-        .padding(.top, SessionSidePlane.FloatingTab.pageChromeTop)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .accessibilityIdentifier("side.preview")
     }
 }

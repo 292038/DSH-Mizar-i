@@ -533,6 +533,20 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
     public let tokenUsage: TurnTokenUsage?
     /// Host found later tool/error content after the last text response.
     public let branchUnavailable: Bool?
+    /// The files this turn declared as deliverables, when the host said.
+    ///
+    /// The computer draws them as cards under the turn, and they come from the
+    /// model's `present` call — a `tool/call`, which `session.messages` never
+    /// sends. The plugin lifts them onto the turn's `turn/end` instead, so this
+    /// is what lets the phone draw the same cards.
+    ///
+    /// Optional, because this is a cache format and because most turns present
+    /// nothing: `nil` is "no files", and it is also what a cache written before
+    /// this field existed decodes to. Use ``files`` for the answer to draw.
+    public let deliverables: [DeliveredFile]?
+
+    /// The deliverables, with "the host said nothing" folded into "none".
+    public var files: [DeliveredFile] { deliverables ?? [] }
 
     /// A stable identity, unique within a conversation.
     ///
@@ -592,6 +606,7 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             endSeq: endSeq,
             tokenUsage: tokenUsage,
             branchUnavailable: branchUnavailable,
+            deliverables: deliverables,
         )
     }
 
@@ -621,6 +636,7 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             endSeq: endSeq,
             tokenUsage: tokenUsage,
             branchUnavailable: branchUnavailable,
+            deliverables: deliverables,
         )
     }
 
@@ -679,6 +695,9 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             endSeq: continuation ? next.endSeq : endSeq,
             tokenUsage: continuation ? next.tokenUsage : tokenUsage,
             branchUnavailable: continuation ? next.branchUnavailable : branchUnavailable,
+            // The files belong to the turn's end, so the copy that carries the
+            // end carries them; a continuation that ended the chain is that copy.
+            deliverables: continuation ? next.deliverables : deliverables,
         )
     }
 
@@ -745,6 +764,11 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
             endSeq: ended.endSeq,
             tokenUsage: ended.tokenUsage ?? (endSeq == other.endSeq ? (tokenUsage ?? other.tokenUsage) : nil),
             branchUnavailable: ended.branchUnavailable ?? (endSeq == other.endSeq ? (branchUnavailable ?? other.branchUnavailable) : nil),
+            // Same reasoning as the usage above: the list arrives with the end,
+            // and the copy holding the end is the one that has it. Falling back
+            // to the other copy keeps cards from disappearing when a refresh
+            // returns a page that was cut before the turn ended.
+            deliverables: ended.deliverables ?? deliverables ?? other.deliverables,
         )
     }
 
@@ -837,6 +861,7 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
         endSeq: Int? = nil,
         tokenUsage: TurnTokenUsage? = nil,
         branchUnavailable: Bool? = nil,
+        deliverables: [DeliveredFile]? = nil,
     ) {
         self.turn = turn
         self.lastTurn = lastTurn
@@ -851,6 +876,7 @@ public struct ConversationTurn: Sendable, Equatable, Identifiable, Codable {
         self.endSeq = endSeq
         self.tokenUsage = tokenUsage
         self.branchUnavailable = branchUnavailable
+        self.deliverables = deliverables
     }
 
     /// How long the turn took, when both ends are known.
@@ -1057,6 +1083,8 @@ extension SessionMessagesResult {
         /// drops the duplicate without ever dropping a second turn's prompt.
         /// Numbered records are untouched -- every id is `seq-<n>` and
         /// distinct, so neither set ever fires on a host that numbers its log.
+        /// Files each turn declared as deliverables, keyed by turn.
+        var deliverables: [Int?: [DeliveredFile]] = [:]
         var placedIds: [Int?: Set<String>] = [:]
         var placedStepIds: [Int?: Set<String>] = [:]
 
@@ -1128,6 +1156,13 @@ extension SessionMessagesResult {
                     usages[turn] = TurnTokenUsage(totalTokens: count)
                 }
                 branchFlags[turn] = payload["data"]?["mizarBranchUnavailable"]?.boolValue
+                // The files the model declared with `present`. Read from the
+                // same record as the usage above and for the same reason: the
+                // host attaches both to `turn/end`, and an empty list is stored
+                // as `nil` so "nothing presented" and "the host said nothing"
+                // draw the same screen without a distinction nobody can act on.
+                let declared = DeliverablePayload.parse(payload["data"])
+                deliverables[turn] = declared.isEmpty ? nil : declared
                 note(turn, seq: seq, at: nil)
                 // Closed, so a prompt written after it belongs to a later turn
                 // rather than to this one.
@@ -1205,6 +1240,7 @@ extension SessionMessagesResult {
                 endSeq: endSeqs[turn],
                 tokenUsage: usages[turn],
                 branchUnavailable: branchFlags[turn],
+                deliverables: deliverables[turn],
             )
         }
     }
