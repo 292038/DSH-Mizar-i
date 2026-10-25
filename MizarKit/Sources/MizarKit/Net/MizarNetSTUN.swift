@@ -24,37 +24,59 @@
 
 import Foundation
 
-enum MizarNetSTUN {
+/// The one question a STUN server can answer: what do I look like from the
+/// outside?
+///
+/// A punch needs the *server-reflexive* address — the public ip:port the
+/// NAT maps the socket to — because that is the address the far peer has to
+/// send to. RFC 5389's Binding transaction is the whole protocol for
+/// asking: a 20-byte request with a random transaction id, and a response
+/// carrying XOR-MAPPED-ADDRESS.
+///
+/// Only the parts a punch client needs are implemented. No SOFTWARE, no
+/// FINGERPRINT, no realm/authenticator: coturn, Google's servers and every
+/// other mainstream responder answer a bare binding request, and every
+/// attribute this engine does not understand is skipped by length, the way
+/// the RFC requires.
+///
+/// Everything here is pure functions over Data — the socket that carries
+/// the bytes is the engine's business — so the codec is testable without a
+/// network, and the engine is testable against a fake responder.
+///
+/// Public because the NAT matrix lab (a separate target) speaks the same
+/// wire format: its simulated NAT forwards real binding requests to a real
+/// responder, and both sides of that conversation use these constants.
+public enum MizarNetSTUN {
     /// The magic cookie every STUN message starts with, after the type.
-    static let magicCookie: UInt32 = 0x2112A442
+    public static let magicCookie: UInt32 = 0x2112A442
     /// The fixed header: type, length, cookie, transaction id.
-    static let headerLength = 20
+    public static let headerLength = 20
     /// Binding Request.
-    static let bindingRequestType: UInt16 = 0x0001
+    public static let bindingRequestType: UInt16 = 0x0001
     /// Binding Success Response.
-    static let bindingSuccessResponseType: UInt16 = 0x0101
+    public static let bindingSuccessResponseType: UInt16 = 0x0101
     /// MAPPED-ADDRESS — the pre-XOR form, still answered by old servers.
-    static let mappedAddressAttribute: UInt16 = 0x0001
+    public static let mappedAddressAttribute: UInt16 = 0x0001
     /// XOR-MAPPED-ADDRESS — the form everything modern answers with.
-    static let xorMappedAddressAttribute: UInt16 = 0x0020
+    public static let xorMappedAddressAttribute: UInt16 = 0x0020
 
     /// Whether a datagram is a STUN message rather than one of ours.
     ///
     /// Our packets start with the ASCII magic `MZP1`, which cannot collide
     /// with the cookie, so the first four bytes are a reliable discriminator.
-    static func looksLikeSTUN(_ data: Data) -> Bool {
+    public static func looksLikeSTUN(_ data: Data) -> Bool {
         guard data.count >= headerLength else { return false }
         return bigEndianUInt32(data, at: 4) == magicCookie
     }
 
     /// The transaction id of a datagram, if it is long enough to carry one.
-    static func transactionId(of data: Data) -> Data? {
+    public static func transactionId(of data: Data) -> Data? {
         guard data.count >= headerLength else { return nil }
         return data.subdata(in: 8..<headerLength)
     }
 
     /// A random 12-byte transaction id.
-    static func randomTransactionId() -> Data {
+    public static func randomTransactionId() -> Data {
         var id = Data(count: 12)
         _ = id.withUnsafeMutableBytes { buffer in
             SecRandomCopyBytes(kSecRandomDefault, 12, buffer.baseAddress!)
@@ -66,7 +88,7 @@ enum MizarNetSTUN {
     ///
     /// Zero attributes, so the length field is zero: the simplest request
     /// the RFC allows.
-    static func bindingRequest(transactionId: Data) -> Data {
+    public static func bindingRequest(transactionId: Data) -> Data {
         var message = Data()
         message.appendUInt16(bindingRequestType)
         message.appendUInt16(0) // message length: no attributes
@@ -76,9 +98,9 @@ enum MizarNetSTUN {
     }
 
     /// The outcome of a binding transaction.
-    struct MappedAddress {
-        let ip: String
-        let port: UInt16
+    public struct MappedAddress {
+        public let ip: String
+        public let port: UInt16
     }
 
     /// Parse a Binding Success Response.
@@ -89,7 +111,7 @@ enum MizarNetSTUN {
     ///     for a different transaction is somebody else's answer.
     /// - Returns: the mapped address, or `nil` when this is not a usable
     ///   answer — wrong type, wrong transaction, or no address attribute.
-    static func parseBindingResponse(
+    public static func parseBindingResponse(
         _ data: Data,
         expectedTransactionId: Data,
     ) -> MappedAddress? {

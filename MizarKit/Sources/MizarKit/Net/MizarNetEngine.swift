@@ -29,6 +29,20 @@ public enum MizarNetPathKind: String, Sendable, Codable, CaseIterable {
     case relay
 }
 
+/// What a connection intends to do with its engine.
+///
+/// The acceptor punch only runs for an accepting connection. Both sides
+/// hear each other's hello over signaling, so "somebody announced
+/// themselves" does not say which side dialled — without this, a dialer
+/// would punch back at its own dial and the two would fight over the
+/// engine's one active punch.
+public enum MizarNetIntent: Sendable {
+    /// We are dialling the far endpoint.
+    case dial
+    /// We are waiting to be dialled.
+    case accept
+}
+
 /// What the engine makes of the path it is on.
 public enum MizarNetHealth: Sendable, Equatable {
     /// The path is carrying traffic; the round trip is what it is.
@@ -115,6 +129,14 @@ public protocol MizarNetEngine: Sendable {
 
     /// The engine's read on the paths it is holding.
     func health() async -> MizarNetHealth
+
+    /// What the connection intends to do, before anything is sent.
+    ///
+    /// Called once, at the top of ``MizarNetConnection/connect()`` or
+    /// ``MizarNetConnection/accept()``. An engine that has not been told
+    /// assumes nothing: it will not punch back at a peer it merely heard
+    /// about.
+    func noteIntent(_ intent: MizarNetIntent) async
 }
 
 /// Everything the kernel can get wrong that is its own fault.

@@ -20,6 +20,7 @@ import Foundation
 import Testing
 
 @testable import MizarKit
+import MizarNetNATLab
 
 struct MizarNetTests {
     private let candidate = MizarNetCandidate(
@@ -173,7 +174,7 @@ struct MizarNetTests {
 
     @Test("the loopback signaling pair moves signals both ways")
     func loopbackSignaling() async throws {
-        let (a, b) = await LoopbackSignalingTransport.pair()
+        let (a, b) = await LabSignalingTransport.pair()
         try await a.send(.bye(reason: "done"))
         var bIterator = b.signals().makeAsyncIterator()
         #expect(await bIterator.next() == .bye(reason: "done"))
@@ -320,7 +321,7 @@ struct MizarNetTests {
         try await desktop.start()
         let desktopId = desktop.identity.endpointId
 
-        let (phoneSide, desktopSide) = await LoopbackSignalingTransport.pair()
+        let (phoneSide, desktopSide) = await LabSignalingTransport.pair()
         let acceptor = MizarNetConnection(
             engine: desktop,
             ticket: MizarNetTicket(endpointId: desktopId),

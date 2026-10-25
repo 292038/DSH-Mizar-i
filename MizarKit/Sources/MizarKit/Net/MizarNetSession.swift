@@ -44,9 +44,14 @@ public actor MizarNetSession: MizarNetStream {
     /// This side's ephemeral public key — what a ServerHello answers with,
     /// and what the far side agreed against.
     public nonisolated let localEphemeralPublicKey: Data
+    /// Whether this session was started by a punch of ours rather than by a
+    /// hello we received. The engine's reconcile uses it to pick the
+    /// session the dialer's punch started — a rule both sides of a
+    /// simultaneous open can compute without negotiating.
+    public nonisolated let fromOwnPunch: Bool
 
     private let role: MizarNetSessionRole
-    private let socket: MizarNetUDPSocket
+    private let socket: any MizarNetDatagramSocket
     private let remote: MizarNetSocketAddress
     private let sealKey: SymmetricKey
     private let openKey: SymmetricKey
@@ -108,8 +113,9 @@ public actor MizarNetSession: MizarNetStream {
         localEphemeral: Curve25519.KeyAgreement.PrivateKey,
         remoteEphemeralPublicKey: Data,
         localEndpointId: String,
-        socket: MizarNetUDPSocket,
+        socket: any MizarNetDatagramSocket,
         policy: MizarNetPathPolicy,
+        fromOwnPunch: Bool,
         onClose: @escaping @Sendable (UInt64) async -> Void,
     ) throws {
         self.role = role
@@ -117,6 +123,7 @@ public actor MizarNetSession: MizarNetStream {
         self.remote = remote
         self.remoteEndpointId = remoteEndpointId
         self.localEphemeralPublicKey = localEphemeral.publicKey.rawRepresentation
+        self.fromOwnPunch = fromOwnPunch
         self.socket = socket
         self.policy = policy
         self.onClose = onClose

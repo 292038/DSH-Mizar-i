@@ -82,19 +82,46 @@ enum MizarNetCrypto {
         salt: Data,
         localIsDialer: Bool,
     ) -> (seal: SymmetricKey, open: SymmetricKey) {
-        let dialerToAcceptor = sharedSecret.hkdfDerivedSymmetricKey(
-            using: SHA256.self,
+        let bytes = sharedSecret.withUnsafeBytes { Data($0) }
+        let keys = sessionKeyBytes(sharedSecret: bytes, salt: salt, localIsDialer: localIsDialer)
+        return (SymmetricKey(data: keys.seal), SymmetricKey(data: keys.open))
+    }
+
+    /// The two session keys, from raw bytes.
+    ///
+    /// The same derivation as ``sessionKeys(sharedSecret:salt:localIsDialer:)``,
+    /// expressed over bytes rather than CryptoKit's `SharedSecret` — which is
+    /// what a second implementation of this protocol can actually reproduce.
+    /// It exists so the TypeScript side can be checked against this one: the
+    /// fixture emitter asserts the two forms agree, and a mistake in either
+    /// is a failed test rather than a session that silently will not open.
+    ///
+    /// - Parameters:
+    ///   - sharedSecret: the raw ephemeral-ephemeral agreement, 32 bytes.
+    ///   - salt: from ``sessionSalt(localEndpointId:remoteEndpointId:)``.
+    ///   - localIsDialer: whether the local side dialled.
+    /// - Returns: `(seal, open)`, 32 bytes each.
+    static func sessionKeyBytes(
+        sharedSecret: Data,
+        salt: Data,
+        localIsDialer: Bool,
+    ) -> (seal: Data, open: Data) {
+        let material = SymmetricKey(data: sharedSecret)
+        let dialerToAcceptor = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: material,
             salt: salt,
-            sharedInfo: Data("mizar-net/dialer-to-acceptor/v1".utf8),
+            info: Data("mizar-net/dialer-to-acceptor/v1".utf8),
             outputByteCount: 32,
         )
-        let acceptorToDialer = sharedSecret.hkdfDerivedSymmetricKey(
-            using: SHA256.self,
+        let acceptorToDialer = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: material,
             salt: salt,
-            sharedInfo: Data("mizar-net/acceptor-to-dialer/v1".utf8),
+            info: Data("mizar-net/acceptor-to-dialer/v1".utf8),
             outputByteCount: 32,
         )
-        return localIsDialer ? (dialerToAcceptor, acceptorToDialer) : (acceptorToDialer, dialerToAcceptor)
+        let seal = localIsDialer ? dialerToAcceptor : acceptorToDialer
+        let open = localIsDialer ? acceptorToDialer : dialerToAcceptor
+        return (seal.withUnsafeBytes { Data($0) }, open.withUnsafeBytes { Data($0) })
     }
 
     /// The nonce for a packet number: twelve bytes, the packet number in

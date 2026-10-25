@@ -113,6 +113,7 @@ public actor MizarNetConnection {
     ///   connection is already up.
     public func connect() async throws -> any MizarNetStream {
         try assertNotBusy()
+        await engine.noteIntent(.dial)
         currentState = .connecting
         emit(.state(.connecting))
         do {
@@ -138,6 +139,7 @@ public actor MizarNetConnection {
     /// - Throws: ``MizarNetError``.
     public func accept() async throws -> any MizarNetStream {
         try assertNotBusy()
+        await engine.noteIntent(.accept)
         currentState = .connecting
         emit(.state(.connecting))
         do {

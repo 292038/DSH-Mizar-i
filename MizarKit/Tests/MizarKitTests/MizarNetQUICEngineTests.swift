@@ -22,6 +22,7 @@ import Foundation
 import Testing
 
 @testable import MizarKit
+import MizarNetNATLab
 
 struct MizarNetQUICEngineTests {
     /// Fast enough for a test, shaped like the real policy.
@@ -144,20 +145,28 @@ struct MizarNetQUICEngineTests {
 
     // MARK: - STUN
 
-    @Test("STUN discovery records the mapped address as a candidate")
+    @Test("STUN discovery records the observed address as a candidate")
     func stunDiscovery() async throws {
-        let server = try await FakeSTUNServer(mappedIP: "203.0.113.77", mappedPort: 54321)
+        // The lab's responder reports the address a request arrived from —
+        // what a real STUN server does. With no NAT in front, that is the
+        // engine's own socket, so the candidate is loopback and the port is
+        // the one the socket bound.
+        let server = try await ObservingSTUNServer()
         await server.start()
         defer { Task { await server.stop() } }
 
         let identity = MizarNetIdentity.generate()
-        let engine = MizarNetQUICEngine(identity: identity, policy: Self.policy, stunServers: ["127.0.0.1:\(await server.port)"])
+        let engine = MizarNetQUICEngine(
+            identity: identity,
+            policy: Self.policy,
+            stunServers: ["127.0.0.1:\(await server.address.port)"],
+        )
         try await engine.start()
 
         let candidates = await engine.localCandidates()
         let reflexive = candidates.first { $0.kind == .serverReflexive }
-        #expect(reflexive?.address == "203.0.113.77")
-        #expect(reflexive?.port == 54321)
+        #expect(reflexive?.address == "127.0.0.1")
+        #expect(reflexive?.port ?? 0 > 0)
         // Host candidates come first — the LAN path is preferred over the
         // punched one, exactly as ICE orders them.
         #expect(candidates.first?.kind == .host)
@@ -234,7 +243,7 @@ struct MizarNetQUICEngineTests {
 
         // No direct hints on the ticket: the only way to the desktop is the
         // candidate its hello carried over the signaling channel.
-        let (phoneSide, desktopSide) = await LoopbackSignalingTransport.pair()
+        let (phoneSide, desktopSide) = await LabSignalingTransport.pair()
         let acceptor = MizarNetConnection(
             engine: desktop.engine,
             ticket: MizarNetTicket(endpointId: desktop.identity.endpointId),

@@ -139,6 +139,7 @@ actor MizarNetLoopbackEngine: MizarNetEngine {
     private var offered: [MizarNetCandidate] = []
     private var networkChanges = 0
     private var shutdowns = 0
+    private var recordedIntent: MizarNetIntent?
 
     init(identity: MizarNetIdentity) {
         self.identity = identity
@@ -195,6 +196,12 @@ actor MizarNetLoopbackEngine: MizarNetEngine {
         networkChanges += 1
     }
 
+    func noteIntent(_ intent: MizarNetIntent) async {
+        // The loopback engine has no NAT to punch through, so the intent is
+        // recorded and otherwise ignored.
+        recordedIntent = intent
+    }
+
     func health() async -> MizarNetHealth {
         healthSetting
     }
@@ -234,143 +241,5 @@ actor MizarNetLoopbackEngine: MizarNetEngine {
     /// How many times the engine was shut down.
     func shutdownCount() -> Int {
         shutdowns
-    }
-}
-
-/// A signaling channel that is a wire between two actors.
-actor LoopbackSignalingTransport: MizarNetSignalingTransport {
-    private nonisolated let stream: AsyncStream<MizarNetSignal>
-    private let continuation: AsyncStream<MizarNetSignal>.Continuation
-    private var partner: LoopbackSignalingTransport?
-    private var closed = false
-
-    private(set) var sent: [MizarNetSignal] = []
-    private(set) var received: [MizarNetSignal] = []
-
-    init() {
-        let made = AsyncStream<MizarNetSignal>.makeStream(of: MizarNetSignal.self, bufferingPolicy: .unbounded)
-        self.stream = made.stream
-        self.continuation = made.continuation
-    }
-
-    /// Two ends of one signaling channel.
-    static func pair() async -> (LoopbackSignalingTransport, LoopbackSignalingTransport) {
-        let a = LoopbackSignalingTransport()
-        let b = LoopbackSignalingTransport()
-        await a.setPartner(b)
-        await b.setPartner(a)
-        return (a, b)
-    }
-
-    private func setPartner(_ other: LoopbackSignalingTransport) {
-        partner = other
-    }
-
-    func send(_ signal: MizarNetSignal) async throws {
-        guard !closed else {
-            throw MizarNetError.signalingFailed(reason: "the channel is closed")
-        }
-        sent.append(signal)
-        await partner?.receive(signal)
-    }
-
-    private func receive(_ signal: MizarNetSignal) {
-        received.append(signal)
-        continuation.yield(signal)
-    }
-
-    nonisolated func signals() -> AsyncStream<MizarNetSignal> {
-        stream
-    }
-
-    func close() async {
-        guard !closed else { return }
-        closed = true
-        continuation.finish()
-    }
-}
-
-/// A STUN server that is not one: a real UDP socket that answers binding
-/// requests with a fixed mapped address.
-///
-/// The engine's STUN client is exercised end to end — request on the wire,
-/// XOR-MAPPED-ADDRESS back, candidate recorded — without depending on an
-/// external server the test machine may not be able to reach.
-actor FakeSTUNServer {
-    private let socket: MizarNetUDPSocket
-    private let mappedIP: String
-    private let mappedPort: UInt16
-    private var task: Task<Void, Never>?
-
-    init(mappedIP: String = "203.0.113.77", mappedPort: UInt16 = 54321) async throws {
-        self.socket = MizarNetUDPSocket()
-        try await socket.bind(port: nil)
-        self.mappedIP = mappedIP
-        self.mappedPort = mappedPort
-    }
-
-    /// The port the fake server listens on.
-    var port: UInt16 {
-        get async { await socket.localAddress?.port ?? 0 }
-    }
-
-    func start() {
-        guard task == nil else { return }
-        task = Task.detached { [socket] in
-            for await datagram in socket.events {
-                await self.answer(datagram)
-            }
-        }
-    }
-
-    func stop() async {
-        task?.cancel()
-        task = nil
-        await socket.close()
-    }
-
-    private func answer(_ datagram: MizarNetDatagram) async {
-        guard MizarNetSTUN.looksLikeSTUN(datagram.data),
-              datagram.data.count >= MizarNetSTUN.headerLength,
-              bigEndianUInt16(datagram.data, at: 0) == MizarNetSTUN.bindingRequestType,
-              let transactionId = MizarNetSTUN.transactionId(of: datagram.data) else {
-            return
-        }
-        var attribute = Data()
-        attribute.appendUInt16(MizarNetSTUN.xorMappedAddressAttribute)
-        attribute.appendUInt16(8)
-        attribute.append(0x00) // reserved
-        attribute.append(0x01) // family: IPv4
-        attribute.appendUInt16(mappedPort ^ UInt16(MizarNetSTUN.magicCookie >> 16))
-        let cookieBytes = [UInt8(0x21), UInt8(0x12), UInt8(0xA4), UInt8(0x42)]
-        let addressBytes = mappedIP.split(separator: ".").compactMap { UInt8($0) }
-        for (index, byte) in addressBytes.enumerated() {
-            attribute.append(byte ^ cookieBytes[index])
-        }
-        var message = Data()
-        message.appendUInt16(MizarNetSTUN.bindingSuccessResponseType)
-        message.appendUInt16(UInt16(attribute.count))
-        message.appendUInt32(MizarNetSTUN.magicCookie)
-        message.append(transactionId)
-        message.append(attribute)
-        try? await socket.send(message, to: datagram.from)
-    }
-}
-
-private func bigEndianUInt16(_ data: Data, at offset: Int) -> UInt16 {
-    (UInt16(data[offset]) << 8) | UInt16(data[offset + 1])
-}
-
-private extension Data {
-    mutating func appendUInt16(_ value: UInt16) {
-        append(UInt8(value >> 8))
-        append(UInt8(value & 0xFF))
-    }
-
-    mutating func appendUInt32(_ value: UInt32) {
-        append(UInt8(value >> 24))
-        append(UInt8((value >> 16) & 0xFF))
-        append(UInt8((value >> 8) & 0xFF))
-        append(UInt8(value & 0xFF))
     }
 }

@@ -64,6 +64,33 @@ public struct MizarNetPathPolicy: Sendable, Equatable {
     /// Bounded because the punch budget should be spent punching, not
     /// waiting for a server that may be unreachable from this network.
     public var stunBudget: Duration = .milliseconds(700)
+    /// How long the side being dialled keeps punching back after learning
+    /// the dialer's candidates from signaling.
+    ///
+    /// Wider than the dial budget on purpose: the dialer may have started
+    /// before its hello reached us, and the punch that opens the filter has
+    /// to outlast the dial that depends on it.
+    public var acceptorPunchWindow: Duration = .seconds(4)
+    /// How long an answered punch-back waits before its session is offered
+    /// to whoever is accepting.
+    ///
+    /// The grace exists for the simultaneous open: both sides punch, and
+    /// the session the *dialer's* punch started is the one that survives.
+    /// If the dialer's hello is still in flight when our punch is answered,
+    /// this wait lets it land and take precedence; if it never lands — the
+    /// symmetric-acceptor case, where the dialer's hello cannot reach our
+    /// mapping — our own session is the one the dialer fell back to.
+    public var punchAnswerGrace: Duration = .milliseconds(150)
+    /// How long a dial waits for the peer's candidates before giving up on
+    /// a punch entirely.
+    ///
+    /// Candidates arrive over signaling, a few milliseconds after the app
+    /// decided to dial — but "a few" is not a guarantee on a busy phone or
+    /// a relayed signal path. Failing the moment the list is empty spends
+    /// the whole dial on a race the dial itself created; waiting costs a
+    /// second in the one case where the peer never answers, and saves the
+    /// connection in the common one.
+    public var candidateGrace: Duration = .seconds(1)
 
     /// The defaults.
     public static let standard = MizarNetPathPolicy(
@@ -77,7 +104,43 @@ public struct MizarNetPathPolicy: Sendable, Equatable {
         punchInterval: .milliseconds(120),
         streamChunkBytes: 1024,
         stunBudget: .milliseconds(700),
+        acceptorPunchWindow: .seconds(4),
+        punchAnswerGrace: .milliseconds(150),
+        candidateGrace: .seconds(1),
     )
+
+    /// A policy. Every field defaults to the standard value, so a caller
+    /// overrides only what it means to change — the NAT matrix lab ships
+    /// its own, tuned for a two-second budget.
+    public init(
+        punchBudget: Duration = .seconds(3),
+        healthInterval: Duration = .seconds(10),
+        keepaliveInterval: Duration = .seconds(22),
+        downgradeAfter: Int = 3,
+        punchBackoff: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8)],
+        maxPunchRounds: Int = 3,
+        punchRounds: Int = 8,
+        punchInterval: Duration = .milliseconds(120),
+        streamChunkBytes: Int = 1024,
+        stunBudget: Duration = .milliseconds(700),
+        acceptorPunchWindow: Duration = .seconds(4),
+        punchAnswerGrace: Duration = .milliseconds(150),
+        candidateGrace: Duration = .seconds(1),
+    ) {
+        self.punchBudget = punchBudget
+        self.healthInterval = healthInterval
+        self.keepaliveInterval = keepaliveInterval
+        self.downgradeAfter = downgradeAfter
+        self.punchBackoff = punchBackoff
+        self.maxPunchRounds = maxPunchRounds
+        self.punchRounds = punchRounds
+        self.punchInterval = punchInterval
+        self.streamChunkBytes = streamChunkBytes
+        self.stunBudget = stunBudget
+        self.acceptorPunchWindow = acceptorPunchWindow
+        self.punchAnswerGrace = punchAnswerGrace
+        self.candidateGrace = candidateGrace
+    }
 
     /// How long to wait after `afterFailures` failed punch rounds.
     ///

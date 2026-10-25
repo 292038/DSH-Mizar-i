@@ -74,8 +74,29 @@ public struct MizarNetDatagram: Sendable, Equatable {
     }
 }
 
+/// The four things the engine needs from a socket.
+///
+/// Extracted so the NAT matrix lab can put a simulated NAT between the
+/// engine and the wire without the engine knowing: the engine talks to
+/// this protocol, the production implementation is a bound UDP socket, and
+/// the lab's is a NAT front that maps and filters like the real thing.
+/// Nothing else in the engine learns about either.
+public protocol MizarNetDatagramSocket: Sendable {
+    /// Every datagram that arrives, in arrival order.
+    var events: AsyncStream<MizarNetDatagram> { get }
+    /// The address this socket is reachable on — for a NAT front, the
+    /// mapped address the outside world sees.
+    var localAddress: MizarNetSocketAddress? { get async }
+    /// Bind, or take ownership of an already-bound socket.
+    func bind(port: UInt16?) async throws
+    /// Send one datagram.
+    func send(_ data: Data, to address: MizarNetSocketAddress) async throws
+    /// Close. Idempotent.
+    func close() async
+}
+
 /// A bound UDP socket that yields what arrives.
-public actor MizarNetUDPSocket {
+public actor MizarNetUDPSocket: MizarNetDatagramSocket {
     /// Every datagram that arrives, in arrival order.
     public nonisolated let events: AsyncStream<MizarNetDatagram>
     private let continuation: AsyncStream<MizarNetDatagram>.Continuation

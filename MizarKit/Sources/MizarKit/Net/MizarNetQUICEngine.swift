@@ -41,6 +41,17 @@ import Foundation
 
 /// A dial in progress.
 private struct ActiveDial {
+    /// Which kind of punch this is.
+    enum Kind: Sendable {
+        /// We are dialling, and somebody is waiting on the result.
+        case dialer
+        /// Somebody is dialling us; we learned their candidates from
+        /// signaling and are punching back so their first hello has a
+        /// filter entry to land in.
+        case acceptorPunch
+    }
+
+    let kind: Kind
     let connectionId: UInt64
     /// The endpoint the ticket named — used to spot a duplicate session
     /// after a simultaneous open.
@@ -61,11 +72,12 @@ public actor MizarNetQUICEngine: MizarNetEngine {
 
     private let policy: MizarNetPathPolicy
     private let stunServers: [String]
+    private let injectedSocket: (any MizarNetDatagramSocket)?
 
     private let incoming: AsyncStream<any MizarNetStream>
     private let incomingContinuation: AsyncStream<any MizarNetStream>.Continuation
 
-    private var socket: MizarNetUDPSocket?
+    private var socket: (any MizarNetDatagramSocket)?
     private var started = false
     private var hostCandidates: [MizarNetCandidate] = []
     private var reflexiveCandidates: [MizarNetCandidate] = []
@@ -75,9 +87,22 @@ public actor MizarNetQUICEngine: MizarNetEngine {
     private var activeDial: ActiveDial?
     private var dialOutcomes: [UInt64: Result<any MizarNetStream, MizarNetError>] = [:]
     private var punchTasks: [UInt64: Task<Void, Never>] = [:]
+    /// One commit per endpoint at a time, keyed by the endpoint being
+    /// committed to.
+    private var commitTasks: [String: Task<Void, Never>] = [:]
+    /// Endpoints whose surviving session has already been offered to the
+    /// incoming channel. One stream per endpoint.
+    private var yieldedEndpoints: Set<String> = []
     private var pendingSTUN: [Data: String] = [:]
     private var stunResults: [String: MizarNetSocketAddress] = [:]
     private var receiveTask: Task<Void, Never>?
+    /// Whether the one-shot acceptor punch has been started. One shot is
+    /// enough: it runs until a session exists or its window closes, and a
+    /// second one would only duplicate the first.
+    private var acceptorPunchStarted = false
+    /// What the connection intends. `nil` until told — and an engine that
+    /// has not been told does not punch back.
+    private var intent: MizarNetIntent?
 
     /// The public STUN servers tried when none are configured.
     ///
@@ -97,14 +122,19 @@ public actor MizarNetQUICEngine: MizarNetEngine {
     ///   - policy: the numbers.
     ///   - stunServers: `host:port` of the STUN servers to ask, in order.
     ///     Empty means host candidates only — a LAN-only configuration.
+    ///   - socket: a socket to use instead of binding a fresh one. The NAT
+    ///     matrix lab injects a simulated NAT here; production passes
+    ///     nothing and gets a bound UDP socket.
     public init(
         identity: MizarNetIdentity,
         policy: MizarNetPathPolicy = .standard,
         stunServers: [String] = MizarNetQUICEngine.defaultSTUNServers,
+        socket: (any MizarNetDatagramSocket)? = nil,
     ) {
         self.identity = identity
         self.policy = policy
         self.stunServers = stunServers
+        self.injectedSocket = socket
         let made = AsyncStream<any MizarNetStream>.makeStream(of: (any MizarNetStream).self, bufferingPolicy: .unbounded)
         self.incoming = made.stream
         self.incomingContinuation = made.continuation
@@ -114,7 +144,10 @@ public actor MizarNetQUICEngine: MizarNetEngine {
 
     public func start() async throws {
         guard !started else { return }
-        let socket = MizarNetUDPSocket()
+        // An injected socket arrives already bound — a NAT front owns the
+        // real sockets — and `bind` is a no-op there. A fresh socket binds
+        // here, on an ephemeral port, and holds it for the engine's life.
+        let socket = injectedSocket ?? MizarNetUDPSocket()
         try await socket.bind(port: nil)
         self.socket = socket
         started = true
@@ -131,8 +164,11 @@ public actor MizarNetQUICEngine: MizarNetEngine {
         receiveTask = nil
         for task in punchTasks.values { task.cancel() }
         punchTasks.removeAll()
+        for task in commitTasks.values { task.cancel() }
+        commitTasks.removeAll()
         activeDial = nil
         dialOutcomes.removeAll()
+        yieldedEndpoints.removeAll()
         for connectionId in Array(sessions.keys) {
             await sessions[connectionId]?.close()
         }
@@ -148,14 +184,36 @@ public actor MizarNetQUICEngine: MizarNetEngine {
         guard started, socket != nil else { throw MizarNetError.engineNotStarted }
         if activeDial != nil { throw MizarNetError.dialInFlight }
 
-        let remote = Self.remoteCandidates(offered: offeredCandidates, hints: ticket.direct)
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+
+        // The far side's punch can arrive before this dial starts — it is
+        // sent the moment signaling hands it our candidates, which may be
+        // while this side is still binding its socket. A session to the
+        // ticket's endpoint is therefore already the connection, and
+        // dialling again would only build a second one and a race over
+        // which of the two the caller gets.
+        if let already = adoptExistingSession(ticket.endpointId) { return already }
+
+        // Candidates travel over signaling, so the list can legitimately be
+        // empty for the few milliseconds between deciding to dial and the
+        // peer's hello being consumed. Waiting briefly is the difference
+        // between a connection and a "no candidates" failure the peer never
+        // had a chance to prevent.
+        var remote = Self.remoteCandidates(offered: offeredCandidates, hints: ticket.direct)
+        if remote.isEmpty {
+            let graceDeadline = min(deadline, ContinuousClock.now.advanced(by: policy.candidateGrace))
+            while remote.isEmpty, ContinuousClock.now < graceDeadline {
+                try? await Task.sleep(for: .milliseconds(20))
+                if Task.isCancelled { break }
+                remote = Self.remoteCandidates(offered: offeredCandidates, hints: ticket.direct)
+            }
+        }
         guard !remote.isEmpty else {
             throw MizarNetError.punchFailed(reason: "no candidate addresses to dial")
         }
 
         let connectionId = Self.randomConnectionId()
         let ephemeral = MizarNetCrypto.ephemeralKeyPair()
-        let deadline = ContinuousClock.now.advanced(by: timeout)
         let hello: Data
         do {
             let message = MizarNetPunchPacket.handshakeMessage(
@@ -175,6 +233,7 @@ public actor MizarNetQUICEngine: MizarNetEngine {
         }
 
         activeDial = ActiveDial(
+            kind: .dialer,
             connectionId: connectionId,
             remoteEndpointId: ticket.endpointId,
             ephemeral: ephemeral,
@@ -188,12 +247,20 @@ public actor MizarNetQUICEngine: MizarNetEngine {
         defer { cleanupDial(connectionId) }
 
         while ContinuousClock.now < deadline {
+            // A session to the far endpoint beats any outcome the punch
+            // bookkeeping may still be writing: it exists, it is one half of
+            // the pair, and the caller asked for exactly that.
+            if let already = adoptExistingSession(ticket.endpointId) { return already }
             if let outcome = dialOutcomes.removeValue(forKey: connectionId) {
                 return try outcome.get()
             }
             try? await Task.sleep(for: .milliseconds(20))
             if Task.isCancelled { break }
         }
+        // The budget is spent, but the far side's hello may have built a
+        // session on its own — the symmetric-acceptor path, where our punch
+        // could never land but theirs did. That session is the connection.
+        if let already = adoptExistingSession(ticket.endpointId) { return already }
         if let outcome = dialOutcomes.removeValue(forKey: connectionId) {
             return try outcome.get()
         }
@@ -217,6 +284,59 @@ public actor MizarNetQUICEngine: MizarNetEngine {
                 offeredCandidates.append(candidate)
             }
         }
+        // Somebody announced themselves over signaling. If we are the side
+        // being dialled, this is the moment to punch back: their first hello
+        // is already on its way, and a restricted or port-restricted filter
+        // on our side will only let it in if we have sent to their address
+        // first. libp2p's DCUtR synchronises both sides for exactly this
+        // reason; ours does it by answering the signaling hello with a
+        // punch rather than waiting to be reached.
+        await startAcceptorPunchIfNeeded()
+    }
+
+    /// The one-shot punch from the side being dialled.
+    private func startAcceptorPunchIfNeeded() async {
+        guard intent != .dial,
+              !acceptorPunchStarted,
+              activeDial == nil,
+              sessions.isEmpty,
+              !offeredCandidates.isEmpty else { return }
+        acceptorPunchStarted = true
+
+        let connectionId = Self.randomConnectionId()
+        let ephemeral = MizarNetCrypto.ephemeralKeyPair()
+        let remote = Self.remoteCandidates(offered: offeredCandidates, hints: [])
+        guard !remote.isEmpty else { return }
+        let deadline = ContinuousClock.now.advanced(by: policy.acceptorPunchWindow)
+        let hello: Data
+        do {
+            let message = MizarNetPunchPacket.handshakeMessage(
+                type: .clientHello,
+                connectionId: connectionId,
+                ephemeralPublicKey: ephemeral.publicKey.rawRepresentation,
+                endpointId: identity.endpointId,
+            )
+            hello = MizarNetPunchPacket.clientHello(
+                connectionId: connectionId,
+                endpointId: identity.endpointId,
+                ephemeralPublicKey: ephemeral.publicKey.rawRepresentation,
+                signature: try identity.sign(message),
+            )
+        } catch {
+            return
+        }
+        activeDial = ActiveDial(
+            kind: .acceptorPunch,
+            connectionId: connectionId,
+            remoteEndpointId: "",
+            ephemeral: ephemeral,
+            remote: remote,
+            deadline: deadline,
+            hello: hello,
+        )
+        punchTasks[connectionId] = Task.detached { [engine = self] in
+            await engine.runPunchRounds(connectionId)
+        }
     }
 
     public func networkChanged() async {
@@ -237,12 +357,23 @@ public actor MizarNetQUICEngine: MizarNetEngine {
         return await session.health()
     }
 
+    public func noteIntent(_ intent: MizarNetIntent) async {
+        self.intent = intent
+    }
+
     // MARK: - Punching
 
     private func runPunchRounds(_ connectionId: UInt64) async {
         guard let dial = activeDial, dial.connectionId == connectionId, let socket else { return }
         var round = 0
         while round < policy.punchRounds, ContinuousClock.now < dial.deadline {
+            // A session already exists — the far side reached us, or our own
+            // hello landed. Either way the punch's job is done.
+            if dial.kind == .acceptorPunch {
+                if !sessions.isEmpty { break }
+            } else if sessions.values.contains(where: { $0.remoteEndpointId == dial.remoteEndpointId }) {
+                break
+            }
             for address in dial.remote {
                 try? await socket.send(dial.hello, to: address)
             }
@@ -255,8 +386,27 @@ public actor MizarNetQUICEngine: MizarNetEngine {
         }
         // Only the loop that still owns the dial may fail it: a dial that
         // already completed, or one the caller gave up on, must not have
-        // its outcome overwritten.
-        guard activeDial?.connectionId == connectionId, dialOutcomes[connectionId] == nil else { return }
+        // its outcome overwritten. And a commit still pending for this
+        // endpoint means a session is on its way to the caller — the
+        // symmetric-acceptor path, where our own punch never landed but the
+        // far side's did — so this loop stays quiet and lets the commit
+        // speak.
+        guard activeDial?.connectionId == connectionId,
+              dialOutcomes[connectionId] == nil,
+              commitTasks[dial.remoteEndpointId] == nil else { return }
+        if dial.kind == .acceptorPunch {
+            // Nobody dialled in through our punch. The flag stays set: a
+            // later hello over signaling may still start a fresh attempt.
+            acceptorPunchStarted = false
+            return
+        }
+        // A session to the far endpoint exists — or a commit is still
+        // choosing between two — so this punch has nothing left to fail.
+        // Writing a timeout here would beat the commit to the dial and turn
+        // a connection that is already up into a reported failure.
+        if sessions.values.contains(where: { $0.remoteEndpointId == dial.remoteEndpointId }) {
+            return
+        }
         dialOutcomes[connectionId] = .failure(.dialTimeout(path: .p2p))
     }
 
@@ -298,6 +448,25 @@ public actor MizarNetQUICEngine: MizarNetEngine {
     /// phone may dial any paired desktop — because the session key the
     /// hello leads to is bound to *these two* endpoint ids, and the Mizar
     /// protocol's own device-token check runs on top of it anyway.
+    ///
+    /// Sessions form from exactly two events: a ClientHello we received, and
+    /// a ServerHello answering a punch of ours. When both sides punch — the
+    /// normal case once signaling has told each about the other — both
+    /// events happen on both sides, and the pair would hold two sessions.
+    /// ``reconcile(endpointId:)`` keeps that to one with the only rule both
+    /// sides can compute identically: the smaller connection id wins. The
+    /// dialer knows its own punch's id and the id of the hello it received;
+    /// the acceptor knows the same two numbers from its side. No id lottery,
+    /// no mirrored preference that can disagree.
+    ///
+    /// A session is not routed to its caller the moment it exists — it is
+    /// committed after ``scheduleCommit(endpointId:)``, which waits until
+    /// both kinds exist (the common case: both arrive within a round trip,
+    /// so the wait is a few milliseconds) or the grace expires. The
+    /// symmetric-acceptor case arrives through the same door: the dialer's
+    /// punch can never reach a symmetric mapping, so only the punch-back
+    /// session exists, the grace expires, and it becomes the connection —
+    /// which is exactly the session the dialer fell back to.
     private func handleClientHello(_ datagram: MizarNetDatagram, _ header: MizarNetPacketHeader) async {
         guard let parsed = MizarNetPunchPacket.parseHello(datagram.data),
               parsed.header.type == .clientHello,
@@ -313,10 +482,9 @@ public actor MizarNetQUICEngine: MizarNetEngine {
             return
         }
 
+        // A session with this connection id already exists — a retransmitted
+        // or late hello — so re-answer it and create nothing.
         if let existing = sessions[header.connectionId] {
-            // A retransmitted hello for a session we already have: answer
-            // again so the dialer completes even though the first answer
-            // was lost.
             await answerHello(connectionId: header.connectionId, to: datagram.from, ephemeralPublicKey: existing.localEphemeralPublicKey)
             return
         }
@@ -333,6 +501,7 @@ public actor MizarNetQUICEngine: MizarNetEngine {
                 localEndpointId: identity.endpointId,
                 socket: socket,
                 policy: policy,
+                fromOwnPunch: false,
                 onClose: { [weak self] id in await self?.removeSession(id) },
             )
         } catch {
@@ -340,9 +509,13 @@ public actor MizarNetQUICEngine: MizarNetEngine {
         }
         sessions[header.connectionId] = session
         sessionOrder.append(header.connectionId)
+        // Registered before the first await: a commit is a promise that this
+        // session is on its way to a caller, and the punch loop reads that
+        // promise to know it must not declare a timeout. Leaving a window
+        // here is what turns a formed connection into a reported failure.
+        scheduleCommit(endpointId: handshake.endpointId)
         await session.activate()
         await answerHello(connectionId: header.connectionId, to: datagram.from, ephemeralPublicKey: session.localEphemeralPublicKey)
-        incomingContinuation.yield(session)
     }
 
     /// The far end answered our hello.
@@ -359,7 +532,7 @@ public actor MizarNetQUICEngine: MizarNetEngine {
             endpointId: handshake.endpointId,
         )
         guard MizarNetIdentity.verify(signature: handshake.signature, message: message, endpointId: handshake.endpointId) else {
-            completeDial(header.connectionId, .failure(.handshakeFailed(reason: "the acceptor's signature did not verify")))
+            completeDial(header.connectionId, .failure(.handshakeFailed(reason: "the far signature did not verify")))
             return
         }
 
@@ -374,15 +547,88 @@ public actor MizarNetQUICEngine: MizarNetEngine {
                 localEndpointId: identity.endpointId,
                 socket: socket,
                 policy: policy,
+                fromOwnPunch: true,
                 onClose: { [weak self] id in await self?.removeSession(id) },
             )
             sessions[header.connectionId] = session
             sessionOrder.append(header.connectionId)
+            scheduleCommit(endpointId: handshake.endpointId)
             await session.activate()
-            completeDial(header.connectionId, .success(session))
         } catch {
             completeDial(header.connectionId, .failure(.handshakeFailed(reason: "the agreement failed")))
         }
+    }
+
+    // MARK: - Commit
+
+    /// Route an endpoint's surviving session to whoever is waiting for it.
+    ///
+    /// One commit per endpoint at a time, and the wait ends the moment both
+    /// kinds of session exist — so the common case costs milliseconds and
+    /// only the genuinely one-sided cases wait out the grace.
+    private func scheduleCommit(endpointId: String) {
+        guard commitTasks[endpointId] == nil else { return }
+        commitTasks[endpointId] = Task.detached { [engine = self] in
+            let deadline = ContinuousClock.now.advanced(by: engine.policy.punchAnswerGrace)
+            while !(await engine.hasBothKinds(endpointId)), ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            await engine.commit(endpointId)
+        }
+    }
+
+    private func hasBothKinds(_ endpointId: String) -> Bool {
+        let toThisEndpoint = sessions.values.filter { $0.remoteEndpointId == endpointId }
+        return toThisEndpoint.contains(where: { $0.fromOwnPunch })
+            && toThisEndpoint.contains(where: { !$0.fromOwnPunch })
+    }
+
+    private func commit(_ endpointId: String) async {
+        commitTasks.removeValue(forKey: endpointId)
+        guard let keeper = reconcile(endpointId) else { return }
+        if let dial = activeDial, dial.kind == .dialer, dial.remoteEndpointId == endpointId {
+            completeDial(dial.connectionId, .success(keeper))
+        } else if intent != .dial, !yieldedEndpoints.contains(endpointId) {
+            // One stream per endpoint into the incoming channel: the
+            // acceptor's accept() takes exactly one.
+            yieldedEndpoints.insert(endpointId)
+            incomingContinuation.yield(keeper)
+        }
+        // A side that is dialling — or has not decided yet — keeps the
+        // session where it is. `dial` adopts it; handing it to the incoming
+        // channel would put it in a queue nobody on a dialler reads.
+    }
+
+    /// The session a dial should adopt, when the far endpoint already has
+    /// one.
+    ///
+    /// A dial that finds a session does not punch: the session came from the
+    /// far side's hello (or from its answer to a previous punch), the keys
+    /// are already agreed, and punching again would only race the session
+    /// the caller is about to be handed. Reconciled first, because a
+    /// simultaneous open leaves two and only one survives — adopting the
+    /// loser would hand the caller a stream that is being closed.
+    private func adoptExistingSession(_ endpointId: String) -> MizarNetSession? {
+        guard sessions.values.contains(where: { $0.remoteEndpointId == endpointId }) else { return nil }
+        return reconcile(endpointId)
+    }
+
+    /// One session per endpoint: the smaller connection id wins.
+    ///
+    /// Returns the keeper. Both sides of a simultaneous open hold the same
+    /// two connection ids — each side's own punch and the hello it received
+    /// — so both close the same loser without a word between them.
+    @discardableResult
+    private func reconcile(_ endpointId: String) -> MizarNetSession? {
+        let toThisEndpoint = sessions.values.filter { $0.remoteEndpointId == endpointId }
+        guard let keeper = toThisEndpoint.min(by: { $0.connectionId < $1.connectionId }) else { return nil }
+        for session in toThisEndpoint where session.connectionId != keeper.connectionId {
+            let connectionId = session.connectionId
+            Task.detached { [engine = self] in
+                await engine.sessions[connectionId]?.close()
+            }
+        }
+        return keeper
     }
 
     private func answerHello(connectionId: UInt64, to address: MizarNetSocketAddress, ephemeralPublicKey: Data) async {
@@ -402,21 +648,11 @@ public actor MizarNetQUICEngine: MizarNetEngine {
         try? await socket.send(packet, to: address)
     }
 
+    /// The dial's outcome. An acceptor punch never lands here — its session
+    /// is offered to whoever is accepting after the grace, by
+    /// ``offerPunchAnswer(_:)``.
     private func completeDial(_ connectionId: UInt64, _ outcome: Result<any MizarNetStream, MizarNetError>) {
         dialOutcomes[connectionId] = outcome
-        // A simultaneous open — both sides dialled — leaves one session per
-        // side. The dial result is the one the connection will use; the
-        // accepted duplicate to the same endpoint is closed here so it
-        // cannot sit retransmitting into a socket nobody reads.
-        guard case .success(let stream) = outcome,
-              let session = stream as? MizarNetSession else { return }
-        let duplicate = session.remoteEndpointId
-        Task.detached { [engine = self] in
-            for id in await engine.sessionOrder where id != connectionId {
-                guard let candidate = await engine.sessions[id], candidate.remoteEndpointId == duplicate else { continue }
-                await candidate.close()
-            }
-        }
     }
 
     private func cleanupDial(_ connectionId: UInt64) {
@@ -440,7 +676,15 @@ public actor MizarNetQUICEngine: MizarNetEngine {
             guard let resolved = await MizarNetUDPSocket.resolve(server) else { continue }
             let transactionId = MizarNetSTUN.randomTransactionId()
             pendingSTUN[transactionId] = server
-            try? await socket.send(MizarNetSTUN.bindingRequest(transactionId: transactionId), to: resolved)
+            do {
+                try await socket.send(MizarNetSTUN.bindingRequest(transactionId: transactionId), to: resolved)
+            } catch {
+                // A request that cannot even be sent — an unreachable
+                // address, a dead interface — is answered now, not after
+                // the budget: waiting would only delay the punch.
+                pendingSTUN.removeValue(forKey: transactionId)
+                continue
+            }
             while stunResults[server] == nil, ContinuousClock.now < deadline {
                 try? await Task.sleep(for: .milliseconds(20))
             }

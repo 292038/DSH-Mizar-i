@@ -18,6 +18,11 @@ let package = Package(
     ],
     products: [
         .library(name: "MizarKit", targets: ["MizarKit"]),
+        // The cross-language probe: a tiny CLI the TypeScript suite starts to
+        // prove the two implementations can actually connect, not just agree
+        // on bytes. An executable product so `swift build --product` can
+        // select it without building the app's world.
+        .executable(name: "mizar-net-probe", targets: ["MizarNetProbe"]),
     ],
     targets: [
         .target(
@@ -28,9 +33,32 @@ let package = Package(
                 .swiftLanguageMode(.v6),
             ],
         ),
+        // The NAT matrix lab: a userspace NAT simulator, an observing STUN
+        // responder, and the matrix runner. A separate target outside
+        // `Sources/` on purpose: the app's synchronized group points at
+        // `Sources/MizarKit` and must never compile this, and a reader
+        // should see at a glance that it is harness, not product.
+        .target(
+            name: "MizarNetNATLab",
+            dependencies: ["MizarKit"],
+            path: "Lab/MizarNetNATLab",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ],
+        ),
+        // Built only on MizarKit's public surface: if this needed internals,
+        // the engine would not be usable from another module.
+        .executableTarget(
+            name: "MizarNetProbe",
+            dependencies: ["MizarKit"],
+            path: "Probe",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ],
+        ),
         .testTarget(
             name: "MizarKitTests",
-            dependencies: ["MizarKit"],
+            dependencies: ["MizarKit", "MizarNetNATLab"],
             // No bundled resources: the golden frames live at
             // `protocol/fixtures/` in the repository and are read from there via
             // `#filePath`. Copying them into the test bundle would create a
