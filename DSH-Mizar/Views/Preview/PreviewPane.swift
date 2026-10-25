@@ -21,6 +21,8 @@ import SwiftUI
 struct PreviewPane: View {
     @Environment(PreviewCenter.self) private var preview
     @Environment(AppModel.self) private var model
+    /// The account screen, offered by the locked state to a free account.
+    @State private var showingPaywall = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -73,45 +75,53 @@ struct PreviewPane: View {
 
     @ViewBuilder
     private var content: some View {
-        switch preview.state {
-        case .empty:
-            message(
-                symbol: "eye",
-                title: String(localized: "No preview yet"),
-                detail: String(localized: "Nothing yet. Files the model delivers will be previewed here."),
-                identifier: "preview.empty",
-            )
+        // The policy is drawn rather than hidden behind a dead tap: whatever
+        // route the phone is on, the page itself says why the preview is not
+        // running and what changes it. Same instinct as the composer's locked
+        // attachments -- a refusal that only no-ops is a bug report.
+        if !model.previewUnlocked {
+            locked
+        } else {
+            switch preview.state {
+            case .empty:
+                message(
+                    symbol: "eye",
+                    title: String(localized: "No preview yet"),
+                    detail: String(localized: "Nothing yet. Files the model delivers will be previewed here."),
+                    identifier: "preview.empty",
+                )
 
-        case .loading(let progress):
-            loading(progress)
+            case .loading(let progress):
+                loading(progress)
 
-        case .ready(let url, let unconfirmed):
-            viewer(url: url, kind: preview.current?.kind ?? .other)
-                .overlay(alignment: .bottom) {
-                    // Only when the copy is old: a preview read from the computer
-                    // just now has nothing to explain.
-                    if unconfirmed {
-                        Text("Saved copy — shown without asking the computer")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .liquidCapsule(interactive: false)
-                            .padding(.bottom, 10)
-                            .accessibilityIdentifier("preview.cachedNote")
+            case .ready(let url, let unconfirmed):
+                viewer(url: url, kind: preview.current?.kind ?? .other)
+                    .overlay(alignment: .bottom) {
+                        // Only when the copy is old: a preview read from the computer
+                        // just now has nothing to explain.
+                        if unconfirmed {
+                            Text("Saved copy — shown without asking the computer")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .liquidCapsule(interactive: false)
+                                .padding(.bottom, 10)
+                                .accessibilityIdentifier("preview.cachedNote")
+                        }
                     }
-                }
 
-        case .unsupported:
-            message(
-                symbol: "doc.questionmark",
-                title: preview.current?.name ?? String(localized: "This file"),
-                detail: String(localized: "This kind of file cannot be previewed yet. It can still be opened on the computer."),
-                identifier: "preview.unsupported",
-            )
+            case .unsupported:
+                message(
+                    symbol: "doc.questionmark",
+                    title: preview.current?.name ?? String(localized: "This file"),
+                    detail: String(localized: "This kind of file cannot be previewed yet. It can still be opened on the computer."),
+                    identifier: "preview.unsupported",
+                )
 
-        case .failed(let reason):
-            failure(reason)
+            case .failed(let reason):
+                failure(reason)
+            }
         }
     }
 
@@ -177,6 +187,59 @@ struct PreviewPane: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .accessibilityIdentifier("preview.failed")
+    }
+
+    /// The locked-out state: which door is closed, and how to open it.
+    ///
+    /// Two different closures for two different reasons. A plan is a purchase,
+    /// so that one offers the account screen the composer's locked attachments
+    /// offer. The punched path is not a purchase at all -- the operator already
+    /// chose it in Settings -- so its sentence names the switch that changes it
+    /// instead of a shop that cannot.
+    @ViewBuilder
+    private var locked: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "lock")
+                .font(.title3)
+                .foregroundStyle(.tertiary)
+            if !model.advancedFeaturesUnlocked {
+                Text("This preview needs a paid account")
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+                Text("Files are read off the computer and through the relay, which is part of the paid plan. On a local network link, preview is free for every account.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 24)
+                Button("See the account") { showingPaywall = true }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("preview.locked.account")
+            } else {
+                Text("Preview is not available over P2P direct")
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+                Text("P2P direct connections do not carry file previews yet. Turn P2P direct off in Settings → Transfer, or connect over the local network or the relay.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 24)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .accessibilityIdentifier("preview.locked")
+        .sheet(isPresented: $showingPaywall) {
+            NavigationStack {
+                AccountScreen()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingPaywall = false }
+                        }
+                    }
+            }
+        }
     }
 
     private func message(

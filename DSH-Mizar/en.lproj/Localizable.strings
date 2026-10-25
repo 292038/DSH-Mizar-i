@@ -518,6 +518,11 @@
 "This kind of file cannot be previewed yet." = "This kind of file cannot be previewed yet.";
 "This kind of file cannot be previewed yet. It can still be opened on the computer." = "This kind of file cannot be previewed yet. It can still be opened on the computer.";
 "Saved copy — shown without asking the computer" = "Saved copy — shown without asking the computer";
+"This preview needs a paid account" = "This preview needs a paid account";
+"Files are read off the computer and through the relay, which is part of the paid plan. On a local network link, preview is free for every account." = "Files are read off the computer and through the relay, which is part of the paid plan. On a local network link, preview is free for every account.";
+"See the account" = "See the account";
+"Preview is not available over P2P direct" = "Preview is not available over P2P direct";
+"P2P direct connections do not carry file previews yet. Turn P2P direct off in Settings → Transfer, or connect over the local network or the relay." = "P2P direct connections do not carry file previews yet. Turn P2P direct off in Settings → Transfer, or connect over the local network or the relay.";
 "Opens the preview" = "Opens the preview";
 "%lld more" = "%lld more";
 "%lld pages" = "%lld pages";

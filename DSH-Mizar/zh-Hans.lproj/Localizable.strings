@@ -518,6 +518,11 @@
 "This kind of file cannot be previewed yet." = "这个类型的文件暂时还不支持预览。";
 "This kind of file cannot be previewed yet. It can still be opened on the computer." = "这个类型的文件暂时还不支持预览，你仍然可以在电脑上打开它。";
 "Saved copy — shown without asking the computer" = "本地副本 —— 未向电脑确认";
+"This preview needs a paid account" = "文件预览需要付费账户";
+"Files are read off the computer and through the relay, which is part of the paid plan. On a local network link, preview is free for every account." = "文件预览需要把电脑上的文件读回手机，走中继的部分属于付费计划；在局域网直连时对所有账户免费开放。";
+"See the account" = "查看账户";
+"Preview is not available over P2P direct" = "P2P 直连下暂不支持预览";
+"P2P direct connections do not carry file previews yet. Turn P2P direct off in Settings → Transfer, or connect over the local network or the relay." = "P2P 直连暂时不承载文件预览。可在设置 → 传输中关闭 P2P 直连，或改用局域网/中继连接。";
 "Opens the preview" = "打开预览";
 "%lld more" = "另有 %lld 个";
 "%lld pages" = "共 %lld 页";

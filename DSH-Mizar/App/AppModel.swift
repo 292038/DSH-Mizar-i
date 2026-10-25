@@ -110,6 +110,22 @@ final class AppModel {
     var advancedFeaturesUnlocked: Bool {
         account.isPaid || isLocalCommunication
     }
+
+    /// Whether the file preview may run.
+    ///
+    /// The preview is a paid-plan feature for the same reason attachments are:
+    /// it moves the computer's bytes, and on a relay those bytes are the
+    /// project's bandwidth. So it follows ``advancedFeaturesUnlocked`` exactly
+    /// -- paid, or a LAN link where the relay carries nothing.
+    ///
+    /// The punched path is then excluded on top of that, for paid accounts too.
+    /// A P2P direct link is not the operator's own network and not the
+    /// metered relay either: it is the experimental route, and file transfer is
+    /// deliberately not riding it yet. The switch in Settings says experimental;
+    /// this is one of the places that means something.
+    var previewUnlocked: Bool {
+        advancedFeaturesUnlocked && activeEndpoint?.isDirectPath != true
+    }
     /// The sessions the host lists, newest activity first.
     private(set) var sessions: [SessionRow] = [] {
         didSet {
@@ -1885,9 +1901,23 @@ final class AppModel {
     ///   - method: `file.stat` or `file.read`.
     ///   - payload: the method's arguments.
     /// - Returns: the `result` of the answer.
-    /// - Throws: `MizarError` from the host, or one raised here when there is no
-    ///   socket at all.
+    /// - Throws: `MizarError` from the host, one raised here when the preview is
+    ///   locked out (``previewUnlocked``), or one when there is no socket at all.
     func previewCall(_ method: String, _ payload: JSONValue?) async throws -> JSONValue? {
+        // The second guard, beside the one the page draws: a locked feature
+        // never reaches the socket, so no state of the UI can make a paid-only
+        // method run. Same shape as the activity feed's refusal.
+        guard previewUnlocked else {
+            let failure = MizarError(
+                code: "PREVIEW_LOCKED",
+                message: activeEndpoint?.isDirectPath == true
+                    ? "the file preview is not available over a P2P direct link"
+                    : "the file preview needs a paid account or a local network link",
+                retryable: true,
+            )
+            logRequest(method, payload: payload, since: .now, error: failure)
+            throw failure
+        }
         guard let connection else {
             let failure = MizarError(
                 code: "NO_CONNECTION",

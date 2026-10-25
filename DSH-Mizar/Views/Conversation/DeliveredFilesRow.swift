@@ -22,6 +22,7 @@ struct DeliveredFilesRow: View {
     let turn: ConversationTurn
     let sessionId: String
 
+    @Environment(AppModel.self) private var model
     @Environment(PreviewCenter.self) private var preview
     @Environment(ShellState.self) private var shell
     @Environment(SidePlaneState.self) private var plane
@@ -82,13 +83,19 @@ struct DeliveredFilesRow: View {
                     }
                 }
                 Spacer(minLength: 6)
-                Image(systemName: "chevron.right")
+                // The lock is drawn on the card rather than left for the tap to
+                // discover: the preview is a paid-plan feature and a punched
+                // link does not carry it yet, and either way a card that looks
+                // openable and is not is a bug report waiting to happen. The
+                // tap still works -- the page it opens says why.
+                Image(systemName: model.previewUnlocked ? "chevron.right" : "lock.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .opacity(model.previewUnlocked ? 1 : 0.55)
             .background(
                 Color.primary.opacity(0.045),
                 in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous),
