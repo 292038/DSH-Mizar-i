@@ -73,6 +73,10 @@ public actor MizarNetQUICEngine: MizarNetEngine {
     private let policy: MizarNetPathPolicy
     private let stunServers: [String]
     private let injectedSocket: (any MizarNetDatagramSocket)?
+    /// What to ask the router for, if anything.
+    private let portMappingOptions: MizarNetPortMappingService.Options?
+    /// A mapper supplied by the caller — how a test stands in for a router.
+    private let injectedMapper: (any MizarNetPortMapper)?
 
     private let incoming: AsyncStream<any MizarNetStream>
     private let incomingContinuation: AsyncStream<any MizarNetStream>.Continuation
@@ -96,6 +100,12 @@ public actor MizarNetQUICEngine: MizarNetEngine {
     private var pendingSTUN: [Data: String] = [:]
     private var stunResults: [String: MizarNetSocketAddress] = [:]
     private var receiveTask: Task<Void, Never>?
+    /// The router mapping in force, if one was granted.
+    private var mapper: (any MizarNetPortMapper)?
+    /// The address a mapping was paired with — the STUN-observed one.
+    private var mappedAddress: String?
+    private var mappedCandidate: MizarNetCandidate?
+    private var mappingTask: Task<Void, Never>?
     /// Whether the one-shot acceptor punch has been started. One shot is
     /// enough: it runs until a session exists or its window closes, and a
     /// second one would only duplicate the first.
@@ -130,11 +140,15 @@ public actor MizarNetQUICEngine: MizarNetEngine {
         policy: MizarNetPathPolicy = .standard,
         stunServers: [String] = MizarNetQUICEngine.defaultSTUNServers,
         socket: (any MizarNetDatagramSocket)? = nil,
+        portMapping: MizarNetPortMappingService.Options? = nil,
+        portMapper: (any MizarNetPortMapper)? = nil,
     ) {
         self.identity = identity
         self.policy = policy
         self.stunServers = stunServers
         self.injectedSocket = socket
+        self.portMappingOptions = portMapping
+        self.injectedMapper = portMapper
         let made = AsyncStream<any MizarNetStream>.makeStream(of: (any MizarNetStream).self, bufferingPolicy: .unbounded)
         self.incoming = made.stream
         self.incomingContinuation = made.continuation
@@ -156,10 +170,20 @@ public actor MizarNetQUICEngine: MizarNetEngine {
         // Bounded: the punch budget is for punching, not for waiting on a
         // server this network may not reach.
         await gatherReflexiveCandidates()
+        await adoptPortMappingIfConfigured()
     }
 
     public func shutdown() async {
         started = false
+        mappingTask?.cancel()
+        mappingTask = nil
+        if let mapper {
+            // Delete the mapping rather than leaving it to expire: a forwarded
+            // port nobody uses is a door left open on the router.
+            await mapper.remove()
+            await mapper.close()
+            self.mapper = nil
+        }
         receiveTask?.cancel()
         receiveTask = nil
         for task in punchTasks.values { task.cancel() }
@@ -710,6 +734,97 @@ public actor MizarNetQUICEngine: MizarNetEngine {
         return MizarNetUDPSocket.hostAddresses().map {
             MizarNetCandidate(kind: .host, address: $0, port: port)
         }
+    }
+
+    // MARK: - Port mapping
+
+    /// Ask the router for a forwarded port, if anybody configured one.
+    private func adoptPortMappingIfConfigured() async {
+        let candidate: (any MizarNetPortMapper)?
+        if let injectedMapper {
+            candidate = injectedMapper
+        } else {
+            candidate = await openConfiguredMapper()
+        }
+        guard let candidate else { return }
+        await adopt(candidate)
+    }
+
+    private func openConfiguredMapper() async -> (any MizarNetPortMapper)? {
+        guard let options = portMappingOptions, let socket else { return nil }
+        let port = await socket.localAddress?.port ?? 0
+        guard port != 0 else { return nil }
+        return await MizarNetPortMappingService.open(port: port, options: options)
+    }
+
+    /// Adopt a granted mapping as a candidate.
+    ///
+    /// A mapping is only half an address: the port is what the router forwards,
+    /// the address is what STUN saw. Pairing them is the point — the pair is
+    /// reachable even when the NAT is symmetric, because the router is now
+    /// forwarding instead of filtering.
+    private func adopt(_ mapper: any MizarNetPortMapper) async {
+        guard let external = reflexiveCandidates.first else {
+            // No external address to pair the port with. The mapping would be a
+            // door with no address on it, so hand it back rather than leak it.
+            await mapper.remove()
+            await mapper.close()
+            return
+        }
+        var mapping = await mapper.current()
+        if mapping == nil {
+            guard let socketPort = await socket?.localAddress?.port else { return }
+            mapping = try? await mapper.map(port: socketPort, lifetimeSeconds: portMappingOptions?.lifetimeSeconds ?? 0)
+        }
+        guard let mapping else {
+            await mapper.close()
+            return
+        }
+        self.mapper = mapper
+        self.mappedAddress = external.address
+        installMappedCandidate(address: external.address, port: mapping.externalPort)
+        guard mapping.lifetimeSeconds > 0 else { return }
+        // Renew at half the lease: a router that expires a mapping while a
+        // session is using it looks exactly like a dead network.
+        let interval = max(1, Int(mapping.lifetimeSeconds / 2))
+        mappingTask = Task.detached { [engine = self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(interval))
+                if Task.isCancelled { break }
+                await engine.renewMapping()
+            }
+        }
+    }
+
+    private func installMappedCandidate(address: String, port: UInt16) {
+        if let previous = mappedCandidate {
+            reflexiveCandidates.removeAll { $0 == previous }
+        }
+        // Local preference 1 puts it above the raw reflexive candidate it shares
+        // a kind with: this one is forwarded, so it works from places that one
+        // does not.
+        let entry = MizarNetCandidate(kind: .serverReflexive, address: address, port: port, localPreference: 1)
+        mappedCandidate = entry
+        if !reflexiveCandidates.contains(entry) {
+            reflexiveCandidates.append(entry)
+        }
+    }
+
+    private func renewMapping() async {
+        guard let mapper, let address = mappedAddress else { return }
+        guard let renewed = try? await mapper.renew() else {
+            // The router forgot us. Stop advertising a door that is no longer
+            // there, and stop the timer: a router that refused once will refuse
+            // again.
+            mappingTask?.cancel()
+            mappingTask = nil
+            if let current = mappedCandidate {
+                reflexiveCandidates.removeAll { $0 == current }
+                mappedCandidate = nil
+            }
+            return
+        }
+        installMappedCandidate(address: address, port: renewed.externalPort)
     }
 
     // MARK: - Sessions

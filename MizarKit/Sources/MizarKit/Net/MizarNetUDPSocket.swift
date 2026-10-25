@@ -105,10 +105,93 @@ public actor MizarNetUDPSocket: MizarNetDatagramSocket {
     private var source: DispatchSourceRead?
     private let queue = DispatchQueue(label: "mizar-net.udp", qos: .userInitiated)
 
+    /// The one-shot path: an inbox and the waiters reading it.
+    private var oneShotInbox: [MizarNetDatagram] = []
+    private var oneShotWaiters: [Int: CheckedContinuation<MizarNetDatagram?, Never>] = [:]
+    private var oneShotNextId = 0
+    private var oneShotPump: Task<Void, Never>?
+    private var oneShotClosed = false
+
     public init() {
         let made = AsyncStream<MizarNetDatagram>.makeStream(of: MizarNetDatagram.self, bufferingPolicy: .unbounded)
         self.events = made.stream
         self.continuation = made.continuation
+    }
+
+    /// Wait for one datagram, and give up after a while.
+    ///
+    /// For a request/response exchange — NAT-PMP — where the caller owns the
+    /// socket for the length of one question. Not interchangeable with
+    /// ``events``: this pumps that stream into its own inbox, so a socket must
+    /// have one reader and a caller must pick one of the two.
+    ///
+    /// The timeout deliberately does *not* cancel a pending read. Cancelling an
+    /// `AsyncStream` iterator ends it for good, so a first unanswered question
+    /// would take the socket down with it and every later question would return
+    /// immediately — three retries collapsing into one.
+    ///
+    /// - Parameter timeout: how long to wait.
+    /// - Returns: the datagram, or `nil` when the wait ran out.
+    public func receive(timeout: Duration) async -> MizarNetDatagram? {
+        if !oneShotInbox.isEmpty {
+            return oneShotInbox.removeFirst()
+        }
+        if oneShotClosed {
+            return nil
+        }
+        if oneShotPump == nil {
+            startOneShotPump()
+        }
+        let id = oneShotNextId
+        oneShotNextId += 1
+        return await withCheckedContinuation { continuation in
+            oneShotWaiters[id] = continuation
+            Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                // A waiter that is still registered when the clock runs out is
+                // one nobody answered; the datagram, if it ever comes, is
+                // dropped rather than handed to a caller who stopped waiting.
+                await self?.expireOneShot(id)
+            }
+        }
+    }
+
+    /// Start the pump that drains `events` into the one-shot inbox.
+    private func startOneShotPump() {
+        let stream = events
+        oneShotPump = Task.detached { [weak self] in
+            var iterator = stream.makeAsyncIterator()
+            while let datagram = await iterator.next() {
+                guard let self else { return }
+                await self.deliverOneShot(datagram)
+            }
+            await self?.closeOneShot()
+        }
+    }
+
+    private func deliverOneShot(_ datagram: MizarNetDatagram) {
+        if let (id, waiter) = oneShotWaiters.first {
+            oneShotWaiters.removeValue(forKey: id)
+            waiter.resume(returning: datagram)
+            return
+        }
+        // Bounded: a socket nobody is reading must not grow without bound.
+        if oneShotInbox.count < 32 {
+            oneShotInbox.append(datagram)
+        }
+    }
+
+    private func expireOneShot(_ id: Int) {
+        guard let waiter = oneShotWaiters.removeValue(forKey: id) else { return }
+        waiter.resume(returning: nil)
+    }
+
+    private func closeOneShot() {
+        oneShotClosed = true
+        for (_, waiter) in oneShotWaiters {
+            waiter.resume(returning: nil)
+        }
+        oneShotWaiters.removeAll()
     }
 
     /// Bind to `0.0.0.0` on the given port, or an ephemeral one.
