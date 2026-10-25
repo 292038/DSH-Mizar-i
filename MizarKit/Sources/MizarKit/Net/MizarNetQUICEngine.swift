@@ -114,15 +114,23 @@ public actor MizarNetQUICEngine: MizarNetEngine {
     /// has not been told does not punch back.
     private var intent: MizarNetIntent?
 
-    /// The public STUN servers tried when none are configured.
+    /// The STUN server tried when none are configured.
     ///
-    /// Google's are the usual default and the right *default* — but this
-    /// project deploys its own relay, and a self-hosted coturn STUN endpoint
-    /// is the intended steady state: no third party learns when a phone
-    /// opens a session. Pass your own list and these are never contacted.
+    /// This project's own relay answers it, on the standard port, beside the
+    /// WebSocket relay every phone already talks to. That matters for two
+    /// reasons and the second one is the interesting one: a public STUN server
+    /// is a third party that learns when a session opens and from where, and it
+    /// is also a resolvable address in a network that may not resolve anything
+    /// useful. The relay's own name is already a hard dependency of this
+    /// product, so asking it where we appear costs no new trust.
+    ///
+    /// There is deliberately no fallback to a public server. If this one is
+    /// unreachable the endpoint keeps its host candidates, the punch stays on
+    /// the local network, and the relay carries the session exactly as it did
+    /// before the direct path existed — a degradation nobody notices, in
+    /// exchange for not leaking the fact of a connection to a stranger.
     public static let defaultSTUNServers = [
-        "stun.l.google.com:19302",
-        "stun1.l.google.com:19302",
+        "dshmizar.shirazu-nagisa.com:3478",
     ]
 
     /// An engine.
