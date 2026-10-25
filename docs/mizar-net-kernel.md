@@ -269,9 +269,11 @@ STUN 学到的地址对它自己都不成立——再多打轮次也翻不过来
    `P2PService.attachSignal` 收 phone 的 hello/candidates 并回自己的候选。
    relay 无需改动（房间桥接按任意路径转发，`dsh-relay/test/relay.test.ts` 钉住）。
    `host.info` 增加可选 `netEndpointId`（纯加法，老客户端忽略）。
-4. ⬜ **App 路由**：`ReconnectPlan` 增加 p2p 尝试。**这一步比看起来大**——
-   `PairedHost.Endpoint` 是持久化模型，加一个 `p2p` 分支要迁移已存的配对记录，
-   还要接进连接编排与 `makeTransport`。值得单独一个单元，配迁移测试。
+4. ✅ **App 路由**（2026-10-25 晚，**默认关闭**）：`PairedHost.Endpoint` 多了一种
+   `.p2p(relayBaseURL:endpointId:)`；`PairedHost` 多了一个可选的 `netEndpointId`，
+   由 `host.info` 学到并持久化。开关在**设置 → 传输**，默认关；关着的时候
+   `ReconnectPlan.routes(allowingDirectPath:false)` 把 `.p2p` 从计划里和“上次成功的路由”
+   里一并摘掉——所以关掉会在下一次重连生效，而不是下一次配对。详见 §6.3。
 
 ### 6.2 STUN：已经自建，两端都指向它
 
@@ -296,6 +298,41 @@ STUN 学到的地址对它自己都不成立——再多打轮次也翻不过来
 实测（2026-10-25）：从主力1 打过去，32 字节应答、XOR 解出的端口与本地一致、垃圾包无应答、
 突发 3/3；Swift 引擎对接同一台服务器 **53ms** 拿到 `124.228.221.210:61921`——真实 NAT
 之后的映射，不是回环。
+
+### 6.3 App 里那条路：一次配对怎么变成一个 `.p2p` 路由
+
+```
+host.info → netEndpointId（32 字节公钥，持久化进配对记录）
+   ↓
+PairedHost.endpoints = [ .direct, .p2p(relay:endpointId:), .relay, (备用 relay) ]
+   ↓
+ReconnectPlan.routes(…, allowingDirectPath: 设置开关)
+   ↓
+makeConnection(.p2p) → P2PRoute → MizarConnection 拼出 mizar-net://dial?t=…
+   ↓
+P2PWebSocketTransport（信令通道在 connect 时才打开）
+```
+
+几个刻意的选择：
+
+- **迁移不需要动代码**：`netEndpointId` 是 `String?`，合成的解码器对缺失的可选键用
+  `decodeIfPresent`，所以 0.9.6 存下的配对记录原样能读，读出来是 `nil`（没有直连路由）。
+  测试里钉了一条“没有这个字段的旧 JSON 仍能解码”。
+- **信令通道的生命周期归传输自己**：`P2PWebSocketTransport` 拿到的是 `makeSignaling`
+  闭包，在 `connect()` 里才打开、在 `close()` 里关闭。原因是启动时所有路由会**同时**
+  起跑，输掉的那一条如果提前开了一条信令 socket 就没有人关它。
+- **直连不继承中继的延迟**：`AppFlow` 的启动竞速会给“有局域网地址的配对”让中继晚 1.5s
+  出发。`.p2p` 不算——一次注定失败的打洞要花三秒，那三秒里中继本来能连上。
+- **`isRelay(.p2p)` 是 false**：它的字节不经过中继，界面因此说“直连”而不是“免费服务器”。
+- **中继永远在计划里**：`.p2p` 失败就在同一次重连里落到 `.relay`，不需要用户做什么。
+
+**开关默认关**，是发布决定而不是保守：直连是唯一一条成功率取决于中间网络的路由，
+而“某个运营商会给什么样的 NAT”只有真机实测才知道。关着的时候所有人的重连速度和今天
+完全一样；打开的人为失败的打洞付出几秒。
+
+**一个前提**：`netEndpointId` 由插件提供，而带这个字段的插件（0.8.11 起）**还没发布**。
+所以在插件发版之前，配对记录里不会有这个字段，App 也就不会生成 `.p2p` 路由——
+开着开关也只是照旧走中继。这是有意的顺序：先让代码就位，再用发版把它点亮。
 
 ## 7. 包体（2026-10-25 实测，A/B 构建）
 
