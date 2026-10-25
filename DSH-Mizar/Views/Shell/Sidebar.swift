@@ -602,7 +602,7 @@ private struct SidebarFooter: View {
         switch model.activeEndpoint {
         case .relay: return String(localized: "Through the relay")
         case .direct(let authority): return authority
-        case .p2p: return String(localized: "Direct connection")
+        case .p2p: return String(localized: "P2P direct connection")
         case nil: return model.host?.authority ?? ""
         }
     }

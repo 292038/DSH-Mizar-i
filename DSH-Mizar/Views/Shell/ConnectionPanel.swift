@@ -140,7 +140,7 @@ struct ConnectionPanel: View {
             // No address to show: the two ends met at a port neither of them
             // chose and neither keeps. What the operator can act on is the kind
             // of link it is, which is the same word the switch uses.
-            return String(localized: "Direct connection")
+            return String(localized: "P2P direct connection")
         case nil:
             return model.host?.authority ?? ""
         }
