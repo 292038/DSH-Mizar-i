@@ -41,6 +41,19 @@ public struct PairedHost: Codable, Sendable, Equatable {
     public let deviceToken: String
     /// When pairing completed.
     public let pairedAt: Date
+    /// The public half of the host's direct-path identity, when it has one.
+    ///
+    /// A punched connection is authenticated by a key, not by an address, so the
+    /// phone has to know which key it is dialling before it dials. The host
+    /// learns its half from the tunnel secret it already holds and reports it in
+    /// `host.info`; this is where the phone keeps it.
+    ///
+    /// Optional, and absent for two different reasons that are not worth
+    /// distinguishing here: a host old enough to predate the direct path, and a
+    /// host new enough to have one but which has not answered since. Either way
+    /// the pairing simply has no punched route, and the relay carries the
+    /// session the way it always did.
+    public let netEndpointId: String?
 
     public init(
         hostId: String,
@@ -51,6 +64,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
         pairedAt: Date = Date(),
         baseURL: String? = nil,
         label: String? = nil,
+        netEndpointId: String? = nil,
     ) {
         self.hostId = hostId
         self.hostName = hostName
@@ -60,6 +74,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
         self.pairedAt = pairedAt
         self.baseURL = baseURL
         self.label = label
+        self.netEndpointId = netEndpointId
     }
 
     /// What to show for this machine: the operator's name for it, else the
@@ -83,6 +98,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
             pairedAt: pairedAt,
             baseURL: baseURL,
             label: label,
+            netEndpointId: netEndpointId,
         )
     }
 
@@ -102,6 +118,13 @@ public struct PairedHost: Codable, Sendable, Equatable {
         var out: [Endpoint] = []
         if let authority, !authority.isEmpty { out.append(.direct(authority: authority)) }
         if let baseURL, !baseURL.isEmpty, PairingURI.isUsableBaseURL(baseURL) {
+            // The punched route sits between the two obvious ones: faster than
+            // the relay because the bytes stop detouring, and it needs the relay
+            // anyway -- the room it names is where the two sides exchange
+            // addresses -- so it can only exist when a relay does.
+            if let netEndpointId, !netEndpointId.isEmpty {
+                out.append(.p2p(relayBaseURL: baseURL, endpointId: netEndpointId))
+            }
             out.append(.relay(baseURL: baseURL))
             if let alternate = RelayTier.alternate(to: baseURL) {
                 out.append(.relay(baseURL: alternate))
@@ -114,6 +137,14 @@ public struct PairedHost: Codable, Sendable, Equatable {
     public enum Endpoint: Sendable, Equatable {
         /// Straight to `host:port`.
         case direct(authority: String)
+        /// A punched connection, negotiated through the relay's room.
+        ///
+        /// Named by key rather than by address: the two sides meet at whatever
+        /// address each NAT happens to have handed out, and both of those are
+        /// discovered at dial time. `relayBaseURL` is not a fallback here, it is
+        /// the side channel -- the room is where the candidates are exchanged,
+        /// and without it there is nothing to punch through.
+        case p2p(relayBaseURL: String, endpointId: String)
         /// Through a reverse tunnel.
         case relay(baseURL: String)
 
@@ -128,8 +159,25 @@ public struct PairedHost: Codable, Sendable, Equatable {
         public var isLocalNetwork: Bool {
             switch self {
             case .direct(let authority): LocalNetwork.isLocal(authority: authority)
+            // A punched connection is direct data over the open internet: the
+            // phone and the computer may be in different cities. It is not
+            // metered by the relay, but it is not the operator's own network
+            // either, so the features that ask "are we on the same LAN" keep
+            // their answer.
+            case .p2p: false
             case .relay: false
             }
+        }
+
+        /// Whether this route is the punched one.
+        ///
+        /// Named because two call sites ask a related question of it and would
+        /// otherwise write `case .p2p` twice: the toggle that turns the direct
+        /// path on filters these out, and the log line names them differently
+        /// from a relay.
+        public var isDirectPath: Bool {
+            if case .p2p = self { return true }
+            return false
         }
     }
 
@@ -156,6 +204,30 @@ public struct PairedHost: Codable, Sendable, Equatable {
             // avoid -- `Shirazus-Mac-mini.local` is exactly what somebody with
             // two computers cannot tell apart.
             label: label,
+            netEndpointId: netEndpointId,
+        )
+    }
+
+    /// A copy remembering where this host can be punched, keeping everything
+    /// else.
+    ///
+    /// Its own copy rather than a mutation because `PairedHost` is a value the
+    /// credential store compares and persists; the same reason `moved(to:)` and
+    /// `moved(toRelay:)` exist.
+    ///
+    /// - Parameter endpointId: the host's direct-path identity.
+    /// - Returns: the updated record.
+    public func remembering(netEndpointId endpointId: String) -> PairedHost {
+        PairedHost(
+            hostId: hostId,
+            hostName: hostName,
+            authority: authority,
+            deviceId: deviceId,
+            deviceToken: deviceToken,
+            pairedAt: pairedAt,
+            baseURL: baseURL,
+            label: label,
+            netEndpointId: endpointId,
         )
     }
 
@@ -173,6 +245,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
             pairedAt: pairedAt,
             baseURL: baseURL,
             label: label,
+            netEndpointId: netEndpointId,
         )
     }
 }

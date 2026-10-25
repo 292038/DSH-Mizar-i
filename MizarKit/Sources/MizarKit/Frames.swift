@@ -25,6 +25,14 @@ public let mizarWebSocketPath = "/mizar/v1/ws"
 /// Path prefix of the plain-HTTP endpoints.
 public let mizarHTTPPrefix = "/mizar/v1"
 
+/// Path of the direct path's signaling channel, relative to a room.
+///
+/// A room path of `/r/<room>` plus this is where the two ends exchange
+/// candidates. The relay needs no route of its own for it: the room bridge
+/// forwards whatever path the phone asks for, and a test in the relay's own
+/// suite holds that property down.
+public let mizarNetSignalPath = "/mizar-net/signal"
+
 // MARK: - Errors
 
 /// Failure codes the app branches on.

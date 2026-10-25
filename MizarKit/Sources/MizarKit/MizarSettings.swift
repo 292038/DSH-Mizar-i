@@ -291,16 +291,37 @@ public struct MizarSettings: Equatable, Sendable, Codable {
     /// turning this on can make a reconnect slower but never unable to connect.
     public var localNetworkFirst: Bool
 
-    /// Everything at its default: notifications on, live activity on, and the
-    /// local network looked for only when the operator asks for it.
+    /// Whether a reconnect may try the punched direct path before the relay.
+    /// 直连.
+    ///
+    /// Off by default, and off is a deliberate rollout decision rather than a
+    /// conservative one. The punched route is the one route whose success
+    /// depends on the network in the middle: two cone NATs meet in well under a
+    /// second, a symmetric one never meets at all, and which of those a given
+    /// carrier hands out is not something this app can find out without trying.
+    /// Until there is a measured success rate, a switch means the people who
+    /// turn it on are the ones who pay for a failed punch's few seconds — and
+    /// everybody else keeps reconnecting exactly as fast as they do today.
+    ///
+    /// On, the route list gains `.p2p` between the direct address and the relay,
+    /// so a failed punch falls through to the relay inside the same reconnect.
+    /// The relay is not removed, ever: it is the route that works from networks
+    /// where UDP does not leave at all.
+    public var directConnection: Bool
+
+    /// Everything at its default: notifications on, live activity on, the local
+    /// network looked for only when the operator asks for it, and the punched
+    /// route off until it has a success rate.
     public init(
         liveActivitiesEnabled: Bool = true,
         notifications: NotificationPreferences = .allEnabled,
         localNetworkFirst: Bool = false,
+        directConnection: Bool = false,
     ) {
         self.liveActivitiesEnabled = liveActivitiesEnabled
         self.notifications = notifications
         self.localNetworkFirst = localNetworkFirst
+        self.directConnection = directConnection
     }
 
     /// The key the live activity switch is stored under.
@@ -308,6 +329,9 @@ public struct MizarSettings: Equatable, Sendable, Codable {
 
     /// The key the LAN-priority switch is stored under.
     public static let localNetworkFirstKey = "mizar.settings.localNetworkFirst"
+
+    /// The key the direct-connection switch is stored under.
+    public static let directConnectionKey = "mizar.settings.directConnection"
 
     /// The key one notification kind is stored under.
     /// - Parameter kind: the kind.
@@ -342,6 +366,8 @@ public struct MizarSettings: Equatable, Sendable, Codable {
             // Off by default: the scan is a cost the operator opts into, and a
             // fresh install should reconnect as fast as it can.
             localNetworkFirst: storage.bool(forKey: localNetworkFirstKey) ?? false,
+            // Off by default: see ``directConnection``.
+            directConnection: storage.bool(forKey: directConnectionKey) ?? false,
         )
     }
 
@@ -350,6 +376,7 @@ public struct MizarSettings: Equatable, Sendable, Codable {
     public func save(to storage: some SettingsStorage) {
         storage.set(liveActivitiesEnabled, forKey: Self.liveActivitiesKey)
         storage.set(localNetworkFirst, forKey: Self.localNetworkFirstKey)
+        storage.set(directConnection, forKey: Self.directConnectionKey)
         for kind in NotificationKind.allCases {
             storage.set(notifications.isEnabled(kind), forKey: Self.notificationsKey(kind))
         }

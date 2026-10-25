@@ -45,6 +45,18 @@ public struct HostInfo: Decodable, Sendable, Equatable {
     /// Explicit plugin identity and optional capabilities; absent on older hosts.
     public let plugin: HostPlugin?
 
+    /// The host's direct-path identity, when its engine is running.
+    ///
+    /// The public half of the key a punched connection is authenticated by. The
+    /// host derives it from the tunnel secret it already holds, so this is not a
+    /// new credential and it survives a reinstall; it is absent when the host
+    /// predates the direct path or when its engine did not start, which are the
+    /// same thing from here.
+    ///
+    /// Optional for the third time in this struct, for the third time for the
+    /// same reason: an app must read "cannot say" rather than "no direct path".
+    public let netEndpointId: String?
+
     public init(
         hostId: String,
         hostName: String,
@@ -53,6 +65,7 @@ public struct HostInfo: Decodable, Sendable, Equatable {
         addresses: [String]? = nil,
         relay: HostRelay? = nil,
         plugin: HostPlugin? = nil,
+        netEndpointId: String? = nil,
     ) {
         self.hostId = hostId
         self.hostName = hostName
@@ -61,6 +74,7 @@ public struct HostInfo: Decodable, Sendable, Equatable {
         self.addresses = addresses
         self.relay = relay
         self.plugin = plugin
+        self.netEndpointId = netEndpointId
     }
 }
 

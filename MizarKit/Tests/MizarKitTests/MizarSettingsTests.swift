@@ -255,3 +255,45 @@ struct MizarSettingsTests {
         #expect(!MizarSettings.load(from: storage).localNetworkFirst)
     }
 }
+
+@Suite("The direct-connection switch")
+struct DirectConnectionSettingTests {
+    /// A store of this test's own; see ``MizarSettingsTests`` for why the real
+    /// defaults are not used.
+    private final class MemoryStorage: SettingsStorage {
+        var values: [String: Bool] = [:]
+
+        func bool(forKey key: String) -> Bool? { values[key] }
+
+        func set(_ value: Bool, forKey key: String) { values[key] = value }
+    }
+
+    @Test("is off on a store that has never been written to")
+    func offByDefault() {
+        // The rollout decision, asserted where the app reads it: a fresh install
+        // reconnects on the routes it always had, and the punched attempt is
+        // something somebody asked for.
+        #expect(!MizarSettings.load(from: MemoryStorage()).directConnection)
+    }
+
+    @Test("survives a write and a read")
+    func roundTrip() {
+        let storage = MemoryStorage()
+        var settings = MizarSettings.load(from: storage)
+        settings.directConnection = true
+        settings.save(to: storage)
+        #expect(MizarSettings.load(from: storage).directConnection)
+        #expect(storage.values[MizarSettings.directConnectionKey] == true)
+    }
+
+    @Test("does not disturb the switch beside it")
+    func independentOfLANPriority() {
+        let storage = MemoryStorage()
+        var settings = MizarSettings.load(from: storage)
+        settings.directConnection = true
+        settings.save(to: storage)
+        // Two switches in the same section, two keys: turning one on must not
+        // turn the other on, which is the failure a shared key would produce.
+        #expect(!MizarSettings.load(from: storage).localNetworkFirst)
+    }
+}

@@ -64,6 +64,9 @@ final class AppSettings {
     /// Whether a reconnect should ask the local network before the relay.
     var localNetworkFirst: Bool { values.localNetworkFirst }
 
+    /// Whether a reconnect may try the punched direct path.
+    var directConnection: Bool { values.directConnection }
+
     /// Write a change to the log.
     ///
     /// One line per switch that moved, and none for the ones that did not: this
@@ -77,6 +80,12 @@ final class AppSettings {
             ActivityLog.shared.add(
                 .settings,
                 "local network first \(values.localNetworkFirst ? "on" : "off")",
+            )
+        }
+        if old.directConnection != values.directConnection {
+            ActivityLog.shared.add(
+                .settings,
+                "direct connection \(values.directConnection ? "on" : "off")",
             )
         }
         for kind in NotificationKind.allCases

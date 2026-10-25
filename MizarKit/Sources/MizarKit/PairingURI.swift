@@ -148,6 +148,30 @@ public enum PairingURI {
     /// - Parameter baseURL: the relay base, e.g. `https://relay.example.com/r/ROOM`.
     /// - Returns: the URL, or `nil` when it is unusable.
     public static func relayWebSocketURL(baseURL: String) -> URL? {
+        relayWebSocketURL(baseURL: baseURL, path: mizarWebSocketPath)
+    }
+
+    /// The WebSocket URL that carries direct-path signaling for a relay base URL.
+    ///
+    /// Same host and same room as ``relayWebSocketURL(baseURL:)``, different
+    /// path: the tunnel carries Mizar frames and this carries candidates, and
+    /// they are separate sockets because they have separate lifetimes — a punch
+    /// ends once the two sides are talking directly, while the tunnel is the
+    /// thing it was trying to replace.
+    ///
+    /// - Parameter baseURL: the relay base, e.g. `https://relay.example.com/r/ROOM`.
+    /// - Returns: the URL, or `nil` when it is unusable.
+    public static func relaySignalWebSocketURL(baseURL: String) -> URL? {
+        relayWebSocketURL(baseURL: baseURL, path: mizarNetSignalPath)
+    }
+
+    /// The WebSocket URL for a relay base URL and a path inside its room.
+    ///
+    /// - Parameters:
+    ///   - baseURL: the relay base, room path included.
+    ///   - path: the path to append, beginning with a slash.
+    /// - Returns: the URL, or `nil` when the base is unusable.
+    public static func relayWebSocketURL(baseURL: String, path: String) -> URL? {
         guard var components = URLComponents(string: baseURL) else { return nil }
         switch components.scheme?.lowercased() {
         case "https": components.scheme = "wss"
@@ -155,7 +179,7 @@ public enum PairingURI {
         default: return nil
         }
         components.path = components.path.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
-            + mizarWebSocketPath
+            + path
         components.query = nil
         components.fragment = nil
         return components.url

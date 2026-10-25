@@ -1918,9 +1918,16 @@ final class AppModel {
     /// a relayed socket is redialled once the host has had time to move.
     func syncRelayTier() async {
         guard let connection, phase == .ready else { return }
-        guard let info = try? await connection.call("host.info", as: HostInfo.self),
-              let relay = info.relay
-        else { return }
+        guard let info = try? await connection.call("host.info", as: HostInfo.self) else { return }
+        // Learned on every ready socket rather than at pairing: the host may
+        // have been upgraded, or its engine may have failed to start at pairing
+        // time and started since. A pairing that gains an identity gains a route
+        // without being re-paired, and one that loses it falls back to the relay
+        // because `.p2p` is derived from this field and disappears with it.
+        if let endpointId = info.netEndpointId, !endpointId.isEmpty {
+            await rememberDirectPathIdentity(endpointId)
+        }
+        guard let relay = info.relay else { return }
         let desired = RelayTier.baseURL(paid: account.isPaid)
         if RelayTier.canonicalOrigin(relay.url) == desired {
             // The host is already on the right relay. The phone's stored base
@@ -1954,6 +1961,18 @@ final class AppModel {
                     + Self.describe(error, authority: desired),
             )
         }
+    }
+
+    /// Persist the identity the host punches under.
+    ///
+    /// - Parameter endpointId: the host's direct-path identity, from `host.info`.
+    private func rememberDirectPathIdentity(_ endpointId: String) async {
+        guard let host, host.netEndpointId != endpointId else { return }
+        let updated = host.remembering(netEndpointId: endpointId)
+        self.host = updated
+        if let index = hosts.firstIndex(where: { $0.hostId == updated.hostId }) { hosts[index] = updated }
+        try? await credentials.save(updated)
+        log.add(.connection, "direct path: this computer can be punched")
     }
 
     /// Persist the relay base URL the host reported or promised.
@@ -3223,7 +3242,7 @@ final class AppModel {
         // a local link has just died -- the relay first, because the network the
         // local address lives on is the thing that broke.
         let routes: [PairedHost.Endpoint]
-        if let exactRoute {
+        if let exactRoute, settings.directConnection || !exactRoute.isDirectPath {
             routes = [exactRoute]
         } else {
             routes = ReconnectPlan.routes(
@@ -3231,6 +3250,9 @@ final class AppModel {
                 active: activeEndpoint,
                 tryingEveryRoute: tryingEveryRoute,
                 preferringRelay: preferringRelay,
+                // The rollout, in one argument: the punched route is planned
+                // only when the operator asked for it.
+                allowingDirectPath: settings.directConnection,
             )
         }
         guard !routes.isEmpty else {
@@ -4435,7 +4457,11 @@ final class AppModel {
         await loadIndex(for: host.hostId)
         // The pairing's order when nothing is preferred; the route that just
         // answered in front of it when something is.
-        let endpoints = ReconnectPlan.routes(endpoints: host.endpoints, active: preferred)
+        let endpoints = ReconnectPlan.routes(
+            endpoints: host.endpoints,
+            active: preferred,
+            allowingDirectPath: settings.directConnection,
+        )
         guard !endpoints.isEmpty else {
             let error = MizarError(
                 code: "NO_ENDPOINT",
@@ -4449,7 +4475,10 @@ final class AppModel {
         // to beat it. A pairing with no direct address -- the usual one for a
         // computer that listens only on loopback -- has nothing to prefer, so
         // its relays all start at once.
-        let hasDirect = endpoints.contains { !ReconnectPlan.isRelay($0) }
+        // A LAN address, specifically: a punched route is not a reason to hold
+        // the relay back, because a punch that is going to fail spends seconds
+        // failing and the relay is the thing that would have worked.
+        let hasDirect = endpoints.contains { if case .direct = $0 { return true } else { return false } }
         let dials = endpoints.map { endpoint in
             (
                 endpoint: endpoint,
@@ -4647,6 +4676,10 @@ final class AppModel {
         switch endpoint {
         case .direct: timeout = 6
         case .relay: timeout = 20
+        // The punch budget the kernel enforces is three seconds; five here leaves
+        // room for a signaling channel that has to open first, and still bounds
+        // the attempt to something shorter than the relay it may fall back to.
+        case .p2p: timeout = 5
         }
 
         // The relay meters traffic by the two identity headers on the upgrade.
@@ -4661,7 +4694,11 @@ final class AppModel {
         // free relay would have nothing to verify it against.
         let relayHeaders: [String: String]
         switch endpoint {
-        case .direct:
+        case .direct, .p2p:
+            // A punched connection's bytes never reach the relay: it carries the
+            // candidates and then gets out of the way. Sending it the account
+            // hash on a socket it does not carry would be a credential
+            // derivative leaving the phone for nothing.
             relayHeaders = [:]
         case .relay(let baseURL):
             var headers = account.identity.headers
@@ -4696,12 +4733,50 @@ final class AppModel {
                 handshakeTimeout: .seconds(timeout),
                 relayHeaders: relayHeaders,
             )
+        case .p2p(let relayBaseURL, let endpointId):
+            configuration = .init(
+                authority: nil,
+                token: host.deviceToken,
+                appVersion: Self.appVersion,
+                deviceModel: Self.deviceModel,
+                handshakeTimeout: .seconds(timeout),
+                relayHeaders: relayHeaders,
+                p2p: P2PRoute(relayBaseURL: relayBaseURL, endpointId: endpointId),
+            )
         }
 
-        return MizarConnection(
-            configuration: configuration,
-            makeTransport: { URLSessionWebSocketTransport(timeout: timeout) },
-        )
+        // Which wire the frames travel on. A punched route is the same Mizar
+        // protocol over a UDP stream the kernel negotiated, so the connection
+        // above is unchanged and only the transport differs — which is what the
+        // kernel's transport seam was for.
+        let makeTransport: @Sendable () -> any WebSocketTransport
+        switch endpoint {
+        case .direct, .relay:
+            makeTransport = { URLSessionWebSocketTransport(timeout: timeout) }
+        case .p2p(let relayBaseURL, _):
+            makeTransport = {
+                P2PWebSocketTransport(
+                    makeEngine: {
+                        // Derived from the device token, so the identity is
+                        // stable for the life of the pairing and needs no
+                        // storage of its own.
+                        MizarNetQUICEngine(identity: .device(forDeviceToken: host.deviceToken))
+                    },
+                    makeSignaling: {
+                        guard let url = PairingURI.relaySignalWebSocketURL(baseURL: relayBaseURL) else {
+                            throw MizarNetError.signalingFailed(reason: "the room does not form a URL")
+                        }
+                        let channel = WebSocketSignalingTransport(
+                            socket: URLSessionWebSocketTransport(timeout: timeout),
+                        )
+                        try await channel.open(url: url)
+                        return channel
+                    },
+                )
+            }
+        }
+
+        return MizarConnection(configuration: configuration, makeTransport: makeTransport)
     }
 
     /// Why the last usage read failed, when it did.
@@ -4742,6 +4817,11 @@ final class AppModel {
     private static func routeDescription(_ endpoint: PairedHost.Endpoint) -> (name: String, address: String) {
         switch endpoint {
         case .direct(let authority): ("direct", authority)
+        // Named for what it is, not for the relay it borrows: `"p2p"` in the
+        // archive is the answer to "did the direct path work", and calling it a
+        // relay would make that question unanswerable.
+        case .p2p(let relayBaseURL, let endpointId):
+            ("p2p", "\(endpointId) via \(relayBaseURL)")
         case .relay(let baseURL): ("relay", baseURL)
         }
     }

@@ -72,6 +72,10 @@ public enum MizarNetDialURL {
 public actor P2PWebSocketTransport: WebSocketTransport {
     private let makeEngine: @Sendable () -> any MizarNetEngine
     private let signaling: (any MizarNetSignalingTransport)?
+    private let makeSignaling: (@Sendable () async throws -> any MizarNetSignalingTransport)?
+    /// The channel this transport opened, if it opened one, so `close()` can
+    /// shut it. A channel handed in by the caller is the caller's to close.
+    private var openedSignaling: (any MizarNetSignalingTransport)?
     private var connection: MizarNetConnection?
     private var stream: (any MizarNetStream)?
     private var closed = false
@@ -84,12 +88,23 @@ public actor P2PWebSocketTransport: WebSocketTransport {
     ///     transport factory: a second dial must not inherit the first
     ///     attempt's sockets.
     ///   - signaling: the side channel, already open.
+    ///   - makeSignaling: called during `connect` to open the side channel, for
+    ///     a caller that would rather the transport owned its lifetime.
+    ///
+    /// `signaling` is for a test that hands in a loopback pair; `makeSignaling`
+    /// is for a caller whose channel needs an async open and whose lifetime is
+    /// the attempt's. The difference matters on the losing side of a route race:
+    /// a channel opened before the race and never used has nobody to close it,
+    /// while one opened here is closed by `close()` whether or not the dial
+    /// ever got as far as a stream.
     public init(
         makeEngine: @escaping @Sendable () -> any MizarNetEngine,
         signaling: (any MizarNetSignalingTransport)? = nil,
+        makeSignaling: (@Sendable () async throws -> any MizarNetSignalingTransport)? = nil,
     ) {
         self.makeEngine = makeEngine
         self.signaling = signaling
+        self.makeSignaling = makeSignaling
     }
 
     public func connect(url: URL, headers: [String: String]) async throws {
@@ -98,10 +113,25 @@ public actor P2PWebSocketTransport: WebSocketTransport {
         }
         do {
             let ticket = try MizarNetDialURL.ticket(from: url)
+            // Opened here rather than by the caller: this is the moment the
+            // attempt becomes real, and a channel that fails to open is an
+            // attempt that fails -- which the route above handles by falling
+            // through to the relay, not by surfacing an error to the operator.
+            if openedSignaling == nil, let makeSignaling, signaling == nil {
+                let channel = try? await makeSignaling()
+                // `close()` can land while the channel is opening — the losing
+                // side of a route race is cancelled exactly then — and a channel
+                // assigned after that would never be closed by anybody.
+                if closed {
+                    await channel?.close()
+                    throw MizarNetError.cancelled
+                }
+                openedSignaling = channel
+            }
             let connection = MizarNetConnection(
                 engine: makeEngine(),
                 ticket: ticket,
-                signaling: signaling,
+                signaling: signaling ?? openedSignaling,
             )
             self.connection = connection
             let stream = try await connection.connect()
@@ -147,5 +177,10 @@ public actor P2PWebSocketTransport: WebSocketTransport {
         }
         await connection?.close()
         connection = nil
+        // Only what this transport opened: a channel the caller passed in may
+        // outlive the attempt, and closing somebody else's socket is the kind
+        // of courtesy that shows up later as a mystery disconnect.
+        await openedSignaling?.close()
+        openedSignaling = nil
     }
 }

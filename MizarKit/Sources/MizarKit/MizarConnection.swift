@@ -23,6 +23,23 @@
 
 import Foundation
 
+/// What a punched route needs in order to exist.
+///
+/// Two facts, and neither is an address: the room where the two sides exchange
+/// candidates, and the key the far end proves it holds. Everything else -- the
+/// public address, the port, the NAT's mood -- is discovered at dial time.
+public struct P2PRoute: Sendable, Equatable {
+    /// The relay base URL carrying this host's room, room path included.
+    public let relayBaseURL: String
+    /// The host's direct-path identity: base64url of its public key.
+    public let endpointId: String
+
+    public init(relayBaseURL: String, endpointId: String) {
+        self.relayBaseURL = relayBaseURL
+        self.endpointId = endpointId
+    }
+}
+
 /// The authenticated Mizar client.
 public actor MizarConnection {
     /// How to reach the host.
@@ -47,6 +64,13 @@ public actor MizarConnection {
         /// app on "Connecting…" with nothing that can change it, so the wait for
         /// the welcome is bounded the same way a call is.
         public var handshakeTimeout: Duration
+        /// The punched route, when this configuration names one.
+        ///
+        /// Set instead of `authority`: a punched connection has no address to
+        /// dial until both sides have exchanged candidates, so the configuration
+        /// carries the two facts that are known in advance and the transport
+        /// does the rest.
+        public var p2p: P2PRoute?
         /// Extra headers for the socket upgrade, when the route is a relay.
         ///
         /// The relay reads its traffic identity from two of these
@@ -65,6 +89,7 @@ public actor MizarConnection {
             baseURL: String? = nil,
             handshakeTimeout: Duration = .seconds(20),
             relayHeaders: [String: String] = [:],
+            p2p: P2PRoute? = nil,
         ) {
             self.authority = authority
             self.token = token
@@ -75,6 +100,7 @@ public actor MizarConnection {
             self.baseURL = baseURL
             self.handshakeTimeout = handshakeTimeout
             self.relayHeaders = relayHeaders
+            self.p2p = p2p
         }
 
         /// Which of the two routes this configuration names.
@@ -82,6 +108,11 @@ public actor MizarConnection {
         /// A direct authority wins when there is one: it is the same network or
         /// the same tailnet, so it is faster and involves nobody else.
         public var endpoint: PairedHost.Endpoint? {
+            // First, because a configuration that names a punched route is
+            // naming one on purpose: it was chosen over the relay it rides on.
+            if let p2p {
+                return .p2p(relayBaseURL: p2p.relayBaseURL, endpointId: p2p.endpointId)
+            }
             if let authority, !authority.isEmpty { return .direct(authority: authority) }
             if let baseURL, !baseURL.isEmpty, PairingURI.isUsableBaseURL(baseURL) {
                 return .relay(baseURL: baseURL)
@@ -230,6 +261,24 @@ public actor MizarConnection {
                 throw error
             }
             url = relayed
+        case .p2p(let relayBaseURL, let endpointId):
+            // No address here: the ticket names the far end by key, and the
+            // transport that receives this URL is the one that punches. A
+            // `WebSocketTransport` that is not a `P2PWebSocketTransport` fails
+            // on the scheme, which is the right failure -- it says the route and
+            // the transport disagreed rather than pretending to dial.
+            do {
+                url = try MizarNetDialURL.make(
+                    ticket: MizarNetTicket(
+                        endpointId: endpointId,
+                        relays: relayBaseURL.isEmpty ? [] : [relayBaseURL],
+                    ),
+                )
+            } catch {
+                let failure = MizarError(code: "P2P_TICKET_INVALID", message: "the direct route is unusable")
+                state = .failed(failure.message)
+                throw failure
+            }
         }
 
         let socket = makeTransport()

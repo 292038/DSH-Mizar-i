@@ -447,6 +447,8 @@
 /* Transfer settings */
 "Transfer" = "Transfer";
 "Local network first" = "Local network first";
+"Direct connection" = "Direct connection";
+"Direct connection asks this computer and your phone to reach each other without the relay. It falls back to the relay when the two networks will not allow it." = "Direct connection asks this computer and your phone to reach each other without the relay. It falls back to the relay when the two networks will not allow it.";
 "When on, every reconnect first looks for the computer on your local network and falls back to the relay when it is not there. When off, the scan is skipped and reconnecting goes straight to the saved route, which is faster." = "When on, every reconnect first looks for the computer on your local network and falls back to the relay when it is not there. When off, the scan is skipped and reconnecting goes straight to the saved route, which is faster.";
 
 /* 0.9.5 — mail, gate, credits */

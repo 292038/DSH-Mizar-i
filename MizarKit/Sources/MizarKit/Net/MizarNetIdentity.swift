@@ -94,6 +94,20 @@ public struct MizarNetIdentity: Sendable, Equatable {
         return MizarNetIdentity(seed: Data(digest))
     }
 
+    /// This phone's direct-path identity, derived from its device token.
+    ///
+    /// Not the token itself. The derivation would happily take it — it hashes
+    /// its input with a domain separator — but a value that can control a host
+    /// has no business being key material in a second place, so what is used is
+    /// a digest of it. The identity is therefore stable for as long as the
+    /// pairing is, and unrecoverable from the public key it produces.
+    ///
+    /// - Parameter token: the device token from pairing.
+    /// - Returns: the identity this phone punches with.
+    public static func device(forDeviceToken token: String) -> MizarNetIdentity {
+        derived(from: Data(SHA256.hash(data: Data(token.utf8))), purpose: .device)
+    }
+
     /// The raw public key bytes.
     public var publicKey: Data {
         MizarNetCodec.base64URLDecode(endpointId) ?? Data()

@@ -43,6 +43,10 @@ public enum ReconnectPlan {
     ///   - preferringRelay: whether to put relay routes in front of direct ones.
     ///     Used when a local link has just died: the relay is the route that
     ///     does not share the network that broke.
+    ///   - allowingDirectPath: whether the punched route may be planned at all.
+    ///     `false` — the default for a fresh install — drops `.p2p` everywhere,
+    ///     including from `active`, so switching the feature off takes effect on
+    ///     the next reconnect instead of only on the next pairing.
     /// - Returns: distinct routes, in the order to try them. Empty when the
     ///   pairing knows no route at all.
     public static func routes(
@@ -50,7 +54,15 @@ public enum ReconnectPlan {
         active: PairedHost.Endpoint?,
         tryingEveryRoute: Bool = false,
         preferringRelay: Bool = false,
+        allowingDirectPath: Bool = true,
     ) -> [PairedHost.Endpoint] {
+        var endpoints = endpoints
+        var active = active
+        if !allowingDirectPath {
+            endpoints = endpoints.filter { !$0.isDirectPath }
+            if active?.isDirectPath == true { active = nil }
+        }
+
         var ordered: [PairedHost.Endpoint]
         if tryingEveryRoute, !endpoints.isEmpty {
             ordered = endpoints

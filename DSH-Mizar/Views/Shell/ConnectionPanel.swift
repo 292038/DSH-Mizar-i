@@ -136,6 +136,11 @@ struct ConnectionPanel: View {
                 : String(localized: "Free-tier server")
         case .direct(let authority):
             return String(format: String(localized: "Direct · %@"), authority)
+        case .p2p:
+            // No address to show: the two ends met at a port neither of them
+            // chose and neither keeps. What the operator can act on is the kind
+            // of link it is, which is the same word the switch uses.
+            return String(localized: "Direct connection")
         case nil:
             return model.host?.authority ?? ""
         }

@@ -320,14 +320,32 @@ struct SettingsView: View {
                 Label("Local network first", systemImage: "wifi")
             }
             .accessibilityIdentifier("settings.transfer.lanPriority")
+
+            // Off by default, and the footer says what it costs rather than
+            // what it promises: a punch that fails adds seconds to a reconnect
+            // that would otherwise have been the relay straight away.
+            Toggle(isOn: Binding(
+                get: { model.settings.values.directConnection },
+                set: { model.settings.values.directConnection = $0 },
+            )) {
+                Label("Direct connection", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+            }
+            .accessibilityIdentifier("settings.transfer.directConnection")
         } header: {
             Text("Transfer")
         } footer: {
-            Text(
-                String(
-                    localized: "Turn this on if you use the app on the same local network; turning it off makes every reconnect faster.",
-                ),
-            )
+            VStack(alignment: .leading, spacing: 8) {
+                Text(
+                    String(
+                        localized: "Turn this on if you use the app on the same local network; turning it off makes every reconnect faster.",
+                    ),
+                )
+                Text(
+                    String(
+                        localized: "Direct connection asks this computer and your phone to reach each other without the relay. It falls back to the relay when the two networks will not allow it.",
+                    ),
+                )
+            }
         }
     }
 
