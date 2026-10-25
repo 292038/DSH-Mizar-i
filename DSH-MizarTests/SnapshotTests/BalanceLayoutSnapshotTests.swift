@@ -7,9 +7,9 @@ import XCTest
 
 /// Supplementary real production-view hosting, not a reconstructed layout or golden.
 /// A non-AX-client hosted SwiftUI view does not reliably expose virtual AX children.
-/// Exact per-control frames, hit targets, long-route compression, full amount labels
+/// Exact per-control frames, hit targets, long-route compression, two-place amount labels
 /// and absence of visual truncation therefore belong to the mock-paired XCUITest.
-/// These tests prove only finite root fitting, real rendering and controller state;
+/// These tests prove finite root fitting, real rendering, display formatting and controller state;
 /// attached images are evidence for inspection, not an automatic no-clipping claim.
 @MainActor @Suite(.serialized)
 struct BalanceLayoutSnapshotTests {
@@ -45,6 +45,22 @@ struct BalanceLayoutSnapshotTests {
         #expect(snapshot.wallets.map(\.currency) == ["CNY", "USD"])
         #expect(snapshot.bonusWallets.map(\.currency) == ["CNY", "USD"])
         hosted.attachEvidence(name: "supplementary-balance-320-\(accessibilitySize ? "AX5" : "large")")
+    }
+
+    @Test
+    func walletAmountsDisplayExactlyTwoFractionDigitsWithoutLosingLargeIntegers() {
+        let cases = [
+            ("123.456789", "123.46"),
+            ("0", "0.00"),
+            ("1.2", "1.20"),
+            ("1e-10", "0.00"),
+            ("-1.235", "-1.24"),
+            ("12345678901234567890.000000000001", "12345678901234567890.00"),
+            ("98765432109876543210.123456789012", "98765432109876543210.12"),
+        ]
+        for (input, expected) in cases {
+            #expect(BalanceView.displayAmount(input) == expected)
+        }
     }
 
     @Test(arguments: [false, true])

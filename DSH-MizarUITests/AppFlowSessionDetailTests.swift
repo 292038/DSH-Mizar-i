@@ -30,8 +30,13 @@ final class AppFlowSessionDetailTests: AppFlowTestBase {
         XCTAssertFalse(connection.frame.intersects(entry.frame))
         XCTAssertFalse(connection.frame.intersects(settings.frame))
         entry.tap()
+        let panel = app.descendants(matching: .any)["balance.panel"]
+        expect(panel, "balance entry must open the compact panel")
+        expect(app.otherElements["PopoverDismissRegion"], "balance must use a popover rather than a sheet")
+        XCTAssertLessThanOrEqual(panel.frame.width, 320)
+        XCTAssertLessThan(panel.frame.height, app.frame.height * 0.75, "balance must not return to a large sheet")
         let status = app.staticTexts["balance.status"]
-        for _ in 0..<5 where !status.exists { app.collectionViews.firstMatch.swipeUp() }
+        for _ in 0..<5 where !status.exists { scrollBalance(app) }
         expect(status, "unsupported plugin must explain balance support")
         XCTAssertFalse(app.buttons["balance.topUp"].exists)
         XCTAssertEqual(Self.mockMethodCounts()["account.balance", default: 0], 0, "old plugin must not be queried")
@@ -40,18 +45,19 @@ final class AppFlowSessionDetailTests: AppFlowTestBase {
         entry.tap()
         tapBalanceRefresh(app)
         let amount = app.staticTexts.matching(identifier: "balance.amount.CNY").firstMatch
-        for _ in 0..<5 where !amount.exists { app.collectionViews.firstMatch.swipeUp() }
+        for _ in 0..<5 where !amount.exists { scrollBalance(app) }
         expect(amount, "official supported balance did not appear after explicit refresh")
-        XCTAssertTrue(amount.label.contains("123.456789"), "decimal balance must not be fabricated or rounded")
+        XCTAssertTrue(amount.label.contains("123.46"), "decimal balance must be rounded to two fraction digits")
+        XCTAssertFalse(amount.label.contains("123.456789"), "the panel must not expose the host's full precision")
         let topUp = app.buttons["balance.topUp"]
-        for _ in 0..<8 where !topUp.exists { app.collectionViews.firstMatch.swipeUp() }
+        for _ in 0..<8 where !topUp.exists { scrollBalance(app) }
         expect(topUp, "ready official account should offer the top-up link")
         Self.setBalanceFixture("long")
         tapBalanceRefresh(app)
-        let exactLong = "12345678901234567890.000000000001"
+        let exactLong = "12345678901234567890.00"
         let longAmount = app.staticTexts.matching(identifier: "balance.amount.CNY").matching(NSPredicate(format: "label CONTAINS %@", exactLong)).firstMatch
-        for _ in 0..<12 where !longAmount.exists { app.collectionViews.firstMatch.swipeDown() }
-        expect(longAmount, "long decimal precision must remain exact at accessibility size")
+        for _ in 0..<12 where !longAmount.exists { scrollBalance(app, up: false) }
+        expect(longAmount, "long balance must remain complete at accessibility size")
         XCTAssertTrue(longAmount.label.contains(exactLong))
         XCTAssertGreaterThan(longAmount.frame.height, 40, "AX long amount must wrap instead of remaining a clipped single line")
         let attachment = XCTAttachment(screenshot: app.screenshot())
@@ -65,9 +71,13 @@ final class AppFlowSessionDetailTests: AppFlowTestBase {
         XCTAssertFalse(app.buttons["balance.topUp"].exists)
     }
 
+    private func scrollBalance(_ app: XCUIApplication, up: Bool = true) {
+        let scroll = app.descendants(matching: .any)["balance.panel"].scrollViews.firstMatch
+        if up { scroll.swipeUp() } else { scroll.swipeDown() }
+    }
+
     private func tapBalanceRefresh(_ app: XCUIApplication) {
         let refresh = app.buttons["balance.refresh"]
-        for _ in 0..<10 where !refresh.isHittable { app.collectionViews.firstMatch.swipeUp() }
         expect(refresh, "explicit refresh must remain reachable at accessibility text size")
         refresh.tap()
     }

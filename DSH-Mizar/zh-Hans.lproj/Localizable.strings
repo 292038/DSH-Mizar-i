@@ -5,7 +5,6 @@
 "balance.paid" = "充值钱包";
 "balance.bonus" = "赠金钱包";
 "balance.top-up" = "前往 DeepSeek 充值";
-"balance.top-up-note" = "打开 DeepSeek 官方网站，请在网页上登录后充值；本 App 不传递账户凭据。";
 "balance.refresh" = "刷新余额";
 "balance.loading" = "正在查询余额…";
 "balance.disconnected" = "请先连接电脑，再查询该电脑的 DeepSeek 余额。";

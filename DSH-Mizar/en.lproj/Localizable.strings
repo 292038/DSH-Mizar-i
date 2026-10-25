@@ -4,7 +4,6 @@
 "balance.paid" = "Recharge wallets";
 "balance.bonus" = "Bonus wallets";
 "balance.top-up" = "Recharge on DeepSeek";
-"balance.top-up-note" = "Opens the official DeepSeek website. Sign in there to recharge; no account credentials are sent from this app.";
 "balance.refresh" = "Refresh balance";
 "balance.loading" = "Checking balance…";
 "balance.disconnected" = "Connect to a computer to check its DeepSeek balance.";

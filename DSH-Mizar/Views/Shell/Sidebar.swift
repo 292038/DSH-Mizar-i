@@ -543,10 +543,8 @@ private struct SidebarFooter: View {
             .buttonStyle(.plain)
             .accessibilityLabel(Text("balance.title"))
             .accessibilityIdentifier("sidebar.balance")
-            .sheet(isPresented: $showingBalance) {
+            .mizarPopover(isPresented: $showingBalance, arrowEdge: .bottom) {
                 BalanceView()
-                    .presentationDetents([.large])
-                    .presentationDragIndicator(.visible)
             }
 
             Button {
