@@ -37,6 +37,31 @@ App 不引用 `Net/` 下任何类型，只在未来通过 `P2PWebSocketTransport
 测试：`MizarNetTestSupport.swift`（loopback 引擎/流/信令 + FakeSTUNServer）+
 `MizarNetTests/Crypto/STUN/PunchPacket/QUICEngine` 五个测试文件，共 46 个测试。
 
+### NAT 矩阵沙箱（第三轮，2026-10-25）
+
+| 位置 | 职责 |
+|---|---|
+| `MizarKit/Lab/MizarNetNATLab/` | 用户态 NAT 模拟器、观测式 STUN 服务器、信令对、矩阵运行器（见 §4）。**独立 SPM target，不进 App** |
+| `MizarKitTests/MizarNetNATMatrixTests.swift` | 40 格矩阵断言（`MIZAR_NAT_MATRIX=1` 门控，默认跳过） |
+
+### 跨语言线格式与桌面引擎（第四轮，2026-10-25）
+
+| 位置 | 职责 |
+|---|---|
+| `MizarKitTests/MizarNetFixtureEmitter.swift` | 写出 `protocol/fixtures/p2p/wire.json`（`MIZAR_P2P_FIXTURES=1` 门控）；同时断言 `sessionKeys` 与 `sessionKeyBytes` 两种推导给出相同字节 |
+| `Net/MizarNetCrypto.swift` | 新增 `sessionKeyBytes(sharedSecret:salt:localIsDialer:)`：字节级 HKDF，供第二份实现复现 |
+| `MizarKit/Probe/main.swift` | `mizar-net-probe` 命令行端点：`accept` / `dial`，**只用 MizarKit 公开 API**，给跨语言测试当对端 |
+| 插件仓库 `dsh/src/transport/p2p/` | TypeScript 完整引擎：`encoding` / `wire` / `crypto` / `socket` / `stun` / `session` / `engine` / `policy`，规范见 `dsh/docs/p2p-wire-v1.md` |
+
+一份 fixture、两套解码器：任何一个语言单方面改动线格式，另一个的测试就红。
+TypeScript 侧的 47 个线格式测试逐字节复现了 hello、data、keepalive、ack、close，
+并验证了身份派生、签名、X25519 协商、HKDF 双向密钥与 AEAD 全部与 Swift 一致。
+
+**真连接已验证**（`dsh/test/p2p-interop.test.ts`，`MIZAR_P2P_INTEROP=1` 门控）：
+Node 拨 Swift、Swift 拨 Node 两个方向都在回环上打通并交换了消息（各约 380ms）。
+第二个方向顺带证明了 **CryptoKit 接受 Node 签出的 Ed25519 签名**——这是字节
+fixture 覆盖不到、而一旦不成立整条直连就永远连不上的那一环。
+
 ## 2. 设计要点
 
 **引擎契约是内核的全部边界。** 生产引擎（QUIC / UDP 打洞，后续引入 Rust 核心或
@@ -82,7 +107,8 @@ v4-only socket 诚实于它能打通的范围；候选类型已会说 v6，加�
 ## 3. 测试与验证
 
 ```
-cd iOS && scripts/swift.sh test     # 602 tests / 75 suites 全绿（MizarNet 46 个）
+cd iOS && scripts/swift.sh test                              # 609 tests / 76 suites 全绿
+MIZAR_NAT_MATRIX=1 scripts/swift.sh test --filter MizarNetNATMatrix   # 36 格 NAT 矩阵，约 21s
 ```
 
 覆盖：身份派生/签名、票与 URL、候选优先级、信令编解码与经 WebSocket 的信令、
@@ -92,7 +118,93 @@ cd iOS && scripts/swift.sh test     # 602 tests / 75 suites 全绿（MizarNet 46
 并发拨号拒绝、FakeSTUNServer 的 STUN 发现、网络变化后会话存活、
 `P2PWebSocketTransport` 经真 UDP 承载 Mizar 帧、仅凭信令候选中介的打洞。
 
-## 4. SDK 陷阱记录（2026-10-25，Xcode 27 / Swift 6.4）
+## 4. NAT 矩阵：封闭沙箱里的六种网络
+
+macOS 没有 netns/veth，引擎又依赖 CryptoKit 跑不了 Linux 网络命名空间，所以
+"封闭沙箱"的正确形态是**用户态 NAT**：真实 UDP socket 按 NAT 语义转发，真实引擎代码
+走完整的"STUN 发现 → 信令换候选 → 打洞 → 会话"路径。全部流量只走回环，
+确定性、可进 CI、不依赖任何外部服务器。
+
+### 4.1 组成（`MizarKit/Lab/MizarNetNATLab`，独立 target，不进 App）
+
+| 文件 | 职责 |
+|---|---|
+| `SimulatedNAT.swift` | 六种 NAT 行为：`publicNetwork` / `fullCone` / `addressRestricted` / `portRestricted` / `symmetric` / `blocked`。**映射**：EIM 用一个转发 socket（端口恒定），对称型按目的地址各开一个；**过滤**：全锥放行任何来源、地址受限按 IP、端口受限按 IP:端口、对称型每个转发器只认自己的对端。可串联（CGNAT = 内层 + 外层） |
+| `ObservingSTUNServer.swift` | 会说 RFC 5389 的 STUN 服务器，报告它看到的源地址——NAT 后的引擎由此得到 srflx 候选 |
+| `LabSignaling.swift` | 进程内信令对，替代 relay 的 signal 端点，其余行为（hello/candidates/bye）与线上一致 |
+| `NATMatrixLab.swift` | 单元格定义、运行器、结果表；串联时外层 NAT 先绑 |
+
+**保真度上的一条硬要求**：真实 NAT 的私网地址在公网不可达。回环没有这个分隔，
+若不处理，host 候选（`127.0.0.1:转发端口`）会直接命中转发器，"打洞"变成绕过 NAT。
+所以每个 NAT 额外绑一个**永不读取的内部端口**作为引擎眼中的 `localAddress`——
+发往 host 候选的包如石沉大海，与真实世界一致。矩阵里的每一次打通都只能靠
+STUN 观测到的映射，这也正是它值得跑的原因。
+
+### 4.2 结果（2026-10-25，40 格全绿：36 主矩阵 + 4 CGNAT）
+
+行为按 ISO 顺序：public / fullCone / addressRestricted / portRestricted / symmetric / blocked。
+
+| 拨号方 ↓ 接受方 → | public | fullCone | addrR | portR | symm | blocked |
+|---|---|---|---|---|---|---|
+| public | ✓ | ✓ | ✓ | ✓ | ✓ | ⊘ |
+| fullCone | ✓ | ✓ | ✓ | ✓ | ✓ | ⊘ |
+| addressRestricted | ✓ | ✓ | ✓ | ✓ | ✓ | ⊘ |
+| portRestricted | ✓ | ✓ | ✓ | ✓ | ✗ | ⊘ |
+| symmetric | ✓ | ✓ | ✓ | ✗ | ✗ | ⊘ |
+| blocked | ✗ | ✗ | ✗ | ✗ | ✗ | ⊘ |
+
+✓ 打通（锥型互打 67–81ms，经对称接受方 298–330ms）· ✗ 超时（对称接受方 682–711ms；
+UDP 封锁的拨号方 1.06–1.11s）· ⊘ 无候选 `P2P_FAILED`（1.43–1.84s，含 1s 候选宽限）
+
+CGNAT 四格正如"外层决定命运"：`portRestricted over portRestricted → fullCone/portRestricted`
+打通，`portRestricted over symmetric → fullCone` 打通（对端是锥型，能收到对称型主动发出的包
+并回到真实源），`portRestricted over symmetric → portRestricted` 失败。
+
+**与 NAT 文献逐条对上**，且每一条都能用一句话解释：
+
+- 锥型对锥型，任意组合都通——双方都能把包送到对方真实的映射地址；
+- 对称型**拨号方**仍能打通锥型接受方：接受方收到包后回到"报文来自的地址"，而不是
+  回到 STUN 报的那个地址；
+- 对称型**接受方**只能被锥型拨号方打通，端口受限拨号方会把它从另一个端口发来的包
+  按端口过滤掉；
+- 两端都对称，等于两端都在用一个对方不知道的端口说话，必然失败；
+- UDP 被封，连候选都没有——这是"必须立刻走 relay"的信号。
+
+失败都在**预算内**发生（≤700ms 或 1.4s），这是 Q2 决策（中继永远兜底）能成立的前提：
+打洞失败必须快，快到用户感觉不到。
+
+### 4.3 矩阵抓到的三个真问题（已修）
+
+矩阵的价值不在于它证明了对的，而在于它证伪了三个我以为是正确的假设：
+
+1. **会话与拨号结果的竞态**（第一次跑时 4 个本该打通的格子成了 `timeout`）。
+   接受方的心跳式打洞会在拨号方 `activeDial` 建立之前到达，拨号方据此建好会话，
+   而打洞循环看到 `sessions` 非空就收工并写下 `dialTimeout`——一个已经接通的连接
+   被记成失败。修法：`dial` 先认领既有会话（并 `reconcile` 去重），打洞循环**绝不**
+   在"远端已有会话"时写失败，`scheduleCommit` 提到第一个 `await` 之前注册（提交
+   就是对"这个会话正在交给调用方"的承诺，打洞循环读它来闭嘴）。
+2. **候选为空时立刻失败**。候选经信令到达，比"决定拨号"晚几毫秒；原实现见到
+   空列表就 `punchFailed`，把整次拨号浪费在自己造成的竞态上。新增 `candidateGrace`
+   （默认 1s）：等候选，而不是失败。
+3. **意图判断过窄**。`commit` 曾以 `intent == .accept` 决定是否把会话交给
+   `incomingStreams()`，而直接使用引擎的调用方从不声明意图——流被吞掉，测试挂死。
+   改为 `intent != .dial`：未声明意图的引擎是在等拨号。
+
+顺带修掉的还有矩阵并行跑的假失败：行与行之间是十几个真实定时器，并行时互相饿死
+20ms 的拨号轮询。矩阵是正确性工具不是性能基准，`@Suite(.serialized)` 是它的正确形态
+（它自己的文档早就这么写了）。
+
+### 4.4 它证明了什么，没证明什么
+
+**证明了**：过滤与映射语义下的打洞逻辑、候选交换、轮次同步、握手与密钥协商、
+双工会话的调和、失败路径的时限——都在真实 socket 上跑通，40 格无一例外。
+
+**没证明**：真实运营商网络里的三件事——(a) NAT 绑定的**超时回收**（沙箱不模拟过期，
+所以 22s 保活只是按研究选的数字，没有被矩阵验证）；(b) **端口预测型**对称 NAT 与
+UPnP/NAT-PMP 的存在（沙箱是纯对称模型）；(c) 真实丢包/重排/MTU 黑洞（回环不丢包）。
+这三件事只有真机 + 真网能回答，是计划 §8 的真机矩阵。
+
+## 5. SDK 陷阱记录（2026-10-25，Xcode 27 / Swift 6.4）
 
 - `CryptoKit.ChaCha20Poly1305` 已更名 `ChaChaPoly`；`MizarNetCrypto.swift` 用
   `#if compiler(>=6.4)` 兼容两种 SDK 代号（算法与线格式相同，互通）。
@@ -103,14 +215,29 @@ cd iOS && scripts/swift.sh test     # 602 tests / 75 suites 全绿（MizarNet 46
   必须先判 > 0 再切片。
 - `SealedBox.combined` 含 12 字节 nonce 前缀；线上只带 ciphertext+tag，
   nonce 由包号推导。
+- **CryptoKit 的 Ed25519 签名是随机的**（同一密钥同一消息，两次签名不同——已实测）。
+  跨语言契约因此是"能验证"而不是"字节相等"：任何地方都不得用签名做身份判断、
+  去重或重放检测；重放靠包号窗口。写跨语言测试时也不要断言重新签一遍得到同样字节。
 
-## 5. 未做（下一步）
+## 6. 未做（下一步）
 
-1. **跨 NAT 实测**：回环证明了打洞的每个零件，没证明 NAT。真机/真网矩阵
-   （家用锥形、运营商对称/CGNAT、UDP 封锁）是计划 §8 的事。
+1. **真机 + 真网验证**：沙箱矩阵（§4）证明了 NAT 语义下的打洞逻辑，剩下的三件事
+   只有真机能回答——真实 NAT 的映射过期、端口预测型对称 NAT、真实丢包与 MTU 黑洞。
 2. **relay signal 端点**：`dsh-relay` 新增 `/r/<room>/signal` 路由与隧道 `signal` 帧
    （工作区计划 §5.5），上线后 iOS 侧接线 `WebSocketSignalingTransport`。
 3. **App 接线**：`ReconnectPlan` 增加 p2p 路由、配对 URI / `host.info` 增加端点公钥
    可选字段（纯加法）、设置项开关。
-4. **桌面侧**：`dsh` 插件 `src/transport/p2p/`（与 `RelayClient` 同构，回放 loopback）。
-5. **丢包/乱序注入测试**：loopback 不丢包，重传与重排路径只有代码审读级覆盖。
+4. **桌面侧收尾**：TypeScript 引擎已在回环上与 Swift 真连接互通；剩下的只有
+   **端口映射（UPnP-IGD / NAT-PMP）**——桌面是接受方，这是提高直连率最有效的一环。
+   之后再谈与 relay 的接线和 App 的 `ReconnectPlan` 路由。
+5. **丢包/乱序注入测试**：沙箱的回环不丢包，重传与重排路径仍只有代码审读级覆盖。
+   下一步给 `SimulatedNAT` 加一档"丢包/乱序"行为，把它也纳入矩阵。
+
+## 7. 包体（2026-10-25 实测，A/B 构建）
+
+release 构建下，`Net/` 为 MizarKit 增加机器码 207.5 KiB + 代码常量约 17.5 KiB；
+`.o` 文件总增量 783 KiB（含符号表，归档后进 dSYM 不计入下载体积）。
+**出货包体增量 ≈ 0.2–0.3 MB**，约占 MizarKit 自身机器码的 20%。
+
+矩阵沙箱（`MizarKit/Lab/`）是独立 SPM target，Xcode 工程的同步组只指向
+`Sources/MizarKit`，**不进出货包**。
