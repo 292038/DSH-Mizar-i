@@ -236,6 +236,13 @@ struct TurnIndexPanel: View {
     /// clock, like the conversation screen does, so the rows are not a
     /// `TimelineView` and the stack stays the scroll view's own content.
     @State private var now = Date()
+    /// How tall the list is, and how tall the window showing it is.
+    ///
+    /// A landing is only wanted when the first is the larger of the two: a list
+    /// that fits has no bottom to go to, and asking for one anyway strands it
+    /// in the middle of the drawer. Both are measured where they are drawn.
+    @State private var contentHeight: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
     @Namespace private var filter
 
     /// How far the timeline's content begins below the page's top, so the
@@ -381,6 +388,12 @@ struct TurnIndexPanel: View {
             .scrollTargetLayout()
             .padding(.horizontal, 12)
             .padding(.bottom, 24)
+            // How tall the list is, against how tall the window is: a landing
+            // is only wanted when the list is longer than the window. See
+            // ``land(again:)``.
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                contentHeight = height
+            }
         }
         .scrollIndicators(.hidden)
         .scrollEdgeEffectStyle(.soft, for: .vertical)
@@ -388,6 +401,9 @@ struct TurnIndexPanel: View {
         // and every row after it travels beneath the glass on the way
         // past -- the margin is content, not a bar the scroll stops at.
         .contentMargins(.top, Self.chromeContentTop, for: .scrollContent)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+            viewportHeight = height
+        }
         // The stream opens at its newest turn and keeps the operator's place
         // after that. No auto-centring: a scroll into a lazy stack's not-yet-
         // built region lands on an estimate, and on a session's first open that
@@ -413,6 +429,12 @@ struct TurnIndexPanel: View {
             land()
         }
         .onChange(of: shown.last?.id, initial: true) { _, _ in land() }
+        // The two measurements above arrive after the first attempt: a landing
+        // asked for before either is known is refused (see `land`), so the
+        // answer to "is there anywhere to scroll to" has to ask again when it
+        // changes.
+        .onChange(of: contentHeight) { _, _ in land() }
+        .onChange(of: viewportHeight) { _, _ in land() }
         .onChange(of: shell.trailingOpen) { _, open in
             guard open else { return }
             land(again: true)
@@ -437,6 +459,13 @@ struct TurnIndexPanel: View {
     /// the one position a list that is still growing cannot get wrong, and the
     /// turn the operator opened the index to find is the one that just ran.
     ///
+    /// **Only when there is somewhere to go.** A session with two turns fits in
+    /// the window, and asking a lazy stack to put its last row at the bottom of
+    /// a list that is shorter than the window does not clamp to the top -- the
+    /// scroll lands on an estimate past the end and strands the two rows in the
+    /// middle of the drawer, with a void above and below them. So the landing
+    /// is a question about heights, and both of them are measured above.
+    ///
     /// - Parameter again: whether to land even if this session has already been
     ///   landed once. The drawer opening is that case: the operator is looking
     ///   at the page now, and the landing that happened while it was off screen
@@ -445,6 +474,9 @@ struct TurnIndexPanel: View {
     ///   holds is not a scroll.
     private func land(again: Bool = false) {
         guard let session = index.sessionId, let last = shown.last?.id else { return }
+        // Nothing is known until both are measured, and a list that fits has no
+        // bottom to land on: its top *is* all of it.
+        guard viewportHeight > 0, contentHeight > viewportHeight else { return }
         if again {
             landedSession = session
             landedTurn = nil
