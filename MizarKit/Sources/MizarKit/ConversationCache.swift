@@ -249,8 +249,16 @@ public actor FileConversationCache: ConversationCache {
         // between the read and the write. `read` and `write` are both synchronous
         // for exactly this reason; an `await` anywhere between them would put the
         // race back.
-        let next = transform(read(sessionId: sessionId))
-        write(next)
+        let cached = read(sessionId: sessionId)
+        let next = transform(cached)
+        // A refresh that read a page the phone already had changes no byte, and
+        // rewriting a whole conversation to say so is the cost a background
+        // refresh cannot afford: the encode and the atomic write happen inside one
+        // call, at the moment the system is asking for the background task back,
+        // and cancellation cannot reach into them. What the caller asked for is
+        // already on disk, so the answer is `next` either way -- only the write is
+        // gone.
+        if next != cached { write(next) }
         return next
     }
 

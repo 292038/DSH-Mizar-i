@@ -206,4 +206,41 @@ struct ConversationCacheUpdateTests {
         #expect(await cache.load(sessionId: "s1")?.items.count == 1)
         #expect(stored.throughSeq == 1)
     }
+
+    @Test("an update that changes nothing rewrites nothing, and one that changes something does")
+    func noOpUpdateSkipsTheWrite() async throws {
+        // A background refresh re-reads pages the phone already has: the merge
+        // comes out equal to what is stored, and the encode plus the atomic write
+        // are pure cost at the moment the system is asking for the background task
+        // back. The file's inode is the measurement -- an atomic write replaces the
+        // file, so a write that did not happen leaves the old one in place.
+        let dir = directory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = FileConversationCache(directory: dir)
+        let first = CachedConversation(sessionId: "s1", items: [item("a", 1)], throughSeq: 1)
+        await cache.save(first)
+        let url = dir.appendingPathComponent("s1.json")
+
+        func inode() throws -> NSNumber? {
+            try FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber] as? NSNumber
+        }
+
+        let before = try inode()
+        #expect(before != nil)
+
+        let same = await cache.update(sessionId: "s1") { _ in first }
+        #expect(same == first)
+        #expect(try inode() == before)
+
+        let changed = await cache.update(sessionId: "s1") { current in
+            CachedConversation(
+                sessionId: "s1",
+                items: mergeConversations(cached: current?.items ?? [], fresh: [self.item("b", 2)]),
+                throughSeq: 2,
+            )
+        }
+        #expect(changed.items.map(\.id) == ["a", "b"])
+        #expect(try inode() != before)
+        #expect(await cache.load(sessionId: "s1")?.items.map(\.id) == ["a", "b"])
+    }
 }
