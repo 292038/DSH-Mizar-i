@@ -7,7 +7,7 @@
 //  Four sections, in the order somebody needs them: what this phone will tell
 //  you (notifications), what it shows while it is working (the Live Activity),
 //  what to send when something is wrong (the log export), and what it is
-//  (about).
+//  (about, then where its community is, then who wrote it).
 //
 //  Every switch here is wired to something that reads it, and that is the whole
 //  reason this file is not a list of preferences. 通知 asks
@@ -40,6 +40,9 @@ struct SettingsView: View {
     @State private var permission: NotificationPermission?
     /// Bumped after the cache is cleared, so the tap has a haptic to play on.
     @State private var mizarSuccess = false
+    /// Whether a tap on the QQ row had to fall back to copying the group
+    /// number, because this phone has no QQ to open.
+    @State private var qqNumberCopied = false
     /// Closes the sheet this screen is presented in.
     var onDone: (() -> Void)?
     /// The one switch every haptic in the app answers to.
@@ -63,6 +66,8 @@ struct SettingsView: View {
                 feelSection
                 logsSection
                 aboutSection
+                communitySection
+                creditsSection
             }
             .navigationTitle(Text("Settings"))
             // A small window keeps its title small.
@@ -486,11 +491,7 @@ struct SettingsView: View {
     // MARK: - 关于
 
     private var aboutSection: some View {
-        // Two sections under one name, because 关于 is one idea: what this app is
-        // (the version and where it comes from) and who made it. A `Group` and
-        // not a third `Section`: credits are not part of "about this build".
-        Group {
-            Section {
+        Section {
             Button {
                 openSource()
             } label: {
@@ -516,12 +517,86 @@ struct SettingsView: View {
         } header: {
             Text("About")
         }
+    }
 
-        // 开发者鸣谢 — one person per row, as native list rows, fetched from
-        // GitHub and cached for a day. Not a text block: a paragraph is not a
-        // credit, it is a paragraph, and it reads as one to VoiceOver.
-        creditsSection
+    // MARK: - 社区
+
+    /// Where to find the project and the people using it.
+    ///
+    /// Two doors, both of which leave the app rather than opening a page of
+    /// their own: the website is the operator's own browser (their choice of
+    /// one, and its history), and the QQ group is QQ. Nothing is imitated here
+    /// -- an in-app web view of a page the app does not own is a second browser
+    /// with none of the first one's affordances.
+    ///
+    /// It sits between 关于 and 开发者鸣谢 because that is the order of the
+    /// questions: what this build is, where its community is, who wrote it.
+    private var communitySection: some View {
+        Section {
+            Button {
+                openWebsite()
+            } label: {
+                LabeledContent {
+                    Image(systemName: "arrow.up.right")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } label: {
+                    Label("Website", systemImage: "globe")
+                }
+            }
+            .accessibilityIdentifier("settings.community.website")
+
+            Button {
+                openQQGroup()
+            } label: {
+                LabeledContent {
+                    Image(systemName: "arrow.up.right")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } label: {
+                    Label("QQ group", systemImage: "bubble.left.and.bubble.right")
+                }
+            }
+            .accessibilityIdentifier("settings.community.qq")
+
+            // Said only when it happened: a permanent footnote about an app the
+            // operator may well have installed would be noise on every visit.
+            if qqNumberCopied {
+                Text("QQ is not installed. The group number has been copied to the clipboard.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.rise)
+                    .accessibilityIdentifier("settings.community.qq.copied")
+            }
+        } header: {
+            Text("Community")
         }
+    }
+
+    /// The project's own page, in the operator's browser.
+    private func openWebsite() {
+        guard let url = URL(string: "https://dsh-mizar.shirazu-nagisa.com") else { return }
+        openURL(url)
+    }
+
+    /// The feedback group, in QQ.
+    ///
+    /// QQ answers a group card at `mqqapi://card/show_pslcard`, which opens the
+    /// group's own page inside QQ -- one tap from joining, rather than a number
+    /// the operator has to copy out and search for. A phone without QQ has no
+    /// handler for that scheme at all, so the number goes to the clipboard and
+    /// the section says so: a tap that appears to do nothing is the one outcome
+    /// worth ruling out.
+    private func openQQGroup() {
+        let group = "1130443236"
+        let card = URL(string: "mqqapi://card/show_pslcard?src_type=internal&version=1&uin=\(group)&card_type=group&source=qrcode")
+        if let card, UIApplication.shared.canOpenURL(card) {
+            UIApplication.shared.open(card)
+            return
+        }
+        UIPasteboard.general.string = group
+        withMizarAnimation(.mizarSmooth) { qqNumberCopied = true }
     }
 
     // MARK: - 鸣谢

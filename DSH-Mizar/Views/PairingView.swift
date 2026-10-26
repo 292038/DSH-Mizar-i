@@ -23,6 +23,10 @@ struct PairingView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
+    /// Whether the camera is open, reported so the window holding this screen
+    /// can grow for it. See ``PairingSheet``.
+    var onScanningChange: (Bool) -> Void = { _ in }
+
     /// The camera is open, inside this window.
     @State private var scanning = false
     @State private var manual = false
@@ -105,6 +109,9 @@ struct PairingView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .mizarFeedback(.success, trigger: scans)
+        .onChange(of: scanning) { _, open in
+            onScanningChange(open)
+        }
     }
 
     /// The camera, inside the window: square, with corners that frame the code
@@ -241,6 +248,53 @@ struct PairingView: View {
             // failure -- and this window closing is what uncovers it.
             dismiss()
         }
+    }
+}
+
+/// The pairing screen, in a card that grows for the camera.
+///
+/// A popover was the obvious window for this -- it comes out of the button that
+/// asked for it -- and it cannot do the one thing this screen needs: a popover's
+/// size is fixed when it is presented. A `.frame` that changes afterwards
+/// re-lays the content out and leaves the card where it opened (measured: the
+/// new `preferredContentSize` reaches the presentation controller and the card
+/// does not follow), so the camera -- a square as wide as the window -- was
+/// always taller than the window showing it, and the screen scrolled.
+///
+/// A sheet with detents is the platform's own answer to exactly this. The card
+/// has two sizes, UIKit animates between them, and that animation is the same
+/// smooth one every other sheet in this app uses: the small detent is the size
+/// this screen has always been given, the large one is everything at once with
+/// the camera in it, and letting go of the camera shrinks it back.
+struct PairingSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    /// The size the card has while it is only a button and a paragraph.
+    private static let collapsed = PresentationDetent.height(520)
+    /// How long the card takes to grow or shrink.
+    private static let growth: TimeInterval = 0.3
+
+    /// Which of the two sizes the card is at.
+    @State private var detent: PresentationDetent = PairingSheet.collapsed
+
+    var body: some View {
+        NavigationStack {
+            PairingView(onScanningChange: { scanning in
+                withAnimation(.linear(duration: Self.growth)) {
+                    detent = scanning ? .large : Self.collapsed
+                }
+            })
+            .toolbar {
+                // A sheet is dismissed by dragging, but a screen that pairs a
+                // phone should say how to leave it without a gesture.
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .accessibilityIdentifier("pairing.cancel")
+                }
+            }
+        }
+        .presentationDetents([Self.collapsed, .large], selection: $detent)
+        .presentationDragIndicator(.visible)
     }
 }
 

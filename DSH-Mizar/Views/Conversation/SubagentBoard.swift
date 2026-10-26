@@ -191,7 +191,11 @@ struct SubagentBoard: View {
                 list
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // Centred while there is nothing to list, top-aligned the moment there
+        // is: an empty page whose one sentence hangs under the floating control
+        // reads as a page that failed to load the rest of itself, and the middle
+        // of the page is where a "nothing here" belongs.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: subagents.isEmpty ? .center : .top)
         .background(Theme.sidebarBackground)
         .animation(.mizarSmooth, value: subagents.map(\.sessionId))
         // A new session is a different set of children: everything this page
@@ -243,7 +247,7 @@ struct SubagentBoard: View {
     }
 
     private var empty: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(spacing: 6) {
             Image(systemName: "square.stack.3d.up")
                 .font(.title2)
                 .foregroundStyle(.tertiary)
@@ -252,9 +256,10 @@ struct SubagentBoard: View {
             Text("Agents this session delegates work to are listed here.", tableName: SidePlaneTable.name)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
-        .padding(.horizontal, 20)
-        .padding(.top, Self.listContentTop)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
     }
 
     // MARK: Reading the children

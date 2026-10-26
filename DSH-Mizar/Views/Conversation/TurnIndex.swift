@@ -16,8 +16,9 @@
 //    - **It knows where you are.** The turns on screen in the conversation are
 //      bracketed on the index's timeline, and the bracket moves as you scroll,
 //      so the turns being read are lit at a glance. The stream itself opens
-//      at its top -- the bracket says where you are, the list does not jump
-//      to it.
+//      at its newest turn -- the bottom -- because the turn somebody opens the
+//      index to look at is the one that just ran, not the first one they ever
+//      sent.
 //    - **It shows where the time went.** Under each prompt a hairline bar is as
 //      long as the turn took, against the longest turn in the session: the one
 //      that ran for twenty minutes is visible from across the room.
@@ -220,7 +221,21 @@ struct TurnIndexPanel: View {
     var onPick: () -> Void = {}
 
     @Environment(TurnIndex.self) private var index
+    @Environment(ShellState.self) private var shell
     @State private var onlyUnfinished = false
+    /// The session whose timeline has already been put at its newest turn.
+    ///
+    /// One landing per look. The rows arrive asynchronously -- a session opened
+    /// from a cold launch publishes its turns after this page is on screen --
+    /// and the operator's own scrolling afterwards belongs to them.
+    @State private var landedSession: String?
+    /// The row the stream is anchored to, in the sense `.scrollPosition(id:)`
+    /// means: setting it moves the stream, and scrolling moves it back.
+    @State private var landedTurn: String?
+    /// The instant the ticking figures are measured to. The page owns the
+    /// clock, like the conversation screen does, so the rows are not a
+    /// `TimelineView` and the stack stays the scroll view's own content.
+    @State private var now = Date()
     @Namespace private var filter
 
     /// How far the timeline's content begins below the page's top, so the
@@ -330,57 +345,115 @@ struct TurnIndexPanel: View {
     }
 
     private var timeline: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    let turns = shown
-                    let longest = max(1, turns.compactMap { $0.spent(asOf: context.date) }.max() ?? 1)
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(turns.enumerated()), id: \.element.id) { offset, turn in
-                            TurnIndexRow(
-                                turn: turn,
-                                number: number(of: turn),
-                                spent: turn.spent(asOf: context.date),
-                                longest: longest,
-                                onScreen: index.visible.contains(turn.id),
-                                previousOnScreen: offset > 0 && index.visible.contains(turns[offset - 1].id),
-                                nextOnScreen: offset < turns.count - 1 && index.visible.contains(turns[offset + 1].id),
-                                isFirst: offset == 0,
-                                isLast: offset == turns.count - 1,
-                                appearDelay: Double(min(offset, 14)) * 0.025,
-                            ) {
-                                pick(turn)
-                            }
-                            .id(turn.id)
-                        }
+        ScrollView {
+            // No `TimelineView` around the stack: the rows' ticking figures come
+            // from one clock this page owns, because the stack has to be the
+            // scroll view's own content for `scrollTargetLayout` to make its
+            // rows targets. Wrapped, they were not targets, and every landing
+            // below was silently dropped.
+            let turns = shown
+            let longest = max(1, turns.compactMap { $0.spent(asOf: now) }.max() ?? 1)
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(turns.enumerated()), id: \.element.id) { offset, turn in
+                    TurnIndexRow(
+                        turn: turn,
+                        number: number(of: turn),
+                        spent: turn.spent(asOf: now),
+                        longest: longest,
+                        onScreen: index.visible.contains(turn.id),
+                        previousOnScreen: offset > 0 && index.visible.contains(turns[offset - 1].id),
+                        nextOnScreen: offset < turns.count - 1 && index.visible.contains(turns[offset + 1].id),
+                        isFirst: offset == 0,
+                        isLast: offset == turns.count - 1,
+                        appearDelay: Double(min(offset, 14)) * 0.025,
+                    ) {
+                        pick(turn)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 24)
+                    .id(turn.id)
                 }
             }
-            .scrollIndicators(.hidden)
-            .scrollEdgeEffectStyle(.soft, for: .vertical)
-            // The first row lands below the floating chrome with air to spare,
-            // and every row after it travels beneath the glass on the way
-            // past -- the margin is content, not a bar the scroll stops at.
-            .contentMargins(.top, Self.chromeContentTop, for: .scrollContent)
-            // The stream opens at its top and keeps the operator's place after
-            // that. No auto-centring: a scroll into a lazy stack's not-yet-
-            // built region lands on an estimate, and on a session's first open
-            // that estimate stranded the stream mid-drawer with a void above
-            // and below it. A session switch starts the new session's stream
-            // at its own top, too -- the old offset belongs to the old list,
-            // and carrying it over would drop the new one somewhere
-            // arbitrary.
-            .onChange(of: index.sessionId) { _, _ in
-                guard let top = shown.first?.id else { return }
-                proxy.scrollTo(top, anchor: .top)
+            // The rows are the scroll's targets, which is what lets
+            // ``landedTurn`` move the stream to a row the lazy stack has not
+            // built yet: `ScrollViewReader.scrollTo` asks for a frame, and a row
+            // outside the realized window has none -- it answered by doing
+            // nothing at all, which is how this list kept opening at its first
+            // turn.
+            .scrollTargetLayout()
+            .padding(.horizontal, 12)
+            .padding(.bottom, 24)
+        }
+        .scrollIndicators(.hidden)
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
+        // The first row lands below the floating chrome with air to spare,
+        // and every row after it travels beneath the glass on the way
+        // past -- the margin is content, not a bar the scroll stops at.
+        .contentMargins(.top, Self.chromeContentTop, for: .scrollContent)
+        // The stream opens at its newest turn and keeps the operator's place
+        // after that. No auto-centring: a scroll into a lazy stack's not-yet-
+        // built region lands on an estimate, and on a session's first open that
+        // estimate stranded the stream mid-drawer with a void above and below
+        // it. The landing below is aimed at the last row with a bottom anchor,
+        // which is the one position a growing list cannot get wrong.
+        //
+        // Three moments ask for it, and they are the same question asked from
+        // three sides: a different session (its own bottom), the rows finally
+        // arriving (there was no bottom to land on before), and the drawer
+        // opening (the page exists long before anybody looks at it, so the
+        // landing that happened at launch is the one nobody saw).
+        //
+        // `initial: true` on the first two is not decoration: this page is a
+        // branch of a conditional -- empty state, or this -- so on a launch the
+        // scroll view is *created* at the moment the first turn arrives, and an
+        // `onChange` on a freshly created view has nothing to compare against
+        // and never fires. That was the whole bug: the landing was written for
+        // the change and the change happened before the page existed.
+        .scrollPosition(id: $landedTurn, anchor: .bottom)
+        .onChange(of: index.sessionId, initial: true) { _, _ in
+            landedSession = nil
+            land()
+        }
+        .onChange(of: shown.last?.id, initial: true) { _, _ in land() }
+        .onChange(of: shell.trailingOpen) { _, open in
+            guard open else { return }
+            land(again: true)
+        }
+        .task {
+            // One ticker for the page, not one per row: the times under each
+            // prompt are the only figures that move on their own.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                now = Date()
             }
         }
     }
 
     private func number(of turn: ConversationTurn) -> Int {
         turn.turn ?? ((index.turns.firstIndex { $0.id == turn.id } ?? 0) + 1)
+    }
+
+    /// Put the timeline at its newest turn.
+    ///
+    /// The anchor is the bottom rather than a computed offset: the last row is
+    /// the one position a list that is still growing cannot get wrong, and the
+    /// turn the operator opened the index to find is the one that just ran.
+    ///
+    /// - Parameter again: whether to land even if this session has already been
+    ///   landed once. The drawer opening is that case: the operator is looking
+    ///   at the page now, and the landing that happened while it was off screen
+    ///   is the one nobody saw. The binding is cleared first and set again on
+    ///   the next turn of the runloop, because a write of the value it already
+    ///   holds is not a scroll.
+    private func land(again: Bool = false) {
+        guard let session = index.sessionId, let last = shown.last?.id else { return }
+        if again {
+            landedSession = session
+            landedTurn = nil
+            Task { @MainActor in landedTurn = last }
+            return
+        }
+        guard landedSession != session else { return }
+        landedSession = session
+        landedTurn = last
     }
 
     private func pick(_ turn: ConversationTurn) {

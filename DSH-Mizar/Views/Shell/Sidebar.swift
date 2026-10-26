@@ -42,6 +42,7 @@ struct SidebarView: View {
     @State private var showingComputers = false
     @State private var showingSync = false
     @State private var showingNewSession = false
+    @State private var showingNewWorkspace = false
     @State private var showingConnection = false
     @State private var showingSettings = false
 
@@ -112,15 +113,29 @@ struct SidebarView: View {
             computerButton
             Spacer(minLength: 0)
             Button {
+                // The window first, whatever else happens. A pass already on the
+                // socket cannot be started a second time, and a tap on the button
+                // that started it is how the operator gets its window back after
+                // putting it away -- the one tap that used to do nothing at all.
                 showingSync = true
+                guard !model.isSyncing else { return }
                 Task { await model.syncAllConversations() }
             } label: {
                 GlassCircleLabel(size: 38) {
-                    SyncingRefreshGlyph(active: model.isSyncing)
+                    RefreshGlyph.live(
+                        running: refreshing,
+                        // A manual pass has a count behind it; an automatic one
+                        // has none to report, and says so by turning instead of
+                        // filling.
+                        fraction: model.isSyncing ? model.syncFraction : nil,
+                    )
                 }
             }
             .buttonStyle(.plain)
-            .disabled(model.isSyncing)
+            // An automatic pass has no window of its own to offer, so the button
+            // is held down for as long as it runs: it says what is happening and
+            // refuses a tap that could only be swallowed.
+            .disabled(model.autoRefreshing && !model.isSyncing)
             .accessibilityLabel(Text("Refresh"))
             .accessibilityIdentifier("sessions.refresh")
             .mizarPopover(isPresented: $showingSync) {
@@ -128,6 +143,9 @@ struct SidebarView: View {
             }
         }
     }
+
+    /// Whether the refresh button should draw itself as working.
+    private var refreshing: Bool { model.isSyncing || model.autoRefreshing }
 
     /// The computer's name, which is also the way to another computer.
     ///
@@ -255,20 +273,65 @@ struct SidebarView: View {
         .animation(.mizarSnappy, value: query.isEmpty)
     }
 
-    // MARK: - New session
+    // MARK: - New session / new workspace
 
+    /// Two doors, side by side.
+    ///
+    /// Starting a session and starting a workspace used to be one button and a
+    /// menu, which read as one feature with a footnote: the workspace -- the
+    /// directory a project lives in -- is the thing an operator arrives with,
+    /// and a session is what they do inside it. Half the width each says they
+    /// are two decisions, and neither is buried behind a long press.
     private var newSession: some View {
-        Button { showingNewSession = true } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "square.and.pencil")
-                    .font(.body.weight(.semibold))
+        HStack(spacing: 8) {
+            newWorkButton
+            newSessionButton
+        }
+    }
+
+    /// Start a workspace: a directory on the computer, which DSH then lists.
+    private var newWorkButton: some View {
+        Button {
+            showingNewWorkspace = true
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "folder.badge.plus")
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.accentColor)
-                    .frame(width: 26)
-                Text("New session")
-                    .font(.body.weight(.medium))
+                Text("New workspace")
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .contentShape(.rect)
+            .liquidSurface(in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous), interactive: true)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("sessions.newWorkspace")
+        .mizarPopover(isPresented: $showingNewWorkspace) {
+            NewWorkspaceView()
+        }
+    }
+
+    /// Start a session, in any of the workspaces the computer has.
+    private var newSessionButton: some View {
+        Button { showingNewSession = true } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "square.and.pencil")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text("New session")
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity)
             .frame(height: 48)
             .contentShape(.rect)
             .liquidSurface(in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous), interactive: true)
@@ -431,23 +494,6 @@ struct SidebarView: View {
             limits[group.path] = index + 1
         }
         loadTitles(for: group)
-    }
-}
-
-/// The header's refresh arrow, turning while a sync runs.
-///
-/// Read the drawer gate on the glyph so this direct environment dependency
-/// stays with the decoration. The sidebar can still update for its other
-/// inputs.
-private struct SyncingRefreshGlyph: View {
-    let active: Bool
-
-    @Environment(\.drawersStill) private var drawersStill
-
-    var body: some View {
-        Image(systemName: "arrow.clockwise")
-            .font(.system(size: 15, weight: .semibold))
-            .symbolEffect(.rotate, options: .repeat(.continuous), isActive: active && drawersStill)
     }
 }
 

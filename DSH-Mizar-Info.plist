@@ -130,5 +130,20 @@
 	-->
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<!--
+	  The two schemes the 社区 section asks about before it opens anything.
+
+	  `canOpenURL` answers "no" for every scheme that is not declared here, so
+	  without this list the QQ row could never tell an installed QQ from an
+	  absent one and would always fall back to copying the group number. Both
+	  spellings are declared because QQ registers both -- `mqqapi` for the card
+	  links this app uses, `mqq` for the older ones a different QQ build may
+	  answer.
+	-->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>mqqapi</string>
+		<string>mqq</string>
+	</array>
 </dict>
 </plist>

@@ -314,9 +314,8 @@ private struct UnreachableView: View {
                     }
             } else {
                 Button("Scan a code") { showingPairing = true }
-                    .mizarPopover(isPresented: $showingPairing) {
-                        PairingView()
-                            .frame(width: 360, height: 540)
+                    .sheet(isPresented: $showingPairing) {
+                        PairingSheet()
                     }
             }
         }

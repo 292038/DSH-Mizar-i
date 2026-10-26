@@ -542,3 +542,14 @@
 "Empty" = "Empty";
 "%lld files · %@" = "%lld files · %@";
 "Files the model delivered are kept on this phone so a second look does not send them again. Clearing them frees the space; the next preview reads the file from the computer." = "Files the model delivered are kept on this phone so a second look does not send them again. Clearing them frees the space; the next preview reads the file from the computer.";
+
+/* 0.9.8 — community, new workspace, desktop naming */
+"Community" = "Community";
+"Website" = "Website";
+"QQ group" = "QQ group";
+"QQ is not installed. The group number has been copied to the clipboard." = "QQ is not installed. The group number has been copied to the clipboard.";
+"New workspace" = "New workspace";
+"Workspace folder" = "Workspace folder";
+"Folder on the computer, for example /Users/you/projects/thing" = "Folder on the computer, for example /Users/you/projects/thing";
+"Create workspace" = "Create workspace";
+"Makes this folder a workspace on the computer and starts a session in it. The folder has to exist there already." = "Makes this folder a workspace on the computer and starts a session in it. The folder has to exist there already.";

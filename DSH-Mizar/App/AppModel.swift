@@ -324,6 +324,32 @@ final class AppModel {
     /// Whether a sync is running.
     var isSyncing: Bool { syncProgress != nil }
 
+    /// How far the running sync has got, for the button that started it.
+    ///
+    /// `nil` until the pass knows how many sessions it has: a ring filled to a
+    /// made-up fraction is a ring that lies about where it is, and the glyph
+    /// draws an unknown fraction as a turning arc instead.
+    var syncFraction: Double? {
+        guard let progress = syncProgress, progress.total > 0 else { return nil }
+        return progress.fraction
+    }
+
+    /// How many automatic passes are on the socket.
+    ///
+    /// A counter, not a flag: a launch's first read can contain a reconnect,
+    /// which runs a pass of its own, and the inner one finishing must not take
+    /// the outer one's state with it.
+    private var automaticRefreshes = 0
+
+    /// Whether a pass nobody tapped is running -- a launch's first read, or the
+    /// return to the foreground.
+    ///
+    /// The sidebar's refresh button reads this. Those passes are the app getting
+    /// current by itself, and before this they were invisible: the button looked
+    /// idle while a full read ran behind it, so a tap that the socket could not
+    /// answer looked like a button that did nothing at all.
+    var autoRefreshing: Bool { automaticRefreshes > 0 }
+
     /// Why the last sync produced nothing to report, when it did.
     ///
     /// The window that reports a refresh has a branch for "there is nothing
@@ -2774,10 +2800,26 @@ final class AppModel {
     /// redial, not before it. A scan that finds the LAN has already dialled it,
     /// and the read below waits only for that one shorter handshake.
     func refreshAfterReturning() async {
+        beginAutomaticRefresh()
+        defer { endAutomaticRefresh() }
         _ = await reconnect(tryingEveryRoute: true)
         await scanForLocalNetwork()
         await refreshSessions(reconnectingIfNeeded: false)
         await refreshInteractions()
+    }
+
+    /// Mark an automatic pass as running, for the refresh button to draw.
+    ///
+    /// Paired with ``endAutomaticRefresh()`` on every path, including the
+    /// cancelled ones: a counter left above zero would leave the button
+    /// spinning and untappable until the app was relaunched.
+    private func beginAutomaticRefresh() {
+        automaticRefreshes += 1
+    }
+
+    /// Mark an automatic pass as finished.
+    private func endAutomaticRefresh() {
+        automaticRefreshes = max(0, automaticRefreshes - 1)
     }
 
     /// Try the operator's own network before the relay.
@@ -4702,7 +4744,12 @@ final class AppModel {
         // what is wrong.
         connectionError = nil
         phase = .ready
+        // A launch's first read, and a reconnect's -- both automatic. The button
+        // that a person would have tapped instead shows itself working; see
+        // ``autoRefreshing``.
+        beginAutomaticRefresh()
         await refreshSessions()
+        endAutomaticRefresh()
         // After the session list, so the first screen is not waiting on a
         // registration the operator never asked for. A round trip, not a
         // dependency: the app works identically whether or not it lands.

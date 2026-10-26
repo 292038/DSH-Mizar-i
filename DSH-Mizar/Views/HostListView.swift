@@ -20,14 +20,19 @@ import MizarKit
 /// Every paired machine, with a way to add more.
 ///
 /// The window that drops out of the computer's name at the top of the sidebar.
-/// Choosing a row switches to that computer; adding one, or renaming one, goes
-/// deeper inside the same window rather than opening another on top of it.
+/// Choosing a row switches to that computer, and renaming one goes deeper inside
+/// the same window rather than opening another on top of it. Adding one is the
+/// exception: the pairing card is a sheet, because it has to grow for its
+/// camera and a popover cannot (see ``PairingSheet``).
 struct HostListView: View {
     @Environment(AppModel.self) private var model
     @State private var path: [HostRoute] = []
+    /// Whether the pairing card is up. A sheet rather than a page pushed into
+    /// this window: the camera it opens is as tall as the screen is wide, and
+    /// only a sheet can grow for it. See ``PairingSheet``.
+    @State private var pairing = false
 
     enum HostRoute: Hashable {
-        case pair
         case rename(String)
     }
 
@@ -58,7 +63,7 @@ struct HostListView: View {
                     }
 
                     Button {
-                        path.append(.pair)
+                        pairing = true
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "plus")
@@ -95,8 +100,6 @@ struct HostListView: View {
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: HostRoute.self) { route in
                 switch route {
-                case .pair:
-                    PairingView()
                 case .rename(let hostId):
                     if let host = model.hosts.first(where: { $0.hostId == hostId }) {
                         RenameForm(host: host, skipTitle: "Cancel") { name in
@@ -105,6 +108,9 @@ struct HostListView: View {
                         }
                     }
                 }
+            }
+            .sheet(isPresented: $pairing) {
+                PairingSheet()
             }
         }
     }
@@ -319,10 +325,10 @@ struct UnpairedView<Mark: View>: View {
                     .buttonStyle(.glassProminent)
                     .controlSize(.extraLarge)
                     .accessibilityIdentifier("unpaired.scan")
-                    // The pairing window grows out of the button, over the navy.
-                    .mizarPopover(isPresented: $showingPairing, arrowEdge: .bottom) {
-                        PairingView()
-                            .frame(width: 360, height: 540)
+                    // A card over the navy, which can grow for the camera; see
+                    // ``PairingSheet``.
+                    .sheet(isPresented: $showingPairing) {
+                        PairingSheet()
                     }
                     .padding(.horizontal, 28)
                     Text("Once it is installed, there is nothing else to set up.")

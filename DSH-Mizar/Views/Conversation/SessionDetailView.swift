@@ -356,9 +356,15 @@ struct SessionDetailView: View {
                         refreshing = false
                     }
                 } label: {
-                    SessionRefreshLabel(active: refreshing)
+                    // The same glyph the sidebar's refresh wears: a ring while
+                    // the read is on the socket, a check when it lands, the
+                    // arrow between. There is no window here to reopen -- a
+                    // reload of one conversation is over in a round trip -- so
+                    // the control is only ever the three states.
+                    RefreshGlyph.live(running: refreshing, fraction: nil, size: 16)
                 }
                 .disabled(refreshing)
+                .accessibilityLabel(Text("Refresh"))
                 .accessibilityIdentifier("session.refresh")
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -1854,21 +1860,6 @@ struct SessionDetailView: View {
         // answer, but an empty page on a screen showing another session's rows
         // means the read did not arrive.
         return statsLanded && conversationSessionId == sessionId
-    }
-}
-
-/// The toolbar's refresh glyph, turning while a by-hand reload runs.
-///
-/// Read the drawer gate on the glyph so this direct environment dependency
-/// stays with the decoration. The page can still update for its other inputs.
-private struct SessionRefreshLabel: View {
-    let active: Bool
-
-    @Environment(\.drawersStill) private var drawersStill
-
-    var body: some View {
-        Label("Refresh", systemImage: "arrow.clockwise")
-            .symbolEffect(.rotate, options: .repeat(.continuous), isActive: active && drawersStill)
     }
 }
 
