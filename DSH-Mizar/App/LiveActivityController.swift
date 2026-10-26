@@ -43,8 +43,10 @@
 //
 //  ## Where an activity may be started from
 //
-//  Apple's rule is that a Live Activity is started from the **foreground**, and
-//  that updating and ending one may happen in the background. This file used to
+//  Apple's rule is that *this app* starts a Live Activity from the **foreground**,
+//  and that updating and ending one may happen in the background. (A card the
+//  system starts on a push-to-start event is the other allowlisted way for one to
+//  appear, and that is the paragraph below.) This file used to
 //  ask from the background anyway, on the theory that what the documentation
 //  forbids and what the system does are not the same question, and it logged the
 //  app state with the answer. The answer never produced a card that appeared off
@@ -55,26 +57,32 @@
 //  to make one appear. The next foreground refresh is the retry, and that is why
 //  there is no queue here and no "start owed" flag.
 //
-//  **The phone in a pocket is the case that has to be said out loud.** A refresh
-//  that runs off screen (`BackgroundRefresh`) can keep an activity that is
-//  already up current, and this controller is what does it. It cannot make one
-//  *appear* where none was ever started: the documented way to do that is
-//  push-to-start -- a separate APNs token for *starting* activities, registered
-//  with the host, and the host sending an APNs start event -- and this app has
-//  none of that. A session that begins while the app has not been opened reaches
-//  the island when it is next opened, and not before. Saying so here is the
-//  point: a background refresh that is mistaken for a start is a promise the app
-//  cannot keep.
+//  **The phone in a pocket can now get a card, and only through the host.** A
+//  refresh that runs off screen (`BackgroundRefresh`) could always keep an
+//  activity that is already up current; what it cannot do is make one appear.
+//  That is push-to-start, and it is a different token from everything above:
+//  `pushToStartTokenUpdates` issues one per *install* for starting activities,
+//  `watchForRemoteStart()` keeps it, and `push.register` carries it as
+//  `liveActivityStartToken`. With it the plugin can tell the relay to start a
+//  card the moment a session begins -- while this app is suspended, with no code
+//  of it running -- and that is the only path by which the island appears on a
+//  phone nobody has opened. Everything this controller does stays the same
+//  after that: a start event arrives as an activity that is already there, and
+//  the next `refresh` adopts it, updates it, or ends it.
 //
-//  **The activity's own push token is a different thing, and this build has
-//  one.** An activity started with `pushType: .token` is handed a token that
-//  addresses that card, and the app registers it with the host. The relay can
-//  then send the APNs end event when the session finishes while the app has been
-//  suspended -- the card comes down with no code of this app running at all.
-//  That is the case `apply`'s local end cannot cover, and the reason the request
-//  carries `.token` below. The *start* event still needs push-to-start, which is
-//  still absent; the two tokens are not the same thing and registering one does
-//  not conjure the other.
+//  **Such a card is not end-addressable until this app runs.** An end push
+//  addresses the activity's own token, and only this app ever learns that token
+//  -- by reading `Activity.activities` while it is running. A card started
+//  remotely therefore comes down here, on the first refresh that finds nothing
+//  running, and not by an end push; the relay's end path still covers only the
+//  cards this app started itself.
+//
+//  **The three tokens are not interchangeable.** The device token addresses the
+//  phone's alerts. The activity token (`Activity.pushToken`, `pushType: .token`
+//  on the request below) addresses one card and dies with it: it is how a card is
+//  ended while this app is suspended. The push-to-start token addresses the
+//  *next* card, which does not exist yet. Registering one does not conjure the
+//  others.
 //
 //  ## The flag
 //
@@ -128,6 +136,13 @@ final class LiveActivityController {
     /// may not be the one it was scheduled for.
     private var pushTokenChecks: Task<Void, Never>?
 
+    /// The subscription to the token that starts an activity from the host.
+    ///
+    /// One for the process, replaced by nothing, cancelled by nothing: it stops
+    /// when this object goes away, and until then it is the app's only source of
+    /// the address that makes a pocketed phone show the island.
+    private var startTokenWatch: Task<Void, Never>?
+
     /// How long after a start to look for the token again.
     ///
     /// ActivityKit does not hand the token over with `request`: it is sometimes
@@ -157,6 +172,34 @@ final class LiveActivityController {
     /// session list, milliseconds later.
     func appOpened() {
         appOpenedSinceLastFinish = true
+        // An activity started from the host, rather than from here, needs a
+        // token iOS only issues after a launch. Subscribing at the moment the
+        // app is opened is the earliest point where the subscription has
+        // something to hear.
+        watchForRemoteStart()
+    }
+
+    /// Watch for the token that can start an activity while this app is not
+    /// running, and keep it where `push.register` reads it.
+    ///
+    /// Per install rather than per card, so this is one task for the life of the
+    /// process: the sequence reports the token when it appears and when it
+    /// rotates, and an activity ending says nothing about it. Elements are `Data`
+    /// and the sequence hangs off the *type*, so unlike
+    /// ``ActivityCalls/pushToken`` this can be consumed from a task without
+    /// handing an `Activity` across an isolation boundary.
+    private func watchForRemoteStart() {
+        guard startTokenWatch == nil else { return }
+        startTokenWatch = Task { [weak self] in
+            for await token in Activity<DSHMizarActivityAttributes>.pushToStartTokenUpdates {
+                guard !Task.isCancelled, let self else { return }
+                let hex = LiveActivityPushToken.hex(token)
+                if LiveActivityStartTokenStore.store(hex) {
+                    // Length, never the token: see ``ActivityLog``.
+                    self.log.add(.live, "live-activity start token: \(hex.count) characters")
+                }
+            }
+        }
     }
 
     /// The operator is looking at the app, and the app knows what is running.
@@ -282,8 +325,7 @@ final class LiveActivityController {
             return
         }
 
-        switch decision.phase {
-        case .finished:
+        if decision.phase.isFinished {
             // Nothing is running, so nothing should be counting: the activity is
             // ended, not updated to the check. The check is what the island shows
             // *while* the activity comes down -- `.immediate` here means the card
@@ -299,37 +341,37 @@ final class LiveActivityController {
             }
             log.add(.live, await ActivityCalls.endAll(with: decision.phase, why: "nothing is running any more"))
             forgetPushToken()
+            return
+        }
 
-        case .running:
-            // See the note at the top of the file: a session is running again, so
-            // the opening the flag records is no longer "since the last finish".
-            appOpenedSinceLastFinish = false
-            let state = appStateWord
-            guard ActivityCalls.hasPresentable else {
-                // A card that is not up is started from the foreground, and only
-                // from there. Asking from the background was the old behaviour:
-                // the system does not start one for an app behind the screen, so
-                // the attempt bought a log line and cost a system call on every
-                // wake -- on the wake that has the least time to spare. The next
-                // foreground refresh finds no activity and asks again.
-                guard !isOffScreen else {
-                    log.add(.live, "not started: the app is off screen, and an activity starts in the foreground")
-                    return
-                }
-                log.add(.live, await ActivityCalls.start(decision.phase, appState: state, runningRowCount: runningRowCount))
-                // The token is not part of the request's answer: it may be there
-                // already and it may arrive a second from now, which is what the
-                // bounded retry is for.
-                capturePushToken()
-                pollPushTokenAfterStart()
+        // See the note at the top of the file: a session is running again, so
+        // the opening the flag records is no longer "since the last finish".
+        appOpenedSinceLastFinish = false
+        let state = appStateWord
+        guard ActivityCalls.hasPresentable else {
+            // A card that is not up is started from the foreground, and only
+            // from there. Asking from the background was the old behaviour:
+            // the system does not start one for an app behind the screen, so
+            // the attempt bought a log line and cost a system call on every
+            // wake -- on the wake that has the least time to spare. The next
+            // foreground refresh finds no activity and asks again.
+            guard !isOffScreen else {
+                log.add(.live, "not started: the app is off screen, and an activity starts in the foreground")
                 return
             }
-            if let line = await ActivityCalls.update(to: decision.phase, appState: state) { log.add(.live, line) }
-            // Read on every refresh, not only after a start: the token may have
-            // arrived since the last look, and a card the system ended underneath
-            // this app leaves no other trace.
+            log.add(.live, await ActivityCalls.start(decision.phase, appState: state, runningRowCount: runningRowCount))
+            // The token is not part of the request's answer: it may be there
+            // already and it may arrive a second from now, which is what the
+            // bounded retry is for.
             capturePushToken()
+            pollPushTokenAfterStart()
+            return
         }
+        if let line = await ActivityCalls.update(to: decision.phase, appState: state) { log.add(.live, line) }
+        // Read on every refresh, not only after a start: the token may have
+        // arrived since the last look, and a card the system ended underneath
+        // this app leaves no other trace.
+        capturePushToken()
     }
 
     // MARK: - The card's push token
@@ -501,7 +543,7 @@ private enum ActivityCalls {
     ///   - appState: where the app was, for the log line.
     ///   - runningRowCount: how many sessions it was built from, for the log line.
     /// - Returns: what to write in the log.
-    static func start(_ phase: LiveActivityPhase, appState: String, runningRowCount: Int) async -> String {
+    static func start(_ phase: LiveActivityState, appState: String, runningRowCount: Int) async -> String {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             // A different switch from the app's own: this one is iOS Settings >
             // DSH-Mizar > Live Activities. Nothing can be done about it here, and
@@ -540,7 +582,7 @@ private enum ActivityCalls {
     ///     whole path exists to make, and the word has to be in the line to be
     ///     the evidence.
     /// - Returns: what to write in the log, or `nil` when there was nothing to do.
-    static func update(to phase: LiveActivityPhase, appState: String) async -> String? {
+    static func update(to phase: LiveActivityState, appState: String) async -> String? {
         let content = ActivityContent(state: phase, staleDate: nil)
         var changed = 0
         for activity in presentable where !saysTheSame(activity, as: phase) {
@@ -567,7 +609,7 @@ private enum ActivityCalls {
     ///   - phase: the state to end with.
     ///   - why: what to write in the log.
     /// - Returns: what to write in the log.
-    static func endAll(with phase: LiveActivityPhase, why: String) async -> String {
+    static func endAll(with phase: LiveActivityState, why: String) async -> String {
         let content = ActivityContent(state: phase, staleDate: nil)
         let all = Island.activities
         for activity in all {
@@ -590,20 +632,15 @@ private enum ActivityCalls {
     ///   - activity: the activity on screen.
     ///   - phase: what the decision layer says it should show.
     /// - Returns: whether there is nothing to send.
-    private static func saysTheSame(_ activity: Island, as phase: LiveActivityPhase) -> Bool {
-        switch (activity.content.state, phase) {
-        case (.finished, .finished):
-            return true
-        case (.running(let mine), .running(let theirs)):
-            guard mine.count == theirs.count else { return false }
-            return zip(mine, theirs).allSatisfy { current, next in
-                current.id == next.id
-                    && current.prompt == next.prompt
-                    && current.title == next.title
-                    && abs(current.countingSince.timeIntervalSince(next.countingSince)) < 1
-            }
-        default:
-            return false
+    private static func saysTheSame(_ activity: Island, as phase: LiveActivityState) -> Bool {
+        let mine = activity.content.state.rows
+        let theirs = phase.rows
+        guard mine.count == theirs.count else { return false }
+        return zip(mine, theirs).allSatisfy { current, next in
+            current.id == next.id
+                && current.prompt == next.prompt
+                && current.title == next.title
+                && abs(current.countingSince.timeIntervalSince(next.countingSince)) < 1
         }
     }
 
@@ -617,14 +654,10 @@ private enum ActivityCalls {
     ///
     /// - Parameter phase: the phase.
     /// - Returns: one line.
-    private static func describe(_ phase: LiveActivityPhase) -> String {
-        switch phase {
-        case .finished:
-            return "nothing running"
-        case .running(let rows):
-            let described = rows.map(\.id).joined(separator: ", ")
-            return "\(rows.count) row(s): \(described)"
-        }
+    private static func describe(_ phase: LiveActivityState) -> String {
+        guard !phase.rows.isEmpty else { return "nothing running" }
+        let described = phase.rows.map(\.id).joined(separator: ", ")
+        return "\(phase.rows.count) row(s): \(described)"
     }
 
     /// An ActivityKit failure, as one line.

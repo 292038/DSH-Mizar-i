@@ -196,3 +196,62 @@ struct LiveActivityPushTokenStoreTests {
         }
     }
 }
+
+// MARK: - Where the token that starts one is kept
+
+@Suite("Where the push-to-start token is kept", .serialized)
+struct LiveActivityStartTokenStoreTests {
+    private func temporaryDefaults() -> UserDefaults {
+        let name = "mizar.tests.liveActivityStartToken.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        return defaults
+    }
+
+    @Test("starts with no token")
+    func startsEmpty() {
+        #expect(LiveActivityStartTokenStore.stored(in: temporaryDefaults()) == nil)
+    }
+
+    @Test("keeps a token across the process that wrote it")
+    func roundTrips() {
+        let defaults = temporaryDefaults()
+        let token = String(repeating: "0123456789abcdef", count: 4)
+
+        #expect(LiveActivityStartTokenStore.store(token, in: defaults))
+        #expect(defaults.string(forKey: LiveActivityStartTokenStore.tokenKey) == token)
+        #expect(LiveActivityStartTokenStore.stored(in: defaults) == token)
+    }
+
+    @Test("lives beside the activity token rather than in it")
+    func separateKey() {
+        // The two are different things: one addresses a card that exists and the
+        // other the card that does not. A store that reused the key would have
+        // the app forget how to start a card every time one ended.
+        let defaults = temporaryDefaults()
+        #expect(LiveActivityPushTokenStore.tokenKey != LiveActivityStartTokenStore.tokenKey)
+
+        #expect(LiveActivityPushTokenStore.store("deadbeef", in: defaults))
+        #expect(LiveActivityStartTokenStore.store("feedface", in: defaults))
+        #expect(LiveActivityPushTokenStore.stored(in: defaults) == "deadbeef")
+        #expect(LiveActivityStartTokenStore.stored(in: defaults) == "feedface")
+
+        // Clearing one says nothing about the other.
+        #expect(LiveActivityPushTokenStore.store(nil, in: defaults))
+        #expect(LiveActivityStartTokenStore.stored(in: defaults) == "feedface")
+    }
+
+    @Test("refuses what is not a token, and normalises what is one")
+    func refusesGarbage() {
+        let defaults = temporaryDefaults()
+        #expect(!LiveActivityStartTokenStore.store("<0a1b>", in: defaults))
+        #expect(!LiveActivityStartTokenStore.store("aabbc", in: defaults))
+        #expect(LiveActivityStartTokenStore.stored(in: defaults) == nil)
+
+        // Capitals and padding are the same token, and the host validates
+        // lowercase: normalising is what keeps a value read back from the file
+        // on the right side of a pattern it did not write itself.
+        #expect(LiveActivityStartTokenStore.store(" AABB \n", in: defaults))
+        #expect(LiveActivityStartTokenStore.stored(in: defaults) == "aabb")
+    }
+}

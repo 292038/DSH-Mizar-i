@@ -621,6 +621,13 @@ final class AppModel {
     /// is a card that cannot be ended remotely until then.
     @ObservationIgnored private var liveActivityTokenObserver: (any NSObjectProtocol)?
 
+    /// The observer on the push-to-start token.
+    ///
+    /// Registered beside the one above and for the same reason: the token is
+    /// issued by the system on its own schedule, and the registration has to
+    /// follow it whenever it appears.
+    @ObservationIgnored private var liveActivityStartTokenObserver: (any NSObjectProtocol)?
+
     /// The archive the last successful export produced.
     ///
     /// Kept so the screen can keep saying that it happened, with the file's name
@@ -743,6 +750,17 @@ final class AppModel {
         // what lets the registration itself be the async call it is.
         liveActivityTokenObserver = NotificationCenter.default.addObserver(
             forName: LiveActivityPushTokenStore.changed,
+            object: nil,
+            queue: .main,
+        ) { [weak self] _ in
+            Task { await self?.syncPushRegistration() }
+        }
+        // The other token the registration carries, and the one that arrives
+        // earliest: the push-to-start token is issued after a launch, possibly
+        // before any card exists, so the registration that was made on connect
+        // is nearly always the one that has to be repeated.
+        liveActivityStartTokenObserver = NotificationCenter.default.addObserver(
+            forName: LiveActivityStartTokenStore.changed,
             object: nil,
             queue: .main,
         ) { [weak self] _ in
@@ -4209,6 +4227,11 @@ final class AppModel {
         // or already dead.
         let liveActivityToken = LiveActivityPushTokenStore.stored()
         if let liveActivityToken { fields["liveActivityToken"] = .string(liveActivityToken) }
+        // The address that can start a card rather than end one. Carried even
+        // when no card is up: that is exactly the state it is for, and unlike
+        // `liveActivityToken` its absence does not mean anything has ended.
+        let liveActivityStartToken = LiveActivityStartTokenStore.stored()
+        if let liveActivityStartToken { fields["liveActivityStartToken"] = .string(liveActivityStartToken) }
         let payload = JSONValue.object(fields)
         do {
             _ = try await loggedCall("push.register", payload: payload, on: connection, as: PushRegistrationResult.self)
@@ -4219,7 +4242,9 @@ final class AppModel {
                 .push,
                 "registered with the host: \(token.count) characters, \(PushRegistration.environment), \(PushRegistration.locale)"
                     + "; live activity token "
-                    + (liveActivityToken.map { "held (\($0.count) characters)" } ?? "none"),
+                    + (liveActivityToken.map { "held (\($0.count) characters)" } ?? "none")
+                    + "; start token "
+                    + (liveActivityStartToken.map { "held (\($0.count) characters)" } ?? "none"),
             )
         } catch {
             // Nothing to show: a phone that cannot be notified is a worse app,

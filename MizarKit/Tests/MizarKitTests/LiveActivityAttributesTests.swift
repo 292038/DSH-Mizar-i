@@ -34,7 +34,7 @@ struct LiveActivityAttributesTests {
 
     @Test("carry the rows and their clocks as the content state")
     func stateRoundTripsAsTheContentState() throws {
-        let phase = LiveActivityPhase.running(rows: [
+        let phase = LiveActivityState(rows: [
             LiveActivityRow(
                 id: "s-1",
                 prompt: "把登录页那个多余的转圈去掉…",
@@ -45,11 +45,12 @@ struct LiveActivityAttributesTests {
         ])
         let data = try JSONEncoder().encode(phase)
 
-        #expect(try JSONDecoder().decode(LiveActivityPhase.self, from: data) == phase)
-        // A finished activity is the same trip with no rows: the check the
-        // island draws is the *case*, not a row that says so.
-        let finished = try JSONEncoder().encode(LiveActivityPhase.finished)
-        #expect(try JSONDecoder().decode(LiveActivityPhase.self, from: finished) == .finished)
+        #expect(try JSONDecoder().decode(LiveActivityState.self, from: data) == phase)
+        // A finished activity is the same trip with no rows: nothing running is
+        // an empty list, not a case of its own, because the payload's keys have
+        // to be the state's properties.
+        let finished = try JSONEncoder().encode(LiveActivityState())
+        #expect(try JSONDecoder().decode(LiveActivityState.self, from: finished) == LiveActivityState())
     }
 
     @Test("give each row's clock as a reference-date number")
@@ -59,18 +60,17 @@ struct LiveActivityAttributesTests {
         // the time again, so a date that arrived as an ISO string, or as
         // seconds since 1970 where the reader expected seconds since 2001, is a
         // clock on the island that is wrong by 31 years or absent entirely.
-        let phase = LiveActivityPhase.running(rows: [
+        let phase = LiveActivityState(rows: [
             LiveActivityRow(id: "s-1", prompt: "run", elapsed: 134, countingSince: epoch.addingTimeInterval(-134)),
         ])
 
         let json = try #require(
             try JSONSerialization.jsonObject(with: JSONEncoder().encode(phase)) as? [String: Any],
         )
-        // The case name is the outer key and its payload is nested under it --
-        // the shape the synthesised conformance writes for an enum with
-        // associated values, and therefore the shape the widget reads.
-        let payload = try #require(json["running"] as? [String: Any])
-        let rows = try #require(payload["rows"] as? [[String: Any]])
+        // `rows` is a property of the state, so it is the outer key: the shape
+        // Apple's push contract describes ("the keys are the properties of your
+        // ContentState"), and therefore the shape the widget reads.
+        let rows = try #require(json["rows"] as? [[String: Any]])
         let first = try #require(rows.first)
         let since = try #require(first["countingSince"] as? NSNumber)
         // 134 seconds before the instant, as a plain number: the reference-date
@@ -85,7 +85,11 @@ struct LiveActivityAttributesTests {
         // hashes a phase today; the conformance is a requirement of the type
         // system, and this is the smallest thing that fails if it is ever lost.
         let row = LiveActivityRow(id: "s-1", prompt: "run", elapsed: 1, countingSince: epoch)
-        let states: Set<LiveActivityPhase> = [.running(rows: [row]), .finished, .running(rows: [row])]
+        let states: Set<LiveActivityState> = [
+            LiveActivityState(rows: [row]),
+            LiveActivityState(),
+            LiveActivityState(rows: [row]),
+        ]
 
         #expect(states.count == 2)
     }

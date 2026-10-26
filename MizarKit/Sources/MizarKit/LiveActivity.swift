@@ -309,20 +309,34 @@ public struct LiveActivityRow: Codable, Sendable, Hashable, Identifiable {
 /// What the activity is showing.
 ///
 /// This is the value an activity's `ContentState` holds. The widget draws it and
-/// decides nothing: which of the two it is *is* the difference between a clock
-/// and a green check.
-public enum LiveActivityPhase: Codable, Sendable, Hashable {
-    /// At least one session is running: the longest-running one first, one row
-    /// or two.
-    case running(rows: [LiveActivityRow])
-    /// Nothing is running, so nothing is counting.
-    case finished
+/// decides nothing: whether it has rows is the difference between a clock and a
+/// green check.
+///
+/// **A struct, and that is a wire decision.** This type is also what a push
+/// notification carries as `content-state`, and Apple's rule for that field is
+/// that its keys are the properties of the state type. It used to be an enum
+/// with associated values, which encodes as `{"finished":{}}` or
+/// `{"running":{"rows":[…]}}` -- a shape APNs accepts (every required key is
+/// there) and the device then has nowhere to put, because there is no property
+/// named `finished` or `running` for the keys to land on.
+///
+/// Measured on a real phone, 2026-10-26: three end pushes were delivered to the
+/// same card over twelve minutes, the card kept counting, and the token was
+/// never retired -- which is what a state the card cannot decode looks like
+/// from outside. The rows are now a property, so the payload is
+/// `{"rows":[…]}` and there is nothing left to invent.
+public struct LiveActivityState: Codable, Sendable, Hashable {
+    /// The rows to draw, longest-running first: one or two, and none when
+    /// nothing is running.
+    public var rows: [LiveActivityRow]
 
-    /// The rows to draw, empty when nothing is running.
-    public var rows: [LiveActivityRow] {
-        if case .running(let rows) = self { return rows }
-        return []
+    /// - Parameter rows: the rows to draw; empty means nothing is running.
+    public init(rows: [LiveActivityRow] = []) {
+        self.rows = rows
     }
+
+    /// Whether nothing is running, so nothing is counting.
+    public var isFinished: Bool { rows.isEmpty }
 
     /// The time on the island's right side: the clock of the session that has
     /// been running longest, which is the first row's.
@@ -348,14 +362,14 @@ public enum LiveActivityPhase: Codable, Sendable, Hashable {
 ///   finish, and this covers a card that outlived what the app knows.
 public struct LiveActivityDecision: Codable, Sendable, Equatable {
     /// What to draw.
-    public let phase: LiveActivityPhase
+    public let phase: LiveActivityState
     /// Whether the activity should be ended.
     public let shouldDismiss: Bool
 
     /// - Parameters:
     ///   - phase: what to draw.
     ///   - shouldDismiss: whether to end the activity.
-    public init(phase: LiveActivityPhase, shouldDismiss: Bool) {
+    public init(phase: LiveActivityState, shouldDismiss: Bool) {
         self.phase = phase
         self.shouldDismiss = shouldDismiss
     }
@@ -432,9 +446,9 @@ public struct LiveActivityDecision: Codable, Sendable, Equatable {
             // the second, confirming half of the same rule: the operator has been
             // back since the last finish, so a card still up is one whose moment
             // has passed.
-            return LiveActivityDecision(phase: .finished, shouldDismiss: appOpenedSinceLastFinish)
+            return LiveActivityDecision(phase: LiveActivityState(), shouldDismiss: appOpenedSinceLastFinish)
         }
-        return LiveActivityDecision(phase: .running(rows: rows), shouldDismiss: false)
+        return LiveActivityDecision(phase: LiveActivityState(rows: rows), shouldDismiss: false)
     }
 
     /// The session that has been running longest, first.

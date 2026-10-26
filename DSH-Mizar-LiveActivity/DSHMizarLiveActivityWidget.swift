@@ -7,7 +7,7 @@
 //  Two processes are involved and this is the second one. The app decides what
 //  the activity *is* -- which sessions are running, what to call them, when the
 //  whole thing should come down -- and hands the answer over as a value
-//  (`LiveActivityPhase`, in MizarKit). This file draws that value and decides
+//  (`LiveActivityState`, in MizarKit). This file draws that value and decides
 //  nothing: which of the two phases it is *is* the difference between a clock and
 //  a green check.
 //
@@ -359,7 +359,7 @@ private struct Clock: View {
 /// One row's worth of information, deliberately. On the compact island it is a
 /// duration and nothing else; the card asks for the same view at a larger size.
 private struct Headline: View {
-    let state: LiveActivityPhase
+    let state: LiveActivityState
     var font: Font = .caption.monospacedDigit()
 
     var body: some View {
@@ -398,7 +398,7 @@ private struct FinishedCheck: View {
 /// hours. The expanded island keeps the compact type: its height is its own cap
 /// and the operator asked for the card to grow, not the island.
 private struct SessionRows: View {
-    let state: LiveActivityPhase
+    let state: LiveActivityState
     /// Whether to draw the larger card typography.
     var prominent = false
 
@@ -485,7 +485,7 @@ private struct CardTitle: View {
 /// notification banners this is asked to match cannot both fit whole. The rows
 /// are the part that must not be squeezed, and they are the part that grows.
 private struct LiveActivityCard: View {
-    let state: LiveActivityPhase
+    let state: LiveActivityState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -493,7 +493,7 @@ private struct LiveActivityCard: View {
             if state.rows.isEmpty {
                 // Nothing is running. The decision layer has no rows to give and
                 // the card says so in words rather than by being blank, because
-                // an activity is only ever *started* running: `.finished` here
+                // an activity is only ever *started* running: no rows here
                 // means work that has just stopped, not an empty start.
                 HStack(spacing: 6) {
                     FinishedCheck()

@@ -20,7 +20,7 @@
 //  widget instead (see `LiveActivityWidget.swift`).
 //
 //  So the whole of what crosses the process boundary is the `ContentState`, and
-//  that is `LiveActivityPhase`: the rows, their clocks, and whether anything is
+//  that is `LiveActivityState`: the rows, their clocks, and whether anything is
 //  running at all. Every rule about what it means was decided in this module
 //  before either process asked -- see ``LiveActivityDecision``.
 //
@@ -38,7 +38,7 @@ import ActivityKit
 /// What one DSH-Mizar Live Activity is about.
 ///
 /// Carries nothing: see the note at the top of this file. The activity's state --
-/// which is everything the widget draws -- is ``LiveActivityPhase``.
+/// which is everything the widget draws -- is ``LiveActivityState``.
 ///
 /// `Codable` here rather than only inside the conditional conformance below,
 /// because an attributes type *is* `Codable` -- `ActivityAttributes` refines
@@ -54,6 +54,6 @@ public struct DSHMizarActivityAttributes: Codable, Sendable, Equatable {
 #if os(iOS) && canImport(ActivityKit)
 extension DSHMizarActivityAttributes: ActivityAttributes {
     /// The rows and whether anything is counting.
-    public typealias ContentState = LiveActivityPhase
+    public typealias ContentState = LiveActivityState
 }
 #endif

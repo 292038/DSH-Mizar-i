@@ -27,6 +27,14 @@
 //  one you had". The host validates it with `^[0-9a-f]{1,200}$`, so everything
 //  this file stores or returns has already been normalised to that shape.
 //
+//  **A third token, and a different one.** `pushToStartTokenUpdates` hands the
+//  app a token that starts an activity where none exists -- it is not the
+//  per-activity token above, it does not die with a card, and it is what makes
+//  the island appear while the phone is in a pocket. It travels as
+//  `"liveActivityStartToken"`, and its absence means something different: a card
+//  is not "down", the install simply has not been handed one yet. That is why
+//  the store below is a sibling rather than a second key in the first one.
+//
 
 import Foundation
 
@@ -149,6 +157,62 @@ public enum LiveActivityPushTokenStore {
     ///   - raw: the token from `Activity.pushToken`, already hex-encoded, or
     ///     `nil` when no activity is up. An invalid token is treated as `nil`:
     ///     a card has ended, not something the host could push to.
+    ///   - defaults: where to write.
+    /// - Returns: whether the stored value changed -- which is also whether
+    ///   ``changed`` was posted.
+    @discardableResult
+    public static func store(_ raw: String?, in defaults: UserDefaults = .standard) -> Bool {
+        let token = LiveActivityPushToken.validated(raw)
+        guard stored(in: defaults) != token else { return false }
+        if let token {
+            defaults.set(token, forKey: tokenKey)
+        } else {
+            defaults.removeObject(forKey: tokenKey)
+        }
+        NotificationCenter.default.post(name: changed, object: nil)
+        return true
+    }
+}
+
+// MARK: - The token that starts one
+
+/// Where this install keeps the token that can start a Live Activity it has not
+/// started itself.
+///
+/// `pushToStartTokenUpdates` issues this per app install rather than per card,
+/// which is the whole difference this type exists for: the per-activity token in
+/// ``LiveActivityPushTokenStore`` is cleared the moment its card ends, while this
+/// one has to survive every card that comes and goes -- it is what the host
+/// addresses when there is no card to address, and the only way the island can
+/// appear on a phone whose app has not been opened since the session began.
+///
+/// Absence means "iOS has not handed this install a token yet", which is true
+/// before the first launch after an install and after some system events. It is
+/// not a statement about a card, so nothing here may be read as "no card is up".
+public enum LiveActivityStartTokenStore {
+    /// Where the token lives in `UserDefaults`.
+    public static let tokenKey = "mizar.liveActivityStartToken"
+
+    /// Posted when the stored token changes, with no object.
+    ///
+    /// The app observes this and sends a new `push.register`, for the same reason
+    /// the per-activity store posts one: the token arrives after the app is
+    /// already registered, and it rotates.
+    public static let changed = Notification.Name("mizar.liveActivity.startToken")
+
+    /// The token as it is stored, if one is.
+    ///
+    /// - Parameter defaults: where to read.
+    /// - Returns: the token, or `nil` when this install has none.
+    public static func stored(in defaults: UserDefaults = .standard) -> String? {
+        LiveActivityPushToken.validated(defaults.string(forKey: tokenKey))
+    }
+
+    /// Remember the token ActivityKit issued, or forget one that stopped being
+    /// valid.
+    ///
+    /// - Parameters:
+    ///   - raw: the token, already hex-encoded, or `nil`.
     ///   - defaults: where to write.
     /// - Returns: whether the stored value changed -- which is also whether
     ///   ``changed`` was posted.

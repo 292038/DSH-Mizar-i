@@ -203,7 +203,7 @@ struct LiveActivityTests {
     func finishedWhenNothingRuns() {
         let decision = decide([], at: t0)
 
-        #expect(decision.phase == .finished)
+        #expect(decision.phase.isFinished)
         #expect(decision.phase.rows.isEmpty)
         // The island's right side is a green check from here: there is no
         // session left for a clock to belong to.
@@ -220,7 +220,7 @@ struct LiveActivityTests {
         // with time.
         for minutes in [0.0, 1.0, 60.0, 1_440.0] {
             let decision = decide([], at: at(minutes * 60))
-            #expect(decision.phase == .finished)
+            #expect(decision.phase.isFinished)
             #expect(!decision.shouldDismiss, "the finish was called witnessed after \(minutes) minutes")
         }
     }
@@ -260,7 +260,7 @@ struct LiveActivityTests {
         // It ends while the app is open, so the finish is one the operator saw --
         // and the dismissal is consumed with it.
         let endedWithTheAppOpen = step([], at: at(60))
-        #expect(endedWithTheAppOpen.phase == .finished)
+        #expect(endedWithTheAppOpen.phase.isFinished)
         #expect(endedWithTheAppOpen.shouldDismiss)
         #expect(dismissals == 1)
 
@@ -269,7 +269,7 @@ struct LiveActivityTests {
         // there was none.
         #expect(step([second], at: at(120)).phase.rows.map(\.id) == ["s-2"])
         let unwitnessed = step([], at: at(180))
-        #expect(unwitnessed.phase == .finished)
+        #expect(unwitnessed.phase.isFinished)
         #expect(!unwitnessed.shouldDismiss)
         #expect(dismissals == 1)
 
@@ -283,7 +283,7 @@ struct LiveActivityTests {
         // nothing may start an activity again, and a finish already witnessed is
         // not reported as witnessed twice.
         let after = step([], at: at(4_000))
-        #expect(after.phase == .finished)
+        #expect(after.phase.isFinished)
         #expect(!after.shouldDismiss)
         #expect(dismissals == 2)
     }
@@ -500,15 +500,15 @@ struct LiveActivityTests {
         )
         let data = try JSONEncoder().encode(decision.phase)
 
-        // Case names are a wire format between two processes that are updated
-        // together but not at the same instant. Pinned by name here so a rename
-        // is a failing test rather than an activity that draws nothing on
-        // somebody's phone.
+        // Property names are a wire format between two processes that are
+        // updated together but not at the same instant -- and, since the relay
+        // builds this same JSON for a push, between three repositories. Pinned
+        // here so a rename is a failing test rather than an activity that draws
+        // nothing on somebody's phone.
         let text = String(decoding: data, as: UTF8.self)
-        #expect(text.contains("\"running\""))
-        #expect(text.contains("\"rows\""))
+        #expect(text.hasPrefix("{\"rows\":"))
         #expect(text.contains("\"title\""))
-        let read = try JSONDecoder().decode(LiveActivityPhase.self, from: data)
+        let read = try JSONDecoder().decode(LiveActivityState.self, from: data)
         #expect(read == decision.phase)
         #expect(read.rows.first?.title == "登录页的转圈")
         #expect(read.rows.first?.displayTitle == "登录页的转圈")
@@ -519,21 +519,28 @@ struct LiveActivityTests {
 
         // The other case carries no rows at all, and the decision as a whole is
         // `Codable` like everything else here.
-        let finished = try JSONEncoder().encode(LiveActivityPhase.finished)
-        #expect(try JSONDecoder().decode(LiveActivityPhase.self, from: finished) == .finished)
+        let finished = try JSONEncoder().encode(LiveActivityState())
+        #expect(String(decoding: finished, as: UTF8.self) == #"{"rows":[]}"#)
+        #expect(try JSONDecoder().decode(LiveActivityState.self, from: finished) == LiveActivityState())
         #expect(try JSONDecoder().decode(LiveActivityDecision.self, from: JSONEncoder().encode(decision)) == decision)
     }
 
     @Test("decodes the end push's content-state exactly as the relay sends it")
     func endPushContentStateDecodes() throws {
         // Cross-repo contract, pinned from this side: the relay's end push
-        // carries `{"finished":{}}` as its `content-state` (see
+        // carries `{"rows":[]}` as its `content-state` (see
         // `buildLiveActivityEndPayload` in dsh-relay). ActivityKit decodes it
         // with a plain JSONDecoder, and a literal that no longer matches this
-        // enum is an end event iOS accepts and then drops — the activity keeps
+        // state is an end event iOS accepts and then drops — the activity keeps
         // counting, which is the bug the payload exists to fix.
-        let literal = Data(#"{"finished":{}}"#.utf8)
-        #expect(try JSONDecoder().decode(LiveActivityPhase.self, from: literal) == .finished)
+        //
+        // The literal is the point. An enum with associated values used to
+        // encode the same information as `{"finished":{}}`, which APNs accepts
+        // (the required keys are all there) and the device cannot place: three
+        // end pushes were delivered to one card on 2026-10-26 and the card kept
+        // counting. Keys that are properties have nowhere to go wrong.
+        let literal = Data(#"{"rows":[]}"#.utf8)
+        #expect(try JSONDecoder().decode(LiveActivityState.self, from: literal) == LiveActivityState())
     }
 
     @Test("an activity written before rows carried titles still decodes")
