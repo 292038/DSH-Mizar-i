@@ -344,6 +344,14 @@ final class LiveActivityController {
             return
         }
 
+        // One card, not two. This app cannot start a second one -- the request
+        // is guarded by `hasPresentable` -- but a start push can, because the
+        // system creates that card while no code of this app is running. The
+        // moment it runs is the first moment the duplicate is visible to
+        // anybody, so it is the moment to take it down.
+        if let line = await ActivityCalls.endSurplus(why: "a second card for the same computer") {
+            log.add(.live, line)
+        }
         // See the note at the top of the file: a session is running again, so
         // the opening the flag records is no longer "since the last finish".
         appOpenedSinceLastFinish = false
@@ -616,6 +624,29 @@ private enum ActivityCalls {
             await activity.end(content, dismissalPolicy: .immediate)
         }
         return "ended \(all.count) activity: \(why)"
+    }
+
+    /// End every activity but one, when something has posted a second.
+    ///
+    /// A start push creates a card without this app, so the app cannot refuse
+    /// it; what it can do is notice on the next run, and this is that. The
+    /// content is about to be written to the survivor anyway, so which one is
+    /// kept does not change what the operator sees -- only that there is one.
+    ///
+    /// - Parameter why: what to write in the log.
+    /// - Returns: the line to write, or `nil` when there was only one activity.
+    static func endSurplus(why: String) async -> String? {
+        let all = presentable
+        guard all.count > 1 else { return nil }
+        var ended = 0
+        for activity in all.dropFirst() {
+            await activity.end(
+                ActivityContent(state: LiveActivityState(), staleDate: nil),
+                dismissalPolicy: .immediate,
+            )
+            ended += 1
+        }
+        return "ended \(ended) duplicate activity: \(why)"
     }
 
     /// Whether an activity already says this.
