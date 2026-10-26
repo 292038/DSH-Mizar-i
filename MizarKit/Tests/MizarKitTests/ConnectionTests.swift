@@ -104,6 +104,10 @@ struct ConnectionTests {
                     "hostName": .string("studio"),
                     "home": .string("/home/dsh"),
                     "protocolVersion": .number(1),
+                    "desktop": .object([
+                        "os": .string("macOS"),
+                        "client": .string("DSH"),
+                    ]),
                 ]))
                 : nil
         })
@@ -113,6 +117,8 @@ struct ConnectionTests {
         let info = try await connection.call("host.info", as: HostInfo.self)
         #expect(info.hostId == "h1")
         #expect(info.hostName == "studio")
+        #expect(info.desktop == HostDesktop(os: "macOS", client: "DSH"))
+        #expect(info.desktop?.labels == ["macOS", "DSH"])
     }
 
     @Test("surfaces a host failure as a coded error")

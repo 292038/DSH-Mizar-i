@@ -25,6 +25,13 @@ public struct PairedHost: Codable, Sendable, Equatable {
     public let hostId: String
     /// The host's display name, as the host reports it.
     public let hostName: String
+    /// What this computer is: its OS and desktop product, when the host says.
+    ///
+    /// Learned from `host.info` on a live socket rather than derived from the
+    /// pairing: only the plugin knows which agent it bridges, and the phone
+    /// cannot tell a macOS host from a Linux one by looking at its name. Stored
+    /// here so the computer list can draw it while the computer is offline.
+    public let desktop: HostDesktop?
     /// What the operator called this machine on this phone.
     ///
     /// Phone-local and never sent. Someone with three computers does not want to
@@ -65,6 +72,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
         baseURL: String? = nil,
         label: String? = nil,
         netEndpointId: String? = nil,
+        desktop: HostDesktop? = nil,
     ) {
         self.hostId = hostId
         self.hostName = hostName
@@ -75,6 +83,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
         self.baseURL = baseURL
         self.label = label
         self.netEndpointId = netEndpointId
+        self.desktop = desktop
     }
 
     /// What to show for this machine: the operator's name for it, else the
@@ -99,6 +108,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
             baseURL: baseURL,
             label: label,
             netEndpointId: netEndpointId,
+            desktop: desktop,
         )
     }
 
@@ -205,6 +215,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
             // two computers cannot tell apart.
             label: label,
             netEndpointId: netEndpointId,
+            desktop: desktop,
         )
     }
 
@@ -228,6 +239,30 @@ public struct PairedHost: Codable, Sendable, Equatable {
             baseURL: baseURL,
             label: label,
             netEndpointId: endpointId,
+            desktop: desktop,
+        )
+    }
+
+    /// A copy remembering what this computer is, keeping everything else.
+    ///
+    /// Learned from `host.info` on every ready socket; written through to the
+    /// pairing so the computer list can show the OS and desktop product while
+    /// the machine is offline.
+    ///
+    /// - Parameter desktop: the host's answer.
+    /// - Returns: the updated record.
+    public func remembering(desktop: HostDesktop) -> PairedHost {
+        PairedHost(
+            hostId: hostId,
+            hostName: hostName,
+            authority: authority,
+            deviceId: deviceId,
+            deviceToken: deviceToken,
+            pairedAt: pairedAt,
+            baseURL: baseURL,
+            label: label,
+            netEndpointId: netEndpointId,
+            desktop: desktop,
         )
     }
 
@@ -246,6 +281,7 @@ public struct PairedHost: Codable, Sendable, Equatable {
             baseURL: baseURL,
             label: label,
             netEndpointId: netEndpointId,
+            desktop: desktop,
         )
     }
 }

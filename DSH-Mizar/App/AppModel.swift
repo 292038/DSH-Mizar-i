@@ -2062,6 +2062,13 @@ final class AppModel {
         if let endpointId = info.netEndpointId, !endpointId.isEmpty {
             await rememberDirectPathIdentity(endpointId)
         }
+        // The computer list draws these under the machine's name. Learned on
+        // every ready socket for the same reason as the direct-path identity:
+        // the host may have been upgraded since the pairing, and the value is
+        // written into the pairing so an offline computer keeps its labels.
+        if let desktop = info.desktop, !desktop.isEmpty {
+            await rememberDesktopIdentity(desktop)
+        }
         guard let relay = info.relay else { return }
         let desired = RelayTier.baseURL(paid: account.isPaid)
         if RelayTier.canonicalOrigin(relay.url) == desired {
@@ -2108,6 +2115,18 @@ final class AppModel {
         if let index = hosts.firstIndex(where: { $0.hostId == updated.hostId }) { hosts[index] = updated }
         try? await credentials.save(updated)
         log.add(.connection, "direct path: this computer can be punched")
+    }
+
+    /// Persist what this computer is, for the computer list.
+    ///
+    /// - Parameter desktop: the host's answer from `host.info`.
+    private func rememberDesktopIdentity(_ desktop: HostDesktop) async {
+        guard let host, host.desktop != desktop else { return }
+        let updated = host.remembering(desktop: desktop)
+        self.host = updated
+        if let index = hosts.firstIndex(where: { $0.hostId == updated.hostId }) { hosts[index] = updated }
+        try? await credentials.save(updated)
+        log.add(.connection, "desktop: this computer is \(desktop.os) · \(desktop.client)")
     }
 
     /// Persist the relay base URL the host reported or promised.

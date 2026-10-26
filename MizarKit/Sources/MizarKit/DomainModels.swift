@@ -45,6 +45,14 @@ public struct HostInfo: Decodable, Sendable, Equatable {
     /// Explicit plugin identity and optional capabilities; absent on older hosts.
     public let plugin: HostPlugin?
 
+    /// What this computer is: its operating system and desktop product.
+    ///
+    /// Optional because it is a later addition to `host.info`: an older host
+    /// answers without it, and the phone must keep showing the name it already
+    /// holds rather than inventing an OS. The pairing record stores the value
+    /// once a host has said it, so the computer list can draw it while offline.
+    public let desktop: HostDesktop?
+
     /// The host's direct-path identity, when its engine is running.
     ///
     /// The public half of the key a punched connection is authenticated by. The
@@ -65,6 +73,7 @@ public struct HostInfo: Decodable, Sendable, Equatable {
         addresses: [String]? = nil,
         relay: HostRelay? = nil,
         plugin: HostPlugin? = nil,
+        desktop: HostDesktop? = nil,
         netEndpointId: String? = nil,
     ) {
         self.hostId = hostId
@@ -74,8 +83,39 @@ public struct HostInfo: Decodable, Sendable, Equatable {
         self.addresses = addresses
         self.relay = relay
         self.plugin = plugin
+        self.desktop = desktop
         self.netEndpointId = netEndpointId
     }
+}
+
+/// What a computer is, as `host.info` reports it.
+///
+/// The strings are display names, not enums: `macOS`/`Windows`/`Linux` for the
+/// OS and `DSH`/`Codex`/`Claude Code` for the desktop product. A new product is
+/// therefore a new string, not a protocol version; the app draws any short name
+/// it is given. `labels` fixes the order the computer list uses (system first,
+/// product second) and drops blanks so a partial answer cannot draw an empty
+/// capsule.
+public struct HostDesktop: Codable, Sendable, Equatable {
+    /// The operating system's display name.
+    public let os: String
+    /// The desktop product's display name.
+    public let client: String
+
+    public init(os: String, client: String) {
+        self.os = os
+        self.client = client
+    }
+
+    /// The non-empty labels to draw, OS first, product second.
+    public var labels: [String] {
+        [os, client]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Whether this answer carries anything worth drawing.
+    public var isEmpty: Bool { labels.isEmpty }
 }
 
 /// Where a host's relay tunnel points, as `host.info` reports it.

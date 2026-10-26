@@ -789,6 +789,9 @@ function answer(frame) {
           home: '/Users/you',
           protocolVersion: 1,
           addresses: [`127.0.0.1:${port}`],
+          // What the computer list draws under the name. The second machine is
+          // still DSH on macOS; only the name distinguishes the two.
+          desktop: { os: 'macOS', client: 'DSH' },
           ...(balanceVariant === 'missing' ? {} : {
             plugin: { id: balanceVariant === 'nonplugin' ? 'other-plugin' : 'dsh-mizar', capabilities: balanceVariant === 'old' ? [] : ['deepseek.balance.v1'] },
           }),

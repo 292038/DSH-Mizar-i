@@ -138,12 +138,20 @@ private struct HostRow: View {
                     .font(.body.weight(isOpen ? .semibold : .regular))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                // The host's own name is shown under a chosen one, so a machine
-                // renamed to something memorable can still be identified.
-                Text(host.label == nil ? host.pairedAt.formatted(.relative(presentation: .named)) : host.hostName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if let desktop = host.desktop, !desktop.isEmpty {
+                    // What the machine is, rather than another identifier: the
+                    // system first, then the desktop product, as two capsules.
+                    HostBadges(desktop: desktop)
+                        .accessibilityIdentifier("host.desktop.\(host.hostId)")
+                } else {
+                    // Older hosts cannot answer `desktop`; their own name (or
+                    // when they were paired) is still the useful line, and an
+                    // empty capsule would be worse than no badge at all.
+                    Text(host.label == nil ? host.pairedAt.formatted(.relative(presentation: .named)) : host.hostName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             Spacer(minLength: 4)
@@ -173,6 +181,33 @@ private struct HostRow: View {
         }
         .contentShape(.rect)
         .animation(.mizarSmooth, value: isOpen)
+    }
+}
+
+/// What a computer is: its operating system, then the desktop product.
+///
+/// Two capsules rather than one string because the facts are independent -- a
+/// DSH plugin on Windows and a Codex plugin on macOS are both ordinary -- and a
+/// single label would read as one compound product name. The accent fill is the
+/// same one the app uses for the open machine, so these read as labels rather
+/// than as another line of body text.
+private struct HostBadges: View {
+    let desktop: HostDesktop
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(desktop.labels.indices, id: \.self) { index in
+                Text(desktop.labels[index])
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Theme.onAccent)
+                    .lineLimit(1)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 1)
+                    .frame(minHeight: 19)
+                    .background(Color.accentColor, in: Capsule())
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 

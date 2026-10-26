@@ -29,6 +29,7 @@ struct PairedHostTests {
             pairedAt: Date(timeIntervalSince1970: 1_700_000_000),
             baseURL: "https://relay.example.com/r/ROOM",
             label: "Studio",
+            desktop: HostDesktop(os: "macOS", client: "DSH"),
         )
     }
 
@@ -40,6 +41,7 @@ struct PairedHostTests {
         #expect(renamed.deviceToken == "mz_token")
         #expect(renamed.deviceId == "device-1")
         #expect(renamed.hostId == "host-1")
+        #expect(renamed.desktop == HostDesktop(os: "macOS", client: "DSH"))
 
         // Clearing the name falls back to the host's own.
         #expect(Self.host().renamed(to: nil).displayName == "Shirazus-Mac-mini.local")
@@ -58,6 +60,7 @@ struct PairedHostTests {
         #expect(moved.displayName == "Studio")
         #expect(moved.deviceToken == "mz_token")
         #expect(moved.baseURL == "https://relay.example.com/r/ROOM")
+        #expect(moved.desktop == HostDesktop(os: "macOS", client: "DSH"))
     }
 
     @Test("keeps the operator's name when the relay changes")
@@ -67,6 +70,7 @@ struct PairedHostTests {
         #expect(moved.label == "Studio", "the operator's name was dropped by a relay change")
         #expect(moved.authority == "192.168.1.20:19390")
         #expect(moved.deviceToken == "mz_token")
+        #expect(moved.desktop == HostDesktop(os: "macOS", client: "DSH"))
 
         // Removing the relay leaves a direct-only pairing, name intact.
         let directOnly = Self.host().moved(toRelay: nil)
@@ -93,5 +97,43 @@ struct PairedHostTests {
             baseURL: "ftp://relay.example.com/r/ROOM",
         )
         #expect(relayOnly.endpoints.isEmpty)
+    }
+
+    @Test("learns what the computer is without losing the credential")
+    func rememberDesktop() {
+        let updated = Self.host().remembering(desktop: HostDesktop(os: "Windows", client: "Codex"))
+        #expect(updated.desktop == HostDesktop(os: "Windows", client: "Codex"))
+        #expect(updated.deviceToken == "mz_token")
+        #expect(updated.label == "Studio")
+        #expect(updated.endpoints == Self.host().endpoints)
+    }
+
+    @Test("round-trips the desktop through the pairing blob")
+    func desktopRoundTrip() throws {
+        let data = try JSONEncoder().encode(Self.host())
+        let decoded = try JSONDecoder().decode(PairedHost.self, from: data)
+        #expect(decoded == Self.host())
+    }
+
+    @Test("draws the system first and drops blank labels")
+    func desktopLabels() {
+        #expect(
+            HostDesktop(os: "macOS", client: "DSH").labels == ["macOS", "DSH"]
+        )
+        // A partial answer must not draw an empty capsule beside a real one.
+        #expect(HostDesktop(os: " ", client: "DSH").labels == ["DSH"])
+        #expect(HostDesktop(os: "macOS", client: "").labels == ["macOS"])
+        #expect(HostDesktop(os: "", client: "").isEmpty)
+    }
+
+    @Test("reads a pairing written before the desktop field existed")
+    func oldPairingWithoutDesktop() throws {
+        // The Keychain holds every pairing written by every previous version.
+        // Adding a field must not make one of those decode as "unpaired", which
+        // would send the operator back to scan a code.
+        let json = #"{"hostId":"host-1","hostName":"mac","authority":null,"deviceId":"device-1","deviceToken":"mz_token","pairedAt":0}"#
+        let decoded = try JSONDecoder().decode(PairedHost.self, from: Data(json.utf8))
+        #expect(decoded.hostId == "host-1")
+        #expect(decoded.desktop == nil)
     }
 }
