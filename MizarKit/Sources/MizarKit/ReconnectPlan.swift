@@ -47,21 +47,36 @@ public enum ReconnectPlan {
     ///     `false` — the default for a fresh install — drops `.p2p` everywhere,
     ///     including from `active`, so switching the feature off takes effect on
     ///     the next reconnect instead of only on the next pairing.
+    ///   - allowingLocalNetwork: whether the direct route may be planned at all.
+    ///     The same rule for 局域网优先: off drops `.direct` everywhere, including
+    ///     from `active`, so a link that is up does not stay the preferred route
+    ///     after the switch is turned off.
     /// - Returns: distinct routes, in the order to try them. Empty when the
-    ///   pairing knows no route at all.
+    ///   pairing knows no route the switches allow.
     public static func routes(
         endpoints: [PairedHost.Endpoint],
         active: PairedHost.Endpoint?,
         tryingEveryRoute: Bool = false,
         preferringRelay: Bool = false,
+        allowingLocalNetwork: Bool = true,
         allowingDirectPath: Bool = true,
     ) -> [PairedHost.Endpoint] {
-        var endpoints = endpoints
-        var active = active
-        if !allowingDirectPath {
-            endpoints = endpoints.filter { !$0.isDirectPath }
-            if active?.isDirectPath == true { active = nil }
+        // One policy, from `RoutePolicy`, rather than two filters written here:
+        // the screen that drops a live link asks the same question, and the two
+        // must never answer differently.
+        let policy = { (endpoint: PairedHost.Endpoint) in
+            RoutePolicy.allows(
+                endpoint,
+                localNetworkFirst: allowingLocalNetwork,
+                directConnection: allowingDirectPath,
+            )
         }
+        var endpoints = endpoints.filter(policy)
+        // An active route that the switches no longer allow is not a route that
+        // "worked last": it is a route that may not be dialled, so it stops
+        // being the head of the list.
+        var active = active
+        if let current = active, !policy(current) { active = nil }
 
         var ordered: [PairedHost.Endpoint]
         if tryingEveryRoute, !endpoints.isEmpty {

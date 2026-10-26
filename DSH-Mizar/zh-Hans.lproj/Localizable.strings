@@ -449,7 +449,7 @@
 "Local network first" = "局域网优先";
 "P2P direct connection" = "P2P直连";
 "P2P direct connection (Experimental)" = "P2P直连（实验性）";
-"P2P direct connection asks this computer and your phone to reach each other without the relay. It falls back to the relay when the two networks will not allow it." = "P2P直连会尝试让手机和电脑不经中继直接互通；两端网络不允许时会自动回退到中继。";
+"P2P direct connection asks this computer and your phone to reach each other without the relay, falling back to the relay when the two networks will not allow it. Off closes a punched link and never attempts another." = "P2P 直连让电脑和手机不经过中继直接互通，两条网络不允许时会回落到中继。关闭后，已建立的直连会立刻断开，也不会再尝试建立新的直连。";
 "When on, every reconnect first looks for the computer on your local network and falls back to the relay when it is not there. When off, the scan is skipped and reconnecting goes straight to the saved route, which is faster." = "打开后，每次重连都会先在你的局域网里寻找电脑，找不到再回退到中继；关闭后跳过局域网扫描，直接使用已保存的通道重连，速度更快。";
 
 /* 0.9.5 — mail, gate, credits */
@@ -506,7 +506,7 @@
 "Branching…" = "正在创建分支…";
 
 /* 0.9.5 */
-"Turn this on if you use the app on the same local network; turning it off makes every reconnect faster." = "如果你需要在同一局域网内使用应用，则请打开局域网优先，否则关闭该功能有助于加快每次重连的速度。";
+"Off is a rule, not a preference: this phone does not use the computer's local address at all. An open local link is closed at once and reconnects use the relay, which also makes every reconnect faster." = "关闭不是偏好，而是禁用：手机完全不再使用电脑的本地地址。已经建立的本地连接会立刻断开，重连直接走中继，因此每次重连也更快。";
 
 /* 0.9.7 —— 交付文件的预览 */
 

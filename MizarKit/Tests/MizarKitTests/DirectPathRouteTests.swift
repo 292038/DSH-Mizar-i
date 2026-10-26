@@ -290,3 +290,96 @@ struct DeviceIdentityTests {
             != MizarNetIdentity.derived(from: Data(repeating: 7, count: 32), purpose: .device).endpointId)
     }
 }
+
+// MARK: - 局域网优先 as a rule, not a preference
+
+@Suite("Planning with the local network switched off")
+struct LocalNetworkPlanTests {
+    private let direct = PairedHost.Endpoint.direct(authority: "192.168.1.5:19390")
+    private let punched = PairedHost.Endpoint.p2p(
+        relayBaseURL: "https://relay.example.com/r/ROOM",
+        endpointId: "KEY",
+    )
+    private let relay = PairedHost.Endpoint.relay(baseURL: "https://relay.example.com/r/ROOM")
+
+    @Test("drops the direct route, and its memory")
+    func withheld() {
+        let routes = ReconnectPlan.routes(
+            endpoints: [direct, relay],
+            active: nil,
+            allowingLocalNetwork: false,
+        )
+        // The reported bug in one assertion: the stored LAN address used to be
+        // first in the pairing and was dialled whatever the switch said, which
+        // is how a phone kept reconnecting over the cable with 局域网优先 off.
+        #expect(routes == [relay])
+
+        // And a link that is still up over the direct route stops being the
+        // head of the list, so the redial after the switch moves cannot pick it
+        // back up.
+        let remembered = ReconnectPlan.routes(
+            endpoints: [direct, relay],
+            active: direct,
+            allowingLocalNetwork: false,
+        )
+        #expect(remembered == [relay])
+    }
+
+    @Test("two switches, two kinds, one relay that is always allowed")
+    func both() {
+        #expect(
+            ReconnectPlan.routes(
+                endpoints: [direct, punched, relay],
+                active: nil,
+                allowingLocalNetwork: false,
+                allowingDirectPath: false,
+            ) == [relay],
+        )
+        #expect(
+            ReconnectPlan.routes(
+                endpoints: [direct, punched, relay],
+                active: nil,
+                allowingLocalNetwork: true,
+                allowingDirectPath: false,
+            ) == [direct, relay],
+        )
+        #expect(
+            ReconnectPlan.routes(
+                endpoints: [direct, punched, relay],
+                active: nil,
+                allowingLocalNetwork: false,
+                allowingDirectPath: true,
+            ) == [punched, relay],
+        )
+    }
+
+    @Test("a pairing with nothing left plans nothing, rather than something forbidden")
+    func nothingAllowed() {
+        // A pairing made on a LAN with no relay address: with the switch off
+        // there is no route at all, and the app must say so instead of dialling
+        // the address the operator just forbade.
+        #expect(
+            ReconnectPlan.routes(
+                endpoints: [direct],
+                active: direct,
+                allowingLocalNetwork: false,
+            ).isEmpty,
+        )
+    }
+
+    @Test("the policy answers for a single route, which is what the drop asks")
+    func singleRoute() {
+        #expect(
+            RoutePolicy.allows(direct, localNetworkFirst: false, directConnection: false) == false,
+        )
+        #expect(RoutePolicy.allows(direct, localNetworkFirst: true, directConnection: false))
+        #expect(
+            RoutePolicy.allows(punched, localNetworkFirst: true, directConnection: false) == false,
+        )
+        #expect(RoutePolicy.allows(punched, localNetworkFirst: false, directConnection: true))
+        // The relay survives both switches: it is the route that works from
+        // anywhere, and a policy that could remove it would leave a phone with
+        // no way to reach its computer.
+        #expect(RoutePolicy.allows(relay, localNetworkFirst: false, directConnection: false))
+    }
+}

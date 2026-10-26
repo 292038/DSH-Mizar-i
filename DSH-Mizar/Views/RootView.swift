@@ -134,6 +134,16 @@ struct RootView: View {
             // already in the log; see `AppSettings.note(changeFrom:)`.
             Task { await model.refreshLiveActivity() }
         }
+        .onChange(of: model.settings.values.localNetworkFirst) { _, _ in
+            // A route switch is a rule about the socket that is up, not a hint
+            // for the next reconnect: the model closes a link that is using the
+            // route that was just switched off, and starts asking the local
+            // network again when it is switched on.
+            Task { await model.transportPreferenceChanged() }
+        }
+        .onChange(of: model.settings.values.directConnection) { _, _ in
+            Task { await model.transportPreferenceChanged() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: PushAppDelegate.tokenReceived)) { _ in
             // iOS has just issued a token, and the host has never heard of it.
             Task { await model.syncPushRegistration() }

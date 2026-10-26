@@ -316,12 +316,13 @@ struct SettingsView: View {
 
     // MARK: - 传输
 
-    /// How a reconnect chooses its route.
+    /// Which routes this phone may use.
     ///
-    /// Off is the fast path: no probe, straight to the stored route. On asks
-    /// the local network first and falls back to the relay, which is slower per
-    /// reconnect and is what makes a phone that is back on the same Wi-Fi take
-    /// the direct route (and its free LAN features) again.
+    /// These two are rules, not preferences: the model closes a link that is
+    /// using a route the moment its switch is turned off, and neither switch's
+    /// route is dialled or probed again until it is turned back on. The footers
+    /// say so plainly, because a switch that only changes the next reconnect is
+    /// how "I turned that off" became a bug report.
     private var transferSection: some View {
         Section {
             Toggle(isOn: Binding(
@@ -348,12 +349,12 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(
                     String(
-                        localized: "Turn this on if you use the app on the same local network; turning it off makes every reconnect faster.",
+                        localized: "Off is a rule, not a preference: this phone does not use the computer's local address at all. An open local link is closed at once and reconnects use the relay, which also makes every reconnect faster.",
                     ),
                 )
                 Text(
                     String(
-                        localized: "P2P direct connection asks this computer and your phone to reach each other without the relay. It falls back to the relay when the two networks will not allow it.",
+                        localized: "P2P direct connection asks this computer and your phone to reach each other without the relay, falling back to the relay when the two networks will not allow it. Off closes a punched link and never attempts another.",
                     ),
                 )
             }

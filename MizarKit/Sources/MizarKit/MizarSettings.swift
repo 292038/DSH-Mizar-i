@@ -274,14 +274,19 @@ public struct MizarSettings: Equatable, Sendable, Codable {
     /// Which pushes to show.
     public var notifications: NotificationPreferences
 
-    /// Whether reconnecting should look for the computer on the local network
-    /// before settling for the relay. 局域网优先.
+    /// Whether this phone may use the computer's own address at all. 局域网优先.
     ///
-    /// Off by default, and off is the fast path the report asked for: a
-    /// reconnect goes straight to the stored routes instead of probing the
-    /// local address first, so a phone that is on cellular -- or whose stored
-    /// LAN address is stale, which is most of them -- is not made to wait for a
-    /// scan that cannot find anything.
+    /// A rule rather than a preference, and the difference is the reported bug:
+    /// this used to decide only whether a reconnect *probed* the local network
+    /// first, while the stored direct address stayed first in the pairing and
+    /// was dialled whatever the switch said. A phone debugged over a cable (a
+    /// link-local address that reads as the LAN) therefore kept reconnecting
+    /// over it with the switch off.
+    ///
+    /// Off, the direct route is not planned, not probed, and not dialled, and a
+    /// link that is using it is closed the moment the switch moves. Reconnects
+    /// then go straight to the relay, which is also why they are faster: there
+    /// is no scan and no six-second direct timeout to wait out.
     ///
     /// On, every reconnect the operator can see asks the LAN question first:
     /// manual refresh, returning to the app, the Reconnect button, and the
@@ -307,6 +312,11 @@ public struct MizarSettings: Equatable, Sendable, Codable {
     /// so a failed punch falls through to the relay inside the same reconnect.
     /// The relay is not removed, ever: it is the route that works from networks
     /// where UDP does not leave at all.
+    ///
+    /// Off is equally absolute: no punch is attempted (the punch's own signaling
+    /// rides the relay, so attempting one while off would still spend a round
+    /// trip), and a link that is up over the punched route is closed when the
+    /// switch moves.
     public var directConnection: Bool
 
     /// Everything at its default: notifications on, live activity on, the local

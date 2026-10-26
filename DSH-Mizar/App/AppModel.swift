@@ -2826,6 +2826,78 @@ final class AppModel {
         return await reconnect(patient: patient)
     }
 
+    /// A transport switch moved, and the answer is now rather than later.
+    ///
+    /// The two switches are forbidding a *route*, not expressing a preference
+    /// about the next reconnect, so a link that is using the route that was just
+    /// switched off is closed here -- immediately, while the operator is still
+    /// looking at the toggle -- and the redial that follows can only use what
+    /// remains (`RoutePolicy` is what decides, in both places). Turning one on
+    /// is the same news in reverse: the LAN watch starts again, and the local
+    /// network is asked once so the switch feels applied rather than
+    /// remembered.
+    ///
+    /// Called from the settings screen's own `onChange`, which is the only thing
+    /// that can flip these.
+    func transportPreferenceChanged() async {
+        updateLanWatch()
+        // Turning 局域网优先 on while the relay is carrying the socket: ask now,
+        // because that is the whole point of the switch. The scan is the thing
+        // that moves the pairing, and it refuses itself when the switch is off.
+        if settings.localNetworkFirst, connection != nil, activeEndpoint?.isLocalNetwork != true {
+            await scanForLocalNetwork()
+        }
+        // Twice, not once: a reconnect that was already in flight when the
+        // switch moved can land on the route it forbids, and the second pass is
+        // what closes that one too.
+        for _ in 0..<2 {
+            guard let host, let endpoint = activeEndpoint else { return }
+            let allowed = RoutePolicy.allows(
+                endpoint,
+                localNetworkFirst: settings.localNetworkFirst,
+                directConnection: settings.directConnection,
+            )
+            guard !allowed else { return }
+            // Named by the switch that forbade it, because that is the sentence
+            // an operator reads back in an export: "I turned that off, so why is
+            // it still here" has to be answerable from one line.
+            let switchName: String
+            switch endpoint {
+            case .direct: switchName = "local network first"
+            case .p2p: switchName = "direct connection"
+            case .relay: switchName = "relay"
+            }
+            log.add(
+                .connection,
+                "\(switchName) switched off: closing the \(Self.routeName(endpoint)) link now",
+            )
+            let remaining = RoutePolicy.allowed(
+                host.endpoints,
+                localNetworkFirst: settings.localNetworkFirst,
+                directConnection: settings.directConnection,
+            )
+            guard !remaining.isEmpty else {
+                // Nothing is left to redial: the switches now forbid every route
+                // this pairing has. Drop the link (the operator asked for that)
+                // and say why, rather than leaving a socket up that the settings
+                // no longer allow or a screen that still calls it connected.
+                eventListener?.cancel()
+                interactionPoll?.cancel()
+                await connection?.disconnect()
+                connection = nil
+                let message = String(
+                    localized: "No route is allowed: the local network and the direct connection are both off, and this pairing has no relay address. Turn one back on to reconnect.",
+                )
+                connectionError = message
+                phase = .failed(message)
+                return
+            }
+            // `reconnect` disconnects first, so the socket is gone before this
+            // call returns, and its route list can only contain what remains.
+            await reconnect(preferringRelay: true)
+        }
+    }
+
     /// The app came back from the background.
     ///
     /// iOS freezes the process, and a socket that was fine when the screen went
@@ -2962,6 +3034,13 @@ final class AppModel {
     /// - Parameter authority: the `host:port` that answered as this computer.
     /// - Returns: whether the app is now connected over it.
     private func moveToLocalRoute(authority: String) async -> Bool {
+        // The scan is the only caller and already refuses when the switch is
+        // off; this is the same question asked where the dial happens, because
+        // a future caller must not be able to route around the setting.
+        guard settings.values.localNetworkFirst else {
+            log.add(.connection, "LAN scan: not moving to \(authority); local network first is off")
+            return false
+        }
         guard let host else { return false }
         let previousEndpoint = activeEndpoint
         let moved = host.moved(to: authority)
@@ -3008,10 +3087,17 @@ final class AppModel {
             lanWatch = nil
             return
         }
-        guard lanWatch == nil else { return }
-        if settings.values.localNetworkFirst {
-            log.add(.connection, "LAN watch: started, one probe every \(Self.lanWatchInterval)")
+        guard settings.values.localNetworkFirst else {
+            // Off means no probing at all, not a task that wakes every half
+            // minute to decide not to. The watch exists only to notice a
+            // computer that came back onto the network; with the route
+            // forbidden there is nothing for it to notice.
+            lanWatch?.cancel()
+            lanWatch = nil
+            return
         }
+        guard lanWatch == nil else { return }
+        log.add(.connection, "LAN watch: started, one probe every \(Self.lanWatchInterval)")
         lanWatch = Task { [weak self] in
             while !Task.isCancelled {
                 do {
@@ -3392,8 +3478,19 @@ final class AppModel {
         // the last working route first, every other route behind it, and -- when
         // a local link has just died -- the relay first, because the network the
         // local address lives on is the thing that broke.
+        // One question, asked of every route: do the switches allow it. An
+        // exact route is not an exception -- a LAN scan that is moving the
+        // pairing, and a pairing that has just completed over the LAN, both
+        // arrive here with a route that the operator may have switched off.
+        let allowed = { (endpoint: PairedHost.Endpoint) in
+            RoutePolicy.allows(
+                endpoint,
+                localNetworkFirst: self.settings.localNetworkFirst,
+                directConnection: self.settings.directConnection,
+            )
+        }
         let routes: [PairedHost.Endpoint]
-        if let exactRoute, settings.directConnection || !exactRoute.isDirectPath {
+        if let exactRoute, allowed(exactRoute) {
             routes = [exactRoute]
         } else {
             routes = ReconnectPlan.routes(
@@ -3401,13 +3498,20 @@ final class AppModel {
                 active: activeEndpoint,
                 tryingEveryRoute: tryingEveryRoute,
                 preferringRelay: preferringRelay,
-                // The rollout, in one argument: the punched route is planned
-                // only when the operator asked for it.
+                // The two switches, in one place: the direct route is planned
+                // only while 局域网优先 is on, and the punched route only while
+                // 直连 is.
+                allowingLocalNetwork: settings.localNetworkFirst,
                 allowingDirectPath: settings.directConnection,
             )
         }
         guard !routes.isEmpty else {
-            log.add(.connection, "reconnect: this pairing has no route to dial")
+            log.add(
+                .connection,
+                "reconnect: no route the switches allow "
+                    + "(local network first \(settings.localNetworkFirst ? "on" : "off"), "
+                    + "direct connection \(settings.directConnection ? "on" : "off"))",
+            )
             return false
         }
         let attempts = ReconnectPlan.attempts(routeCount: routes.count, patient: patient)
@@ -4618,13 +4722,21 @@ final class AppModel {
         let endpoints = ReconnectPlan.routes(
             endpoints: host.endpoints,
             active: preferred,
+            allowingLocalNetwork: settings.localNetworkFirst,
             allowingDirectPath: settings.directConnection,
         )
         guard !endpoints.isEmpty else {
-            let error = MizarError(
-                code: "NO_ENDPOINT",
-                message: "this pairing has no address to dial",
-            )
+            // Two different silences, told apart: a pairing with no address at
+            // all, and one whose every address the operator has switched off.
+            // The second is fixable from the settings screen and says so.
+            let error = host.endpoints.isEmpty
+                ? MizarError(code: "NO_ENDPOINT", message: "this pairing has no address to dial")
+                : MizarError(
+                    code: "ROUTE_NOT_ALLOWED",
+                    message: String(
+                        localized: "The transport switches are off, so there is no route to this computer. Turn on the local network or the direct connection to reconnect.",
+                    ),
+                )
             phase = .failed(error.message)
             throw error
         }
