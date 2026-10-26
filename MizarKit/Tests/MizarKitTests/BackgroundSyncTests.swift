@@ -95,17 +95,116 @@ private func finishedTurn(
 
 @Suite("A background refresh")
 struct BackgroundSyncTests {
-    @Test("runs for a paired host with the activity switched on, and for nothing else")
-    func wantsAPairingAndTheSwitch() {
-        #expect(BackgroundSync.shouldRun(paired: true, liveActivitiesEnabled: true))
+    @Test("runs for a paired host with the activity switched on and something running, and for nothing else")
+    func wantsAPairingTheSwitchAndARunningSession() {
+        #expect(BackgroundSync.shouldRun(paired: true, liveActivitiesEnabled: true, hasRunningSession: true))
         // No computer: there is nothing to ask, and the activity would be drawn from
         // a cache the app has already put on the island.
-        #expect(!BackgroundSync.shouldRun(paired: false, liveActivitiesEnabled: true))
+        #expect(!BackgroundSync.shouldRun(paired: false, liveActivitiesEnabled: true, hasRunningSession: true))
         // The switch is read here as well as at the activity, because waking a
         // suspended process to refresh something the operator has turned off is
         // work done for nobody.
-        #expect(!BackgroundSync.shouldRun(paired: true, liveActivitiesEnabled: false))
-        #expect(!BackgroundSync.shouldRun(paired: false, liveActivitiesEnabled: false))
+        #expect(!BackgroundSync.shouldRun(paired: true, liveActivitiesEnabled: false, hasRunningSession: true))
+        #expect(!BackgroundSync.shouldRun(paired: false, liveActivitiesEnabled: false, hasRunningSession: true))
+        // Nothing running, nothing on the island: this is the submission that is
+        // not made. Every request is a background launch, and a launch is a
+        // process the system may kill for taking too long -- so a wake that could
+        // only re-read a list for a screen nobody is looking at is not asked for.
+        #expect(!BackgroundSync.shouldRun(paired: true, liveActivitiesEnabled: true, hasRunningSession: false))
+    }
+
+    @Test("names why a wake cannot run, instead of calling every refusal the same thing")
+    func wakeReasons() {
+        // Only one answer runs. The others are not interchangeable sentences in
+        // the log: before this, a cold launch (a phone that *does* have a
+        // computer) wrote "no computer is paired", which is true of a model that
+        // was never loaded and false of the phone. A log export is the only
+        // evidence a wake leaves behind, so the words are part of the fix.
+        #expect(
+            BackgroundSync.wake(
+                pairing: .paired, modelIsLoaded: true, liveActivitiesEnabled: true, hasRunningSession: true,
+            ) == .refresh,
+        )
+        #expect(
+            BackgroundSync.wake(
+                pairing: .paired, modelIsLoaded: false, liveActivitiesEnabled: true, hasRunningSession: true,
+            ) == .skip(.modelNotLoaded),
+        )
+        #expect(
+            BackgroundSync.wake(
+                pairing: .unknown, modelIsLoaded: false, liveActivitiesEnabled: true, hasRunningSession: true,
+            ) == .skip(.pairingUnknown),
+        )
+        #expect(
+            BackgroundSync.wake(
+                pairing: .unpaired, modelIsLoaded: false, liveActivitiesEnabled: true, hasRunningSession: true,
+            ) == .skip(.unpaired),
+        )
+        // A list nobody has read is not "nothing is running": the run that would
+        // be skipped is the run that reads it, so unknown is a reason to go.
+        #expect(
+            BackgroundSync.wake(
+                pairing: .paired, modelIsLoaded: true, liveActivitiesEnabled: true, hasRunningSession: nil,
+            ) == .refresh,
+        )
+        // A known empty list is the ordinary saving: no card, no wake.
+        #expect(
+            BackgroundSync.wake(
+                pairing: .paired, modelIsLoaded: true, liveActivitiesEnabled: true, hasRunningSession: false,
+            ) == .skip(.nothingRunning),
+        )
+        // The operator's switch wins over every pairing answer: a wake for a
+        // feature that is off is a wake for nobody.
+        #expect(
+            BackgroundSync.wake(
+                pairing: .paired, modelIsLoaded: true, liveActivitiesEnabled: false, hasRunningSession: true,
+            ) == .skip(.liveActivitiesOff),
+        )
+        #expect(
+            BackgroundSync.wake(
+                pairing: .unknown, modelIsLoaded: false, liveActivitiesEnabled: false, hasRunningSession: false,
+            ) == .skip(.liveActivitiesOff),
+        )
+        // Nothing but `.refresh` runs, and nothing but `.refresh` submits: the
+        // decision is one value because the app does not get to sync and then
+        // decide about the next request separately.
+        for pairing in [BackgroundSync.Pairing.paired, .unpaired, .unknown] {
+            for loaded in [true, false] {
+                for running in [true, false] as [Bool?] {
+                    let wake = BackgroundSync.wake(
+                        pairing: pairing,
+                        modelIsLoaded: loaded,
+                        liveActivitiesEnabled: true,
+                        hasRunningSession: running,
+                    )
+                    let runs = pairing == .paired && loaded && running != false
+                    #expect((wake == .refresh) == runs)
+                }
+            }
+        }
+    }
+
+    @Test("only a wake that can run is the foreground's `shouldRun`")
+    func shouldRunIsTheRefreshCase() {
+        // The two entry points must not drift: `shouldRun` is the foreground's
+        // question, and `.refresh` is the wake's answer to the same question with
+        // the store read rather than remembered.
+        for liveActivitiesEnabled in [true, false] {
+            for paired in [true, false] {
+                let runs = BackgroundSync.shouldRun(
+                    paired: paired,
+                    liveActivitiesEnabled: liveActivitiesEnabled,
+                    hasRunningSession: true,
+                )
+                let wake = BackgroundSync.wake(
+                    pairing: paired ? .paired : .unpaired,
+                    modelIsLoaded: true,
+                    liveActivitiesEnabled: liveActivitiesEnabled,
+                    hasRunningSession: true,
+                )
+                #expect(runs == (wake == .refresh))
+            }
+        }
     }
 
     @Test("starts no request with only the reserve left")

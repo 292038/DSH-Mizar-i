@@ -23,7 +23,11 @@
 //       `earliestBeginDate` is a *hint*; nothing here can make the system run
 //       one sooner, and on the simulator they never fire at all (`simctl` has no
 //       way to trigger one; the registration and the handler's code path are
-//       what can be verified, and that is what is verified).
+//       what can be verified, and that is what is verified). The task is
+//       completed the moment the system's expiration handler runs, not when the
+//       work notices it was cancelled: the handler is the deadline, and a
+//       completion that waits for the work is a completion the system has
+//       already given up on. See ``run(_:reason:)``.
 //
 //  ## What this can and cannot do
 //
@@ -32,20 +36,21 @@
 //  turns that into a fresh `ContentState` and sends it, while the app is off
 //  screen. It can also **end** one from here, which is the other half of a
 //  finish: a sync that reads a session stopping ends the card on the spot,
-//  without waiting for the app to be opened. It can also attempt to *start* one
-//  -- the controller asks whenever there is nothing on screen, and the attempt is
-//  logged with the app state it was made in -- but Apple's contract is that an
-//  activity is started from the foreground, and a background refresh is not
-//  that. **When no activity was ever started, the only way to make one appear on
-//  a phone that has not been opened is push-to-start**: a token for *starting*
-//  activities (a different APNs token from the one an activity issues for its own
-//  updates), registered with the host, and the host sending an APNs start event.
-//  This app has none of that -- the host side has no such event, and the activity
-//  push token the controller registers identifies a card that already exists --
-//  so that case remains impossible, and nothing here pretends otherwise. A
-//  background refresh that finds nothing running, or that finds a running session
-//  and no activity, does not queue a start for later: the next foreground refresh
-//  is the retry, exactly as the controller says.
+//  without waiting for the app to be opened. It no longer *starts* one: Apple's
+//  contract is that an activity starts in the foreground, and a refresh used to
+//  ask anyway and log the answer. The answer never produced a card, so the
+//  request is gone from this path -- see ``LiveActivityController`` -- and the
+//  next foreground refresh is the retry. **When no activity was ever started, the
+//  only way to make one appear on a phone that has not been opened is
+//  push-to-start**: a token for *starting* activities (a different APNs token from
+//  the one an activity issues for its own updates), registered with the host, and
+//  the host sending an APNs start event. This app has none of that -- the host
+//  side has no such event, and the activity push token the controller registers
+//  identifies a card that already exists -- so that case remains impossible, and
+//  nothing here pretends otherwise. A background refresh that finds nothing
+//  running, or that finds a running session and no activity, does not queue a
+//  start for later: the next foreground refresh is the retry, exactly as the
+//  controller says.
 //
 //  ## Why `BGAppRefreshTask` and not a timer or a `UIBackgroundModes` trick
 //
@@ -68,9 +73,12 @@ import UIKit
 ///
 /// `@MainActor` throughout: the model it drives is main-actor state, the
 /// ActivityKit calls it ends up in are made from there, and UIKit's two
-/// background APIs are main-thread contracts. The one hop in the file is in the
-/// two system callbacks, which are called on the main queue and say so with
-/// `MainActor.assumeIsolated` rather than by spawning a task.
+/// background APIs are main-thread contracts. The system callbacks do not hop
+/// before doing the one thing they exist for: the launch handler is asserted
+/// main (`using: nil` means the main queue), the assertion's expiration handler
+/// works inline under `MainActor.assumeIsolated`, and the background task's
+/// expiration handler completes its task synchronously and only the log line
+/// after it is hopped -- because completion delayed by a hop is completion late.
 @MainActor
 final class BackgroundRefresh {
     /// The single runner, for the same reason the model is single: the app has
@@ -158,18 +166,47 @@ final class BackgroundRefresh {
 
     /// Ask for the next periodic refresh.
     ///
-    /// Called when the app is backgrounded and again at the start of every
-    /// background refresh, so the next request exists even if this one is ended
-    /// by the system or by a crash. The previous request for the same identifier
-    /// is cancelled first: only one may be pending, and a submission that is
+    /// Called when the app is backgrounded, where the pairing is loaded, the list
+    /// is the host's and the answer is a real one. A *wake* does not come through
+    /// here: it knows the pairing from the store rather than from the model, and
+    /// asks ``submit()`` directly. The previous request for the same identifier is
+    /// cancelled first: only one may be pending, and a submission that is
     /// silently dropped looks exactly like one that was accepted.
+    ///
+    /// The one line that matters most in this file is `hasRunningSession`: a
+    /// phone leaving the screen with nothing running is a phone with no card to
+    /// keep current, so no request goes in and no background launch happens.
     func schedule() {
         guard BackgroundSync.shouldRun(
             paired: AppModel.shared.host != nil,
             liveActivitiesEnabled: settings.values.liveActivitiesEnabled,
+            hasRunningSession: runningSessionExists,
         ) else {
             return
         }
+        submit()
+    }
+
+    /// Whether the list the model holds has a session the island could draw.
+    ///
+    /// Read through the model, not through a second count: `sessions` is the same
+    /// list the sync and the controller use, so the three cannot disagree about
+    /// what "running" means. On a background launch the list is nobody's answer
+    /// -- see ``run(_:reason:)``, which passes `nil` rather than a zero -- so this
+    /// one is for callers that have a screen behind them.
+    private var runningSessionExists: Bool {
+        !BackgroundSync.conversationRefreshTargets(in: AppModel.shared.sessions).isEmpty
+    }
+
+    /// Put the next request in, whatever the loaded state says.
+    ///
+    /// Separate from ``schedule()`` because the two ask different questions. A
+    /// foreground caller knows the pairing, so `schedule()`'s guard is a real
+    /// answer. A wake that can run has just read it from the store, and on a
+    /// background launch `host` is nil however the store answered -- so asking
+    /// ``schedule()``'s question there would drop the one submission a runnable
+    /// wake gets.
+    private func submit() {
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.refreshIdentifier)
         let request = BGAppRefreshTaskRequest(identifier: Self.refreshIdentifier)
         request.earliestBeginDate = Date().addingTimeInterval(Self.earliestRefresh)
@@ -189,6 +226,17 @@ final class BackgroundRefresh {
 
     /// Run the refresh the system woke the app for.
     ///
+    /// The decision about *what* this wake may do is made inside
+    /// ``run(_:reason:)``, in the work task, because it needs one thing this
+    /// function cannot get synchronously: what the credentials store says. See
+    /// ``AppModel/storedPairing()``. `AppModel.shared` exists this early -- it is
+    /// built with the App value -- but its *content* may not: `start()`, which
+    /// loads the pairing and opens the socket, runs from `RootView`'s `.task`,
+    /// and a wake that arrives before any scene has appeared has not run it.
+    /// Deciding from the model here is what used to make a cold wake write "no
+    /// computer is paired" about a phone that has one -- true of the model, false
+    /// of the phone, and the log is the only thing a wake leaves behind.
+    ///
     /// - Parameter task: the task the system handed over.
     private func handle(_ task: BGTask) {
         guard let refresh = task as? BGAppRefreshTask else {
@@ -197,30 +245,6 @@ final class BackgroundRefresh {
             task.setTaskCompleted(success: false)
             return
         }
-        // `AppModel.shared` exists this early -- it is built with the App value
-        // -- but its *content* may not: `start()`, which loads the pairing and
-        // opens the socket, runs from `RootView`'s `.task`, and a wake that
-        // arrives before any scene has appeared has not run it. A refresh that
-        // finds no pairing then has nothing to ask and says so; the next real
-        // launch connects. Waiting here would be worse: the wait would be spent
-        // out of the task's own window, on a screen that is not going to appear.
-        let model = AppModel.shared
-        guard BackgroundSync.shouldRun(
-            paired: model.host != nil,
-            liveActivitiesEnabled: settings.values.liveActivitiesEnabled,
-        ) else {
-            log.add(
-                .sync,
-                "background refresh: not wanted"
-                    + (model.host == nil ? " -- no computer is paired" : " -- the Live Activity is switched off"),
-            )
-            task.setTaskCompleted(success: true)
-            return
-        }
-        // Before the work, not after: a refresh that is killed part-way through
-        // (the system may do that) would otherwise leave no next request, and
-        // the periodic refresh would stop for good on the first bad run.
-        schedule()
         run(refresh, reason: "a background refresh")
     }
 
@@ -234,15 +258,21 @@ final class BackgroundRefresh {
     /// be suspended.
     func didEnterBackground() {
         let model = AppModel.shared
+        let running = runningSessionExists
         guard BackgroundSync.shouldRun(
             paired: model.host != nil,
             liveActivitiesEnabled: settings.values.liveActivitiesEnabled,
+            hasRunningSession: running,
         ) else {
-            log.add(
-                .live,
-                "background sync: skipped, "
-                    + (model.host == nil ? "no computer is paired" : "the Live Activity is switched off"),
-            )
+            let why: String
+            if model.host == nil {
+                why = "no computer is paired"
+            } else if !settings.values.liveActivitiesEnabled {
+                why = "the Live Activity is switched off"
+            } else {
+                why = "nothing is running, so there is no card to keep current"
+            }
+            log.add(.live, "background sync: skipped, " + why)
             return
         }
         schedule()
@@ -285,27 +315,79 @@ final class BackgroundRefresh {
 
     /// Run one refresh under the system's task, and honour its expiration.
     ///
+    /// Two deadlines sit on this function and they are not the same one. The
+    /// app's own budget (``budget``) is when the work stops *starting* anything.
+    /// The system's expiration handler is when the task has to be **completed**,
+    /// and it can arrive at any moment -- including inside a cache write that
+    /// cancellation cannot interrupt. So completion is reported from the handler
+    /// itself, synchronously, and from the work when that finishes first:
+    /// ``WakeCompletion`` makes the two one call.
+    ///
     /// - Parameters:
     ///   - task: the refresh task.
     ///   - reason: what woke it, for the log.
     private func run(_ task: BGAppRefreshTask, reason: String) {
         let model = AppModel.shared
         let expiresAt = Date().addingTimeInterval(Self.budget)
+        let completion = WakeCompletion(task: task)
         let work = Task { @MainActor in
-            let line = await model.backgroundRefresh(expiresAt: expiresAt, reason: reason)
-            self.log.add(.sync, line)
-            // Cancelled means the system called time: `false` is the honest
-            // answer and is also what the system uses to decide how often to
-            // wake this app again. Reporting success for work that was cut short
-            // teaches it the wrong lesson.
-            task.setTaskCompleted(success: !Task.isCancelled)
+            // The store, not the model: on a cold wake the model has not been
+            // loaded and `host` is nil whatever the truth is. See
+            // ``BackgroundSync/wake(pairing:modelIsLoaded:liveActivitiesEnabled:hasRunningSession:)``.
+            let pairing = await model.storedPairing()
+            switch BackgroundSync.wake(
+                pairing: pairing,
+                modelIsLoaded: model.host != nil,
+                liveActivitiesEnabled: self.settings.values.liveActivitiesEnabled,
+                // `sessionsAreKnown` distinguishes "the host said nothing is
+                // running" from "nothing has been read", and the difference is
+                // the whole gate: an unknown list is a reason to run (the run
+                // reads it), a known empty one is a reason not to.
+                hasRunningSession: model.sessionsAreKnown ? self.runningSessionExists : nil,
+            ) {
+            case .skip(let why):
+                // Nothing to run, and no next request either. A bright line is
+                // drawn between "there is nothing to ask for", "this launch
+                // cannot ask" and "nothing is running" -- the last one is the
+                // ordinary case and the one this file saves the most launches
+                // on, because a phone in a pocket with nothing running has no
+                // card to keep current. All three end here: every submission is
+                // another launch this app can be woken for, and the next trip to
+                // the background asks again.
+                self.log.add(.sync, "background refresh: not running -- " + why.line)
+                completion.finish(success: true)
+
+            case .refresh:
+                // Before the work, not after: a refresh that is killed part-way
+                // through (the system may do that) would otherwise leave no next
+                // request, and the periodic refresh would stop for good on the
+                // first bad run.
+                self.submit()
+                let line = await model.backgroundRefresh(expiresAt: expiresAt, reason: reason)
+                self.log.add(.sync, line)
+                // Cancelled means the system called time: `false` is the honest
+                // answer and is also what the system uses to decide how often to
+                // wake this app again. Reporting success for work that was cut
+                // short teaches it the wrong lesson.
+                completion.finish(success: !Task.isCancelled)
+            }
         }
         task.expirationHandler = { [weak self] in
-            // The handler is called on the main queue (the task was registered
-            // that way) but with no isolation of its own, so the hop is a task.
+            // Completed here, synchronously, and before the log. The handler is
+            // the deadline: the app has seconds from this call to report, and
+            // waiting for the work to notice its cancellation is what turns an
+            // expired background refresh into a watchdog kill. The work may be
+            // inside a read-modify-write of a cache file that cancellation
+            // cannot interrupt, and the system is not waiting for it.
+            work.cancel()
+            let reported = completion.finish(success: false)
+            // The record is allowed to be late. The completion was not.
             Task { @MainActor in
-                work.cancel()
-                self?.log.add(.sync, "background refresh: the system called time; the sync stopped where it was")
+                self?.log.add(
+                    .sync,
+                    "background refresh: the system called time; the sync stopped where it was"
+                        + (reported ? "" : " (completion had already been reported)"),
+                )
             }
         }
     }
@@ -370,3 +452,63 @@ final class BackgroundRefresh {
         }
     }
 }
+
+// MARK: - Reporting the system's task
+
+/// Reports one `BGTask`'s completion exactly once.
+///
+/// Two callers can reach the end of a refresh -- the work, when it finishes, and
+/// the expiration handler, when the system runs out of patience -- and Apple
+/// counts a second `setTaskCompleted` against the app. Locked rather than
+/// main-actor isolated on purpose: the expiration handler has to report
+/// completion from whatever context the system calls it in, and hopping to the
+/// main actor first is exactly the delay this type exists to remove.
+private final class WakeCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    /// The task, held until the one call that ends it.
+    private var task: BGAppRefreshTask?
+
+    init(task: BGAppRefreshTask) {
+        self.task = task
+    }
+
+    /// Report completion.
+    ///
+    /// - Parameter success: whether the refresh did what it was woken for.
+    /// - Returns: whether this call was the one that reported it; `false` means
+    ///   the other caller already had.
+    @discardableResult
+    func finish(success: Bool) -> Bool {
+        lock.lock()
+        let task = self.task
+        self.task = nil
+        lock.unlock()
+        guard let task else { return false }
+        task.setTaskCompleted(success: success)
+        return true
+    }
+}
+
+// MARK: - The log's words for a wake's reasons
+
+private extension BackgroundSync.Wake.SkipReason {
+    /// The end of a log line: why this wake did not run.
+    ///
+    /// Written as what the phone's state is, not as what the app decided: a log
+    /// somebody reads months later needs the fact, and the fact for the last two
+    /// is "a wake arrived at a launch that had not read the pairing", which is a
+    /// different thing from "the operator has no computer".
+    var line: String {
+        switch self {
+        case .unpaired: "no computer is paired"
+        case .liveActivitiesOff: "the Live Activity is switched off"
+        case .pairingUnknown:
+            "the pairing could not be read (the keychain does not answer before the first unlock after a restart)"
+        case .modelNotLoaded:
+            "this launch has not read the pairing (no screen has appeared); the next trip to the background asks again"
+        case .nothingRunning:
+            "nothing is running, so there is no card to keep current"
+        }
+    }
+}
+

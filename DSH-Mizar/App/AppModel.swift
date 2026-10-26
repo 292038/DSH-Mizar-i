@@ -1072,6 +1072,31 @@ final class AppModel {
         }
     }
 
+    /// What is stored about this phone's pairing, read without a screen.
+    ///
+    /// `host` is set by ``start()``, which a background launch never runs: a
+    /// `BGAppRefreshTask` wake arrives before any view, and the root view's
+    /// `.task` is what calls ``scheduleStart()``. A wake that decided from
+    /// `host` alone would write "no computer is paired" about a phone that has
+    /// one -- true of a model nobody loaded, false of the phone, and the log is
+    /// the only evidence a wake leaves behind.
+    ///
+    /// So the store is asked directly. It is a keychain read of a handful of
+    /// items, and the fast path is the foreground one, where `host` already says
+    /// the answer.
+    ///
+    /// - Returns: what the credentials store says. `.unknown` when it cannot be
+    ///   read -- the keychain does not answer before the first unlock after a
+    ///   restart -- which is a third answer, not "no computer".
+    func storedPairing() async -> BackgroundSync.Pairing {
+        if host != nil { return .paired }
+        do {
+            return try await credentials.loadAll().isEmpty ? .unpaired : .paired
+        } catch {
+            return .unknown
+        }
+    }
+
     /// Load any stored pairing and, if there is one, connect.
     ///
     /// A pairing URI passed on the command line takes precedence, which is what
