@@ -44,19 +44,16 @@
 //  ## Where an activity may be started from
 //
 //  Apple's rule is that a Live Activity is started from the **foreground**, and
-//  that updating and ending one may happen in the background. The interesting
-//  case for this app is a sync that finishes while the app is off screen: the
-//  process is still alive for a moment, the conversation cache has just been
-//  rewritten with a fresh figure and a new running turn, and the island is
-//  exactly where the operator would want to see it.
-//
-//  So the request is made, whatever the app's state, and the answer is written to
-//  the log *with the state the app was in when it asked* -- `.live` lines read
-//  `started …; the app was background`. Nothing is pretended either way: if the
-//  system refuses a background start, the failure is recorded, and the next
-//  foreground refreshes, finds no activity and asks again. That is why there is
-//  no retry queue here and no "start owed" flag: the foreground refresh *is* the
-//  retry.
+//  that updating and ending one may happen in the background. This file used to
+//  ask from the background anyway, on the theory that what the documentation
+//  forbids and what the system does are not the same question, and it logged the
+//  app state with the answer. The answer never produced a card that appeared off
+//  screen, and the attempt was a system call with no contract behind it on every
+//  wake -- including the wake that has the least time to spare -- so the request
+//  is now made only while the app is on screen. A background refresh still
+//  updates and ends an activity that is already up; what it no longer does is try
+//  to make one appear. The next foreground refresh is the retry, and that is why
+//  there is no queue here and no "start owed" flag.
 //
 //  **The phone in a pocket is the case that has to be said out loud.** A refresh
 //  that runs off screen (`BackgroundRefresh`) can keep an activity that is
@@ -307,11 +304,18 @@ final class LiveActivityController {
             // See the note at the top of the file: a session is running again, so
             // the opening the flag records is no longer "since the last finish".
             appOpenedSinceLastFinish = false
-            // The app state is read here, next to the call, because it is the
-            // measurement: whether a background start works is not something the
-            // documentation settles, and this word in the log is the answer.
             let state = appStateWord
             guard ActivityCalls.hasPresentable else {
+                // A card that is not up is started from the foreground, and only
+                // from there. Asking from the background was the old behaviour:
+                // the system does not start one for an app behind the screen, so
+                // the attempt bought a log line and cost a system call on every
+                // wake -- on the wake that has the least time to spare. The next
+                // foreground refresh finds no activity and asks again.
+                guard !isOffScreen else {
+                    log.add(.live, "not started: the app is off screen, and an activity starts in the foreground")
+                    return
+                }
                 log.add(.live, await ActivityCalls.start(decision.phase, appState: state, runningRowCount: runningRowCount))
                 // The token is not part of the request's answer: it may be there
                 // already and it may arrive a second from now, which is what the
@@ -413,6 +417,16 @@ final class LiveActivityController {
         @unknown default: "unknown"
         }
     }
+
+    /// Whether the app is behind the screen right now.
+    ///
+    /// `.inactive` is not off screen: it is a transition -- the app switcher, a
+    /// system sheet -- and the app has had the foreground, which is the condition
+    /// ActivityKit's rule is about. `.background` is the only state in which a
+    /// start is not attempted.
+    private var isOffScreen: Bool {
+        UIApplication.shared.applicationState == .background
+    }
 }
 
 // MARK: - The ActivityKit side
@@ -503,10 +517,11 @@ private enum ActivityCalls {
             return "started \(activity.id.prefix(8)) with \(describe(phase))"
                 + " while the app was \(appState)"
         } catch {
-            // Apple's rule is that a Live Activity starts in the foreground, so
-            // this is the expected answer when a sync finishes while the app is
-            // off screen. The app state is in the line because that is the whole
-            // question; the next foreground refreshes and asks again.
+            // Apple's rule is that an activity is started in the foreground, and
+            // the caller checks for it before asking (see `isOffScreen`), so a
+            // refusal here is the system's own limit or a transient failure --
+            // recorded with the app state it happened in, and retried by the next
+            // foreground refresh.
             return "could not start \(runningRowCount) running session(s) while the app was \(appState): \(describe(error))"
         }
     }
