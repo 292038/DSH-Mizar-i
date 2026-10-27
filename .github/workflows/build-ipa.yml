@@ -1,0 +1,72 @@
+name: Build unsigned IPA
+
+# 鏀捐繘浣?fork 閲岀殑 .github/workflows/build-ipa.yml
+# 瑙﹀彂鏂瑰紡锛氫粨搴?Actions 椤甸潰 -> 宸︿晶 "Build unsigned IPA" -> Run workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # 鍏抽敭锛歩OS 26 SDK 闇€瑕?Xcode 26銆俶acos-26 闀滃儚鑷甫 Xcode 26.6 + iPhoneOS 26.5 SDK銆?    # 鐢?macos-14 / macos-15 浼氭嬁鍒?Xcode 16锛孌SH-Mizar 鐨?IPHONEOS_DEPLOYMENT_TARGET=26.0 鐩存帴缂栦笉杩囥€?    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Archive without code signing
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project DSH-Mizar.xcodeproj \
+            -scheme DSH-Mizar \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/DSH-Mizar.xcarchive" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            2>&1 | tee "$RUNNER_TEMP/archive.log"
+          echo "--- archive result ---"
+          test -d "$RUNNER_TEMP/DSH-Mizar.xcarchive/Products/Applications/DSH-Mizar.app"
+
+      - name: Package Payload into an .ipa
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/DSH-Mizar.xcarchive/Products/Applications/DSH-Mizar.app"
+          mkdir -p "$RUNNER_TEMP/pkg/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/pkg/Payload/"
+          cd "$RUNNER_TEMP/pkg"
+          # .ipa = 涓€涓?zip锛岄噷闈㈡槸 Payload/<App>.app
+          zip -qry "$RUNNER_TEMP/DSH-Mizar-unsigned.ipa" Payload
+          ls -lh "$RUNNER_TEMP/DSH-Mizar-unsigned.ipa"
+          shasum -a 256 "$RUNNER_TEMP/DSH-Mizar-unsigned.ipa"
+          echo "--- 棰勬湡锛氫笅闈㈣繖鏉?codesign 妫€鏌ュ簲褰撴姤閿欙紙鏈鍚嶏級锛屾姤閿欐墠姝ｅ父 ---"
+          codesign -dv "$APP" 2>&1 || true
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSH-Mizar-unsigned-ipa
+          path: ${{ runner.temp }}/DSH-Mizar-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: ${{ runner.temp }}/archive.log
+          if-no-files-found: ignore
+          retention-days: 7
