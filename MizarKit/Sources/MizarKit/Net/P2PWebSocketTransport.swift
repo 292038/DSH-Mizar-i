@@ -73,6 +73,8 @@ public actor P2PWebSocketTransport: WebSocketTransport {
     private let makeEngine: @Sendable () -> any MizarNetEngine
     private let signaling: (any MizarNetSignalingTransport)?
     private let makeSignaling: (@Sendable () async throws -> any MizarNetSignalingTransport)?
+    /// The device token the connection presents on the signal channel.
+    private let deviceToken: String?
     /// The channel this transport opened, if it opened one, so `close()` can
     /// shut it. A channel handed in by the caller is the caller's to close.
     private var openedSignaling: (any MizarNetSignalingTransport)?
@@ -90,6 +92,8 @@ public actor P2PWebSocketTransport: WebSocketTransport {
     ///   - signaling: the side channel, already open.
     ///   - makeSignaling: called during `connect` to open the side channel, for
     ///     a caller that would rather the transport owned its lifetime.
+    ///   - deviceToken: what the phone presents to the desktop's signal
+    ///     endpoint. The desktop passes nothing: it is the side being asked.
     ///
     /// `signaling` is for a test that hands in a loopback pair; `makeSignaling`
     /// is for a caller whose channel needs an async open and whose lifetime is
@@ -101,10 +105,12 @@ public actor P2PWebSocketTransport: WebSocketTransport {
         makeEngine: @escaping @Sendable () -> any MizarNetEngine,
         signaling: (any MizarNetSignalingTransport)? = nil,
         makeSignaling: (@Sendable () async throws -> any MizarNetSignalingTransport)? = nil,
+        deviceToken: String? = nil,
     ) {
         self.makeEngine = makeEngine
         self.signaling = signaling
         self.makeSignaling = makeSignaling
+        self.deviceToken = deviceToken
     }
 
     public func connect(url: URL, headers: [String: String]) async throws {
@@ -132,6 +138,7 @@ public actor P2PWebSocketTransport: WebSocketTransport {
                 engine: makeEngine(),
                 ticket: ticket,
                 signaling: signaling ?? openedSignaling,
+                deviceToken: deviceToken,
             )
             self.connection = connection
             let stream = try await connection.connect()

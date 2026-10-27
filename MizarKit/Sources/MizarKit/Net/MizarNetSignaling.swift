@@ -30,10 +30,19 @@ public struct MizarNetHello: Sendable, Equatable, Codable {
     public let endpointId: String
     /// The addresses it can be reached on, best first.
     public let candidates: [MizarNetCandidate]
+    /// The pairing token, when the phone is the one announcing itself.
+    ///
+    /// The desktop's signal endpoint sits on the machine's whole network, so a
+    /// channel that has not said who it is must not be told where this one is:
+    /// the phone presents the same device token the Mizar handshake uses, and
+    /// the desktop stays silent until it verifies. The desktop's own hello
+    /// carries no token — by then the phone has already proved it belongs.
+    public let token: String?
 
-    public init(endpointId: String, candidates: [MizarNetCandidate]) {
+    public init(endpointId: String, candidates: [MizarNetCandidate], token: String? = nil) {
         self.endpointId = endpointId
         self.candidates = candidates
+        self.token = token
     }
 }
 
@@ -55,7 +64,7 @@ public enum MizarNetSignal: Sendable, Equatable {
     public static let version = 1
 
     private enum CodingKeys: String, CodingKey {
-        case v, type, endpointId, candidates, reason
+        case v, type, endpointId, candidates, reason, token
     }
 }
 
@@ -68,6 +77,10 @@ extension MizarNetSignal: Codable {
             try container.encode("hello", forKey: .type)
             try container.encode(hello.endpointId, forKey: .endpointId)
             try container.encode(hello.candidates, forKey: .candidates)
+            // Absent, not `null`, when there is no token: an old desktop reads
+            // this frame too, and a key it does not know is the one shape it
+            // already tolerates.
+            try container.encodeIfPresent(hello.token, forKey: .token)
         case .candidates(let candidates):
             try container.encode("candidates", forKey: .type)
             try container.encode(candidates, forKey: .candidates)
@@ -88,6 +101,7 @@ extension MizarNetSignal: Codable {
             let hello = MizarNetHello(
                 endpointId: try container.decode(String.self, forKey: .endpointId),
                 candidates: try container.decodeIfPresent([MizarNetCandidate].self, forKey: .candidates) ?? [],
+                token: try container.decodeIfPresent(String.self, forKey: .token),
             )
             self = .hello(hello)
         case "candidates":

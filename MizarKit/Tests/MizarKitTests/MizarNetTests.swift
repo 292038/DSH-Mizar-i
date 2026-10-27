@@ -137,6 +137,28 @@ struct MizarNetTests {
         let hello = MizarNetSignal.hello(MizarNetHello(endpointId: identity.endpointId, candidates: [candidate]))
         #expect(try MizarNetSignalingJSON.decode(MizarNetSignalingJSON.encode(hello)) == hello)
 
+        // The phone's hello carries its pairing token; the desktop's does not.
+        // One decoder has to read both, because an old desktop ignores the key
+        // and an old app sends nothing under it.
+        let authenticated = MizarNetSignal.hello(
+            MizarNetHello(endpointId: identity.endpointId, candidates: [candidate], token: "device-token"),
+        )
+        let encoded = try MizarNetSignalingJSON.encode(authenticated)
+        #expect(encoded.contains("\"token\":\"device-token\""))
+        #expect(try MizarNetSignalingJSON.decode(encoded) == authenticated)
+
+        let unauthenticated = MizarNetSignal.hello(
+            MizarNetHello(endpointId: identity.endpointId, candidates: [candidate]),
+        )
+        let plain = try MizarNetSignalingJSON.encode(unauthenticated)
+        #expect(!plain.contains("\"token\""))
+        // A token-less hello on the wire is the desktop's, and decodes to nil
+        // rather than failing.
+        #expect(
+            try MizarNetSignalingJSON.decode(#"{"candidates":[],"endpointId":"x","type":"hello","v":1}"#)
+                == .hello(MizarNetHello(endpointId: "x", candidates: [])),
+        )
+
         let bye = MizarNetSignal.bye(reason: "gone")
         #expect(try MizarNetSignalingJSON.decode(MizarNetSignalingJSON.encode(bye)) == bye)
 
@@ -331,6 +353,7 @@ struct MizarNetTests {
             engine: phone,
             ticket: MizarNetTicket(endpointId: desktopId),
             signaling: phoneSide,
+            deviceToken: "device-token",
         )
         let acceptTask = Task { try await acceptor.accept() }
 
@@ -344,6 +367,20 @@ struct MizarNetTests {
             return false
         }
         #expect(hellos.count == 1)
+
+        // The phone says who it is in that first frame; the desktop's own
+        // hello answers without one, because it is the side being asked.
+        var presented: String? = "no hello seen"
+        for signal in await desktopSide.received {
+            if case .hello(let hello) = signal { presented = hello.token }
+        }
+        #expect(presented == "device-token")
+
+        var answered: String? = "no hello seen"
+        for signal in await phoneSide.received {
+            if case .hello(let hello) = signal { answered = hello.token }
+        }
+        #expect(answered == nil)
         // The candidates land in the engine through a detached consumer, so
         // the observation is a wait rather than a read.
         let offeredHello = await eventually(timeout: 2) {

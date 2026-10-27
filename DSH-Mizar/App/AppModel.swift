@@ -5385,6 +5385,10 @@ final class AppModel {
                         try await channel.open(url: url)
                         return channel
                     },
+                    // The desktop's signal endpoint says nothing until it
+                    // knows whose channel this is, so the same token that
+                    // authenticates the Mizar handshake goes first.
+                    deviceToken: host.deviceToken,
                 )
             }
         }

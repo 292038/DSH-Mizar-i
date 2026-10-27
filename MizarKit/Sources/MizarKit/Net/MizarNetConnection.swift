@@ -60,6 +60,12 @@ public actor MizarNetConnection {
     private let engine: any MizarNetEngine
     private let ticket: MizarNetTicket
     private let signaling: (any MizarNetSignalingTransport)?
+    /// The pairing token this connection presents on the signal channel.
+    ///
+    /// Nil for the desktop, which is the side being asked. The phone sends it
+    /// in its first frame: without it the desktop has no way to tell a phone
+    /// on the same network from anyone else who can route to that port.
+    private let deviceToken: String?
     private let policy: MizarNetPathPolicy
 
     private var currentState: MizarNetState = .idle
@@ -80,16 +86,20 @@ public actor MizarNetConnection {
     ///     in, so any ticket naming the local endpoint works.
     ///   - signaling: the side channel, already open. Optional: a punch can
     ///     still be attempted from the ticket's direct hints alone.
+    ///   - deviceToken: what to present to the far end's signal endpoint, if it
+    ///     checks. The phone has one; the desktop does not send one.
     ///   - policy: the numbers.
     public init(
         engine: any MizarNetEngine,
         ticket: MizarNetTicket,
         signaling: (any MizarNetSignalingTransport)? = nil,
+        deviceToken: String? = nil,
         policy: MizarNetPathPolicy = .standard,
     ) {
         self.engine = engine
         self.ticket = ticket
         self.signaling = signaling
+        self.deviceToken = deviceToken
         self.policy = policy
         let made = AsyncStream<MizarNetEvent>.makeStream(of: MizarNetEvent.self, bufferingPolicy: .unbounded)
         self.events = made.stream
@@ -261,6 +271,11 @@ public actor MizarNetConnection {
     /// waiting for a second message. It is sent by both sides: a dial that
     /// only heard from the far end would have nothing to punch towards.
     ///
+    /// The phone's hello also carries the device token: the desktop's signal
+    /// endpoint answers nothing until it can tell whose channel this is, and
+    /// the candidates in this frame are what its punch is aimed with. The
+    /// desktop's hello has no token, and an old desktop ignores the key.
+    ///
     /// A failure here is not fatal. Signaling is an accelerator, not a
     /// requirement: the ticket's direct hints are enough to attempt a punch,
     /// and the relay path needs no signaling at all.
@@ -268,7 +283,9 @@ public actor MizarNetConnection {
         guard let signaling, let identity = engineIdentity else { return }
         let candidates = await engine.localCandidates()
         do {
-            try await signaling.send(.hello(MizarNetHello(endpointId: identity.endpointId, candidates: candidates)))
+            try await signaling.send(
+                .hello(MizarNetHello(endpointId: identity.endpointId, candidates: candidates, token: deviceToken))
+            )
         } catch {
             emit(.log("signaling hello failed: \(error)"))
         }
