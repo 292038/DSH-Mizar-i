@@ -56,13 +56,16 @@ struct SettingsLanguageSnapshotTests {
         )
         try AppSourceContract.expectFragments(
             [
+                #"Text("Sending")"#,
                 #"Text("Notifications")"#,
                 #"Text("Live Activity")"#,
                 #"Text("Credits")"#,
                 #"String(localized: "Task complete")"#,
+                #"Label("Default to guided send", systemImage: "paperplane")"#,
+                #"accessibilityIdentifier("settings.send.guidedSend")"#,
                 #"Label("Live Activity", systemImage: "bolt.horizontal.circle")"#,
                 #"Label("Source code", systemImage: "chevron.left.forwardslash.chevron.right")"#,
-                #"localized: "Turn this on if you use the app on the same local network; turning it off makes every reconnect faster.""#,
+                #"localized: "Off is a rule, not a preference: this phone does not use the computer's local address at all. An open local link is closed at once and reconnects use the relay, which also makes every reconnect faster.""#,
                 #""settings.notify.\(kind.rawValue)""#,
             ],
             in: "DSH-Mizar/Views/SettingsView.swift",

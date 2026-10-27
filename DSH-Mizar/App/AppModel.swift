@@ -135,6 +135,10 @@ final class AppModel {
             // whether it is still wanted. Starting it from a view instead is
             // how there ends up being one poll per screen.
             updateRunningPoll()
+            // The same read is the one thing that says a held prompt's turn has
+            // ended. A prompt is only ever held while a turn runs, so a row that
+            // says it no longer does is the moment to hand it over.
+            deliverHeldPromptsIfDue()
         }
     }
 
@@ -544,6 +548,57 @@ final class AppModel {
     /// this number and refreshes under its own single-flight lock; an integer
     /// rather than a callback so the model never holds a view.
     private(set) var runningPollTicks = 0
+
+    // MARK: - Prompts held for the end of a turn
+
+    /// Prompts the phone is keeping back, one per session.
+    ///
+    /// A send into a running turn with guided send off lands here instead of on
+    /// the wire: the operator can still take it back, and the host's queue cannot
+    /// be emptied once it has it. ``deliverHeldPromptsIfDue()`` is what hands it
+    /// over once the turn ends, and the private methods below are the only
+    /// writers -- so the bar, the delivery and the bytes on the socket cannot
+    /// disagree about what is held.
+    private(set) var pendingPrompts: [String: PendingPrompt] = [:]
+
+    /// The last held prompt accepted by the host, per session.
+    ///
+    /// Consumed by the conversation screen (``acknowledgeDeliveredPrompt(_:)``)
+    /// so it can draw the sent message and follow it down before the read-back
+    /// has caught up. A delivery is a moment, not a state, which is why the
+    /// screen takes it rather than reading a bool.
+    private(set) var deliveredPrompts: [String: DeliveredPrompt] = [:]
+
+    /// The automatic hand-over going on for a session, if one is.
+    ///
+    /// One task per session, kept so it can be cancelled when the operator takes
+    /// the prompt back or throws it away, and so a sleeping retry cannot be
+    /// joined by a second one.
+    private var heldDeliveries: [String: HeldDelivery] = [:]
+
+    /// Sessions with a hand-over in flight right now.
+    ///
+    /// The bar's send button and the automatic delivery both end up in
+    /// ``deliverHeldPrompt(sessionId:as:)``; this is what keeps a tap during the
+    /// automatic one from sending the same text twice. A duplicate prompt would
+    /// not be a duplicate request to the host -- every send carries a fresh
+    /// `requestId` -- it would be two real messages.
+    private var deliveringHeldPrompts: Set<String> = []
+
+    /// How many times an automatic hand-over retries before leaving the prompt
+    /// in the bar for the operator.
+    ///
+    /// A failure here is usually the connection, and one retry is what covers
+    /// the blip. Past that the bar is the honest answer: the text is still
+    /// there, and the send button is one tap away.
+    private static let heldDeliveryAttempts = 3
+
+    /// A running automatic hand-over: the task and the token that owns the
+    /// dictionary entry.
+    private struct HeldDelivery {
+        let token: UUID
+        let task: Task<Void, Never>
+    }
     /// The task consuming host-pushed events.
     private var eventListener: Task<Void, Never>?
     /// The resident task that asks the local network whether the computer is on
@@ -951,8 +1006,14 @@ final class AppModel {
     /// relay's bandwidth -- and three on the operator's own network, where the
     /// cost is nothing and a turn ending should be seen while the operator is
     /// still watching. See ``RunningPoll/localInterval``.
+    ///
+    /// While a prompt is held for the end of the turn it is three either way:
+    /// that tick is the delay between the answer finishing and the operator's
+    /// message going, and ten seconds of it reads as a send that did not happen.
+    /// See ``RunningPoll/heldPromptInterval``.
     var runningPollInterval: Duration {
-        isLocalCommunication ? RunningPoll.localInterval : RunningPoll.interval
+        if !pendingPrompts.isEmpty { return RunningPoll.heldPromptInterval }
+        return isLocalCommunication ? RunningPoll.localInterval : RunningPoll.interval
     }
     /// Ticks in a row that could not read; the poll rebuilds the socket after two.
     var runningPollFailures: Int { runningPollRecovery.failures }
@@ -1299,6 +1360,19 @@ final class AppModel {
         permissionCatalogState.clear()
         pendingState.clear()
         recentHostEventState.clear()
+        // A held prompt belongs to a session on the machine being left. It
+        // cannot be sent anywhere else, and carrying it over would put a bar
+        // over a conversation on the next computer with words typed about this
+        // one. The log says it was dropped rather than sent, so a prompt that
+        // never arrives has an answer in the export.
+        if !pendingPrompts.isEmpty {
+            log.add(.sync, "\(pendingPrompts.count) held prompt(s) dropped with the computer they were for")
+        }
+        for delivery in heldDeliveries.values { delivery.task.cancel() }
+        heldDeliveries = [:]
+        deliveringHeldPrompts = []
+        pendingPrompts = [:]
+        deliveredPrompts = [:]
         // A choice about the next session on *that* machine, and the next machine
         // may not offer the model at all.
         newSessionModel = nil
@@ -1390,6 +1464,10 @@ final class AppModel {
         appIsActive = active
         updateRunningPoll()
         updateLanWatch()
+        // A prompt held while the app was in the background is due the moment
+        // the operator is back: the turn may have ended ten minutes ago and the
+        // list the app came back with is the one that says so.
+        if active { deliverHeldPromptsIfDue() }
     }
 
     /// Tell the running poll what the open conversation is drawing.
@@ -1837,9 +1915,11 @@ final class AppModel {
     /// - Parameters:
     ///   - text: what to say.
     ///   - sessionId: the session to say it to.
+    ///   - mode: how to hand it over when a turn is running: queued for the end
+    ///     of it, or fed to it as guidance. See ``PromptMode``.
     /// - Returns: whether the host accepted it.
     @discardableResult
-    func sendPrompt(_ text: String, to sessionId: String) async -> Bool {
+    func sendPrompt(_ text: String, to sessionId: String, mode: PromptMode = .queue) async -> Bool {
         guard let connection, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return false
         }
@@ -1847,13 +1927,23 @@ final class AppModel {
         // same prompt idempotent, and reusing one would make a second, genuinely
         // different prompt look like a duplicate.
         let requestId = UUID().uuidString
-        let payload = JSONValue.object([
+        var fields: [String: JSONValue] = [
             "sessionId": .string(sessionId),
             "text": .string(text),
             "requestId": .string(requestId),
-        ])
+        ]
+        // Only `steer` travels. `queue` is the host's default and an old plugin
+        // has never heard of the field; spelling out the default on every send
+        // would put every ordinary prompt behind a newer plugin. See
+        // ``PromptMode/isExplicitOnTheWire``.
+        if mode.isExplicitOnTheWire { fields["mode"] = .string(mode.rawValue) }
         do {
-            let result = try await loggedCall("session.prompt", payload: payload, on: connection, as: PromptResult.self)
+            let result = try await loggedCall(
+                "session.prompt",
+                payload: .object(fields),
+                on: connection,
+                as: PromptResult.self,
+            )
             // Direct evidence, before any list read: the host has accepted a
             // prompt, so a turn is executing for this session whether or not the
             // list the app holds says so. See ``notePromptAccepted(for:)``.
@@ -1878,10 +1968,18 @@ final class AppModel {
     ///   - attachmentIds: the ids from ``uploadAttachment``; at most 8, of which
     ///     at most 4 are images, as the host enforces.
     ///   - sessionId: the session to send to.
+    ///   - mode: how to hand it over when a turn is running. See ``PromptMode``.
     /// - Returns: whether the host accepted it.
     @discardableResult
-    func sendPrompt(_ text: String, attachmentIds: [String], to sessionId: String) async -> Bool {
-        guard !attachmentIds.isEmpty else { return await sendPrompt(text, to: sessionId) }
+    func sendPrompt(
+        _ text: String,
+        attachmentIds: [String],
+        to sessionId: String,
+        mode: PromptMode = .queue,
+    ) async -> Bool {
+        guard !attachmentIds.isEmpty else {
+            return await sendPrompt(text, to: sessionId, mode: mode)
+        }
         guard let connection else { return false }
         guard attachmentIds.count <= 8 else {
             lastError = String(localized: "At most 8 attachments can be sent at once.")
@@ -1897,6 +1995,7 @@ final class AppModel {
         // attachments exist, and an empty string is a different request from no
         // text at all to a host that trims.
         if !text.isEmpty { fields["text"] = .string(text) }
+        if mode.isExplicitOnTheWire { fields["mode"] = .string(mode.rawValue) }
         do {
             let result = try await loggedCall(
                 "session.prompt",
@@ -1910,6 +2009,226 @@ final class AppModel {
             lastError = Self.describe(error)
             return false
         }
+    }
+
+    // MARK: - Prompts held for the end of a turn
+
+    /// The prompt this session is holding, if it is holding one.
+    /// - Parameter sessionId: the session to ask about.
+    /// - Returns: what would be sent when its turn ends.
+    func pendingPrompt(for sessionId: String) -> PendingPrompt? {
+        pendingPrompts[sessionId]
+    }
+
+    /// Keep a prompt back until the turn the session is running ends.
+    ///
+    /// Called by the composer for a text-only send while a turn is running and
+    /// guided send is off. Nothing goes on the socket: the prompt is the phone's
+    /// until ``deliverHeldPromptsIfDue()`` or the operator decides otherwise, and
+    /// that is the whole difference from the host's queue.
+    ///
+    /// A second send while one is held is added to the same prompt rather than
+    /// replacing it or stacking a second bar: one bar means one hand-over, and
+    /// dropping the first would lose words the operator already committed to.
+    ///
+    /// - Parameters:
+    ///   - text: what to say.
+    ///   - sessionId: the session that is running.
+    /// - Returns: whether it was held. An empty prompt is not.
+    @discardableResult
+    func holdPrompt(_ text: String, for sessionId: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if var held = pendingPrompts[sessionId] {
+            held.append(trimmed)
+            pendingPrompts[sessionId] = held
+            log.add(.sync, "held another prompt for \(sessionId) until its turn ends")
+        } else {
+            pendingPrompts[sessionId] = PendingPrompt(sessionId: sessionId, text: trimmed)
+            log.add(.sync, "held a prompt for \(sessionId) until its turn ends")
+        }
+        // The turn may already be over as far as the app knows -- a send that
+        // raced the host's own ending -- in which case this hands it over now.
+        deliverHeldPromptsIfDue()
+        return true
+    }
+
+    /// Take the held prompt back, for the field.
+    /// - Parameter sessionId: the session to take it from.
+    /// - Returns: the prompt, or `nil` when there was none.
+    @discardableResult
+    func takePendingPrompt(for sessionId: String) -> PendingPrompt? {
+        guard let held = pendingPrompts.removeValue(forKey: sessionId) else { return nil }
+        cancelHeldDelivery(for: sessionId)
+        log.add(.sync, "held prompt for \(sessionId) taken back to the field")
+        return held
+    }
+
+    /// Throw the held prompt away.
+    ///
+    /// - Parameter sessionId: the session to empty.
+    func discardPendingPrompt(for sessionId: String) {
+        guard pendingPrompts.removeValue(forKey: sessionId) != nil else { return }
+        cancelHeldDelivery(for: sessionId)
+        log.add(.sync, "held prompt for \(sessionId) discarded")
+    }
+
+    /// Hand the held prompt over now.
+    ///
+    /// The bar's send button lands here. The prompt leaves the bar before the
+    /// request is on the wire, so the bar's exit is answered by the tap rather
+    /// than by a round trip; a refusal puts it back, so nothing is lost, and
+    /// stops the automatic hand-over from trying on its own -- an operator who
+    /// just watched a send fail is the one who gets to decide about a retry.
+    ///
+    /// - Parameters:
+    ///   - sessionId: the session the prompt is held for.
+    ///   - mode: `.steer` to feed the running turn as guidance, `.queue` to let
+    ///     the host start it.
+    /// - Returns: whether the host accepted it.
+    @discardableResult
+    func sendPendingPrompt(for sessionId: String, as mode: PromptMode) async -> Bool {
+        guard !deliveringHeldPrompts.contains(sessionId) else { return false }
+        // A retry that is only sleeping is superseded by this tap: the text is
+        // the same text, and two hand-overs would be two messages.
+        cancelHeldDelivery(for: sessionId)
+        let accepted = await deliverHeldPrompt(sessionId: sessionId, as: mode)
+        if !accepted { stallHeldDelivery(for: sessionId) }
+        return accepted
+    }
+
+    /// Note that the conversation screen has drawn a delivered prompt.
+    ///
+    /// One screen consumes one delivery. Leaving it in place would let a screen
+    /// that appears later draw the same message a second time, which is a
+    /// duplicate bubble over a conversation that already has the real one.
+    ///
+    /// - Parameter delivered: the delivery the screen handled.
+    func acknowledgeDeliveredPrompt(_ delivered: DeliveredPrompt) {
+        guard deliveredPrompts[delivered.sessionId]?.id == delivered.id else { return }
+        deliveredPrompts.removeValue(forKey: delivered.sessionId)
+    }
+
+    /// Hand over every held prompt whose turn has ended.
+    ///
+    /// Called from the session list's observer -- the one read that can say a
+    /// turn ended while the operator is in another conversation -- and when the
+    /// app comes back on screen. The list is the source: a prompt is held only
+    /// while its row says running, so a row that stopped is the evidence, and
+    /// the conversation page is not consulted (it exists only while a session is
+    /// open).
+    private func deliverHeldPromptsIfDue() {
+        guard !pendingPrompts.isEmpty, phase == .ready, connection != nil else { return }
+        for (sessionId, held) in pendingPrompts {
+            guard !held.automaticDeliveryStalled else { continue }
+            guard heldDeliveries[sessionId] == nil,
+                  !deliveringHeldPrompts.contains(sessionId) else { continue }
+            guard let row = sessions.first(where: { $0.sessionId == sessionId }), !row.running else { continue }
+            startHeldDelivery(for: sessionId)
+        }
+    }
+
+    /// Start the automatic hand-over for one session.
+    /// - Parameter sessionId: the session whose turn has ended.
+    private func startHeldDelivery(for sessionId: String) {
+        let token = UUID()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.runHeldDelivery(for: sessionId)
+            // Only the delivery that still owns the entry may clear it: a
+            // cancelled retry waking up late must not remove its replacement,
+            // which would then be doubled by the next read.
+            guard self.heldDeliveries[sessionId]?.token == token else { return }
+            self.heldDeliveries.removeValue(forKey: sessionId)
+        }
+        heldDeliveries[sessionId] = HeldDelivery(token: token, task: task)
+    }
+
+    /// Try to hand a held prompt over, with a couple of retries.
+    /// - Parameter sessionId: the session whose turn has ended.
+    private func runHeldDelivery(for sessionId: String) async {
+        for attempt in 0..<Self.heldDeliveryAttempts {
+            guard !Task.isCancelled else { return }
+            guard pendingPrompts[sessionId] != nil else { return }
+            // The turn may have started again -- another phone, the computer,
+            // or a prompt that went out over the socket just now -- in which
+            // case the held one is for the end of *that* turn.
+            guard let row = sessions.first(where: { $0.sessionId == sessionId }), !row.running else { return }
+            if await deliverHeldPrompt(sessionId: sessionId, as: .queue) { return }
+            guard attempt + 1 < Self.heldDeliveryAttempts else { break }
+            do {
+                try await Task.sleep(for: .seconds(attempt == 0 ? 2 : 4))
+            } catch {
+                return
+            }
+        }
+        // Out of attempts. The bar keeps the text and its send key; nothing here
+        // asks the host again until the operator does.
+        stallHeldDelivery(for: sessionId)
+        log.add(.sync, "held prompt for \(sessionId) could not be sent automatically; it stays in the bar")
+    }
+
+    /// Stop the automatic hand-over for a session without emptying the bar.
+    ///
+    /// - Parameter sessionId: the session whose held prompt stays put.
+    private func stallHeldDelivery(for sessionId: String) {
+        guard var held = pendingPrompts[sessionId] else { return }
+        held.stallAutomaticDelivery()
+        pendingPrompts[sessionId] = held
+    }
+
+    /// The one place a held prompt leaves the phone.
+    ///
+    /// - Parameters:
+    ///   - sessionId: the session it belongs to.
+    ///   - mode: how the host should take it. See ``PromptMode``.
+    /// - Returns: whether the host accepted it.
+    private func deliverHeldPrompt(sessionId: String, as mode: PromptMode) async -> Bool {
+        guard !deliveringHeldPrompts.contains(sessionId) else { return false }
+        guard let held = pendingPrompts.removeValue(forKey: sessionId) else { return false }
+        deliveringHeldPrompts.insert(sessionId)
+        defer { deliveringHeldPrompts.remove(sessionId) }
+        // Which computer this prompt is for. The request is a suspension, and a
+        // host switch clears `pendingPrompts` while it is in flight -- without
+        // this, a failure would put the old computer's held prompt back under the
+        // new one, and a success would draw it there.
+        let hostId = host?.hostId
+        let accepted = await sendPrompt(held.text, to: sessionId, mode: mode)
+        guard host?.hostId == hostId else {
+            log.add(.sync, "held prompt for \(sessionId) finished after its computer was left; dropped")
+            return accepted
+        }
+        guard accepted else {
+            restore(held, for: sessionId)
+            log.add(.sync, "held prompt for \(sessionId) was refused; it stays in the bar")
+            return false
+        }
+        deliveredPrompts[sessionId] = DeliveredPrompt(sessionId: sessionId, text: held.text)
+        log.add(.sync, "held prompt for \(sessionId) sent (\(mode.rawValue))")
+        return true
+    }
+
+    /// Put a refused prompt back in the bar.
+    ///
+    /// Anything typed while the request was in flight was held after it, and
+    /// keeps its order behind it.
+    ///
+    /// - Parameters:
+    ///   - held: the prompt the host refused.
+    ///   - sessionId: the session it belongs to.
+    private func restore(_ held: PendingPrompt, for sessionId: String) {
+        if var existing = pendingPrompts[sessionId] {
+            existing.prepend(held.text)
+            pendingPrompts[sessionId] = existing
+        } else {
+            pendingPrompts[sessionId] = held
+        }
+    }
+
+    /// Stop a sleeping retry for one session.
+    /// - Parameter sessionId: the session whose delivery is no longer wanted.
+    private func cancelHeldDelivery(for sessionId: String) {
+        heldDeliveries.removeValue(forKey: sessionId)?.task.cancel()
     }
 
     /// Upload one attachment over the socket that is already open.

@@ -194,6 +194,13 @@
 " · %lld not in a workspace" = " · 未归档 %lld 个";
 
 /* Settings */
+"Sending" = "发送";
+"Default to guided send" = "默认引导发送";
+"On, a message sent while a turn is running is handed to the model immediately as guidance, without interrupting it. Off, it waits in a bar above the field and is sent when the turn ends; the bar can also send it as guidance now, put it back in the field, or throw it away." = "打开后，在回合进行中发送的消息会立即作为引导交给模型，不打断它的输出。关闭时，消息会停在输入框上方的长条里，等这一轮结束后再发送；长条里也可以改为立即引导发送、退回输入框，或者直接删除。";
+"Send now" = "立即发送";
+"Hands the message to the running turn as guidance." = "立即把消息作为引导交给正在进行的回合。";
+"Put back in the field" = "退回输入框";
+"Delete" = "删除";
 "Notifications" = "通知";
 "Live Activity" = "实时活动";
 "Logs" = "日志";

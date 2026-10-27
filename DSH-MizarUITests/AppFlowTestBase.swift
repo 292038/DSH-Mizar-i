@@ -322,6 +322,57 @@ class AppFlowTestBase: XCTestCase {
         return box.methods
     }
 
+    /// The prompts the mock host has been sent, and how each one travelled.
+    ///
+    /// A held prompt produces no request at all, and a guided one produces the
+    /// same accepted `session.prompt` a queued one does -- so "did it leave the
+    /// phone, and as guidance" is a question only the wire can answer. The mode
+    /// is the host's own reading of the payload: an absent `mode` is `queue`,
+    /// which is what an older host takes it as.
+    ///
+    /// - Returns: the prompt texts and their modes, in order; empty when the
+    ///   mock is not answering.
+    static func mockPrompts() -> (texts: [String], modes: [String]) {
+        guard let url = URL(string: "http://127.0.0.1:\(mockPort)/prompts") else { return ([], []) }
+        let done = DispatchSemaphore(value: 0)
+        let box = Box()
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            defer { done.signal() }
+            guard let data,
+                  let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return }
+            box.prompts = parsed["prompts"] as? [String] ?? []
+            box.promptModes = parsed["modes"] as? [String] ?? []
+        }.resume()
+        _ = done.wait(timeout: .now() + 6)
+        return (box.prompts, box.promptModes)
+    }
+
+    /// Wait until the mock host has been sent at least this many prompts.
+    ///
+    /// The bar leaves before its request is answered (it is answered by the tap,
+    /// not by a round trip), so the disappearance is not evidence that the prompt
+    /// arrived. Polling the wire is.
+    ///
+    /// - Parameters:
+    ///   - count: how many prompts to wait for.
+    ///   - timeout: how long to wait.
+    /// - Returns: whatever the host had when the wait ended.
+    static func waitForMockPrompts(
+        count: Int,
+        timeout: TimeInterval = 15,
+    ) -> (texts: [String], modes: [String]) {
+        let deadline = Date().addingTimeInterval(timeout)
+        var latest = mockPrompts()
+        while latest.texts.count < count, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.2)
+            latest = mockPrompts()
+        }
+        return latest
+    }
+
     /// The model switches the mock host has taken, in order.
     ///
     /// Read at the host rather than on the screen. The conversation's bar draws
@@ -467,6 +518,10 @@ class AppFlowTestBase: XCTestCase {
         var methods: [String: Int] = [:]
         /// The `session.model.set` calls the mock host took, in order.
         var modelSets: [[String: Any]] = []
+        /// The prompts the mock host was sent, in order.
+        var prompts: [String] = []
+        /// How each of those prompts travelled: `queue` or `steer`.
+        var promptModes: [String] = []
     }
 
     /// How many sockets the mock host has accepted since the suite last reset it.
@@ -1012,6 +1067,41 @@ class AppFlowTestBase: XCTestCase {
     func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
         return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    /// Whether the composer's field holds this text right now.
+    ///
+    /// Read from the field's value rather than by searching the tree: SwiftUI
+    /// leaves a typed string in the accessibility tree after the field clears,
+    /// so "the text is somewhere" is not the question. This is.
+    ///
+    /// - Parameters:
+    ///   - text: the text to look for.
+    ///   - app: the running app.
+    /// - Returns: whether the field holds it.
+    func fieldContains(_ text: String, in app: XCUIApplication) -> Bool {
+        ((app.textViews["composer.field"].value as? String) ?? "").contains(text)
+    }
+
+    /// Wait until the composer's field holds this text.
+    ///
+    /// Polled rather than read once: a write through the binding comes back as a
+    /// re-render a frame after the tap that asked for it.
+    ///
+    /// - Parameters:
+    ///   - text: the text to look for.
+    ///   - app: the running app.
+    ///   - timeout: how long to wait.
+    /// - Returns: whether it turned up.
+    func waitForField(_ text: String, in app: XCUIApplication, timeout: TimeInterval = 5) -> Bool {
+        let field = app.textViews["composer.field"]
+        let arrived = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                ((field.value as? String) ?? "").contains(text)
+            },
+            object: nil,
+        )
+        return XCTWaiter().wait(for: [arrived], timeout: timeout) == .completed
     }
 
 }

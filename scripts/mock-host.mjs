@@ -649,6 +649,16 @@ const MAIN_ANSWER = SECOND_IDENTITY
  */
 const sentPrompts = []
 /**
+ * How each of `sentPrompts` was delivered, in the same order.
+ *
+ * `queue` or `steer` exactly as the app sent it, with an absent `mode` recorded
+ * as `queue` -- which is what a host reads it as. Kept beside the texts rather
+ * than replacing them because the conversation fixture takes strings, and
+ * because this is the only way a test can tell guidance from a queue: both
+ * produce one accepted `session.prompt` on the wire.
+ */
+const sentPromptModes = []
+/**
  * Sessions the phone started with `session.create`, and what was said in each.
  *
  * Kept apart from the fixture's own session so a test that starts one sees a
@@ -1294,7 +1304,10 @@ function answer(frame) {
           result: { accepted: true, requestId: frame.payload?.requestId ?? 'mock-request' },
         }
       }
-      if (text !== '') sentPrompts.push(text)
+      if (text !== '') {
+        sentPrompts.push(text)
+        sentPromptModes.push(frame.payload?.mode === 'steer' ? 'steer' : 'queue')
+      }
       console.log('mock: prompt received ->', JSON.stringify(text), '| log now', sentPrompts.length)
       return {
         v: 1,
@@ -2215,6 +2228,18 @@ const server = createServer((request, response) => {
     response.end(JSON.stringify({ ok: true, holding: holdingMessages, released: previous }))
     return
   }
+  if (request.url?.startsWith('/prompts')) {
+    // What the app has actually sent, and how each one travelled. A held prompt
+    // produces no request at all, and a guided one produces the same
+    // `session.prompt` a queued one does -- so "did it leave the phone, and was
+    // it guidance" is a question only this side of the wire can answer.
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({
+      prompts: sentPrompts.slice(),
+      modes: sentPromptModes.slice(),
+    }))
+    return
+  }
   if (request.url?.startsWith('/loads')) {
     // How many `session.messages` reads the app asked for at the same time, and
     // the most that ever were. See `messagesInFlight`.
@@ -2369,6 +2394,7 @@ const server = createServer((request, response) => {
     // depending on which tests had run first. That is a suite whose failures
     // depend on test order, which is a suite nobody can trust.
     sentPrompts.length = 0
+    sentPromptModes.length = 0
     createdSessions.length = 0
     forkRequests.length = 0
     longReaderFixture = false

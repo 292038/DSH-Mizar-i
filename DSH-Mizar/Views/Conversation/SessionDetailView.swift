@@ -417,6 +417,19 @@ struct SessionDetailView: View {
             // one without a tap.
             Task { await refreshConversationForRunningPoll() }
         }
+        .onChange(of: model.deliveredPrompts[sessionId]) { _, delivered in
+            // A message that was held for the end of a turn has gone. Draw it
+            // the way a send from the field is drawn, and follow it down: the
+            // bar disappeared when it left, so without this the operator's own
+            // words would be missing until the next read landed.
+            //
+            // Taken, not merely read: one screen draws one delivery. See
+            // ``AppModel/acknowledgeDeliveredPrompt(_:)``.
+            guard let delivered else { return }
+            model.acknowledgeDeliveredPrompt(delivered)
+            launch(delivered.text)
+            Task { await refreshAfterSend(delivered.text) }
+        }
         .onChange(of: scenePhase) { _, phase in
             // Ask again when the operator comes back: suspending cancels whatever
             // was in flight, and this screen had no way to notice.
@@ -790,6 +803,23 @@ struct SessionDetailView: View {
                             maxHeight: max(160, container.size.height * 0.34),
                         )
                     }
+                    // The message waiting for the running turn, directly above
+                    // the field and a little narrower than it. It leaves with
+                    // the expanded composer for the same reason the dock does,
+                    // and it comes and goes through the field's top edge --
+                    // see ``FromBelowTransition``.
+                    if !composerExpanded, let held = model.pendingPrompt(for: sessionId) {
+                        PendingPromptBar(
+                            prompt: held,
+                            onSend: { await sendHeldPrompt() },
+                            onReturn: { returnHeldPrompt() },
+                            onDelete: { deleteHeldPrompt() },
+                        )
+                        // Slightly narrower than the composer's own slab, which
+                        // insets itself by ten points on each side.
+                        .padding(.horizontal, 18)
+                        .transition(.fromBelow)
+                    }
                     ComposerView(
                         sessionId: sessionId,
                         stats: shownStats,
@@ -813,6 +843,11 @@ struct SessionDetailView: View {
                     // the title; at rest it wraps its content.
                     .frame(maxHeight: composerExpanded ? .infinity : nil)
                 }
+                // One animation for the held prompt's arrival and departure, and
+                // only that value drives it: the bar's height is part of this
+                // stack, so the room it takes and the room handed back move with
+                // the same spring as the surface itself.
+                .animation(Motion.pick(.mizarSmooth), value: model.pendingPrompt(for: sessionId)?.id)
                 .overlayPreferenceValue(ComposerShellBoundsKey.self) { shellBounds in
                     GeometryReader { stack in
                         Color.clear
@@ -1003,6 +1038,44 @@ struct SessionDetailView: View {
     private func settle(_ text: String) {
         outgoing.removeAll { $0.text == text }
         if flight?.text == text { flight = nil }
+    }
+
+    // MARK: - The held prompt
+
+    /// Hand the held prompt over now, as guidance into the running turn.
+    ///
+    /// The model takes the prompt out of the pending map before the request goes
+    /// out, so the bar has already left by the time this returns. The accepted
+    /// delivery is what draws the sent message -- see the observation in the
+    /// body -- which is also the path the automatic hand-over takes at the end
+    /// of the turn.
+    private func sendHeldPrompt() async {
+        await model.sendPendingPrompt(for: sessionId, as: .steer)
+    }
+
+    /// Put the held prompt back in the field and let the bar go.
+    ///
+    /// Appended, not substituted: the operator may have started the next thought
+    /// while this one waited, and replacing it would be a silent loss. The
+    /// keyboard comes back with the text, because that is where the caret is
+    /// going.
+    private func returnHeldPrompt() {
+        guard let held = model.takePendingPrompt(for: sessionId) else { return }
+        withMizarAnimation(.mizarSmooth) {
+            draft = draft.isEmpty ? held.text : draft + "\n" + held.text
+            composerFocused = true
+        }
+    }
+
+    /// Throw the held prompt away.
+    ///
+    /// No confirmation: it never left the phone, and the words are one undo away
+    /// only in the field -- which is exactly why the bar has a return key next
+    /// to this one.
+    private func deleteHeldPrompt() {
+        withMizarAnimation(.mizarSmooth) {
+            model.discardPendingPrompt(for: sessionId)
+        }
     }
 
     /// Put the conversation's turns on screen, and tell the model whether one is

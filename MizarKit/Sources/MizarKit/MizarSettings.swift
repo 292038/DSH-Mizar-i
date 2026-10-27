@@ -319,19 +319,41 @@ public struct MizarSettings: Equatable, Sendable, Codable {
     /// switch moves.
     public var directConnection: Bool
 
+    /// Whether a message sent into a running turn is handed over as guidance at
+    /// once. 默认引导发送.
+    ///
+    /// On, the prompt travels with `mode: "steer"`: the host feeds it to the
+    /// model as it stands, inside the turn that is already running, and nothing
+    /// is interrupted.
+    ///
+    /// Off -- the default -- the prompt does not leave the phone while a turn is
+    /// running. It is held in a bar above the field, where it can still be sent
+    /// as guidance by hand, put back in the field, or thrown away, and it is
+    /// handed to the host once the running turn has ended. The holding is the
+    /// phone's, not the host's queue: a message already queued at the host could
+    /// not be called back, and calling it back is the whole point of the bar.
+    ///
+    /// The switch changes the ordinary send. A prompt carrying attachments is
+    /// always handed over at once -- its files are already on the host by the
+    /// time the text is -- and is queued unless this is on.
+    public var guidedSendByDefault: Bool
+
     /// Everything at its default: notifications on, live activity on, the local
-    /// network looked for only when the operator asks for it, and the punched
-    /// route off until it has a success rate.
+    /// network looked for only when the operator asks for it, the punched
+    /// route off until it has a success rate, and a send into a running turn
+    /// held for the end of that turn.
     public init(
         liveActivitiesEnabled: Bool = true,
         notifications: NotificationPreferences = .allEnabled,
         localNetworkFirst: Bool = false,
         directConnection: Bool = false,
+        guidedSendByDefault: Bool = false,
     ) {
         self.liveActivitiesEnabled = liveActivitiesEnabled
         self.notifications = notifications
         self.localNetworkFirst = localNetworkFirst
         self.directConnection = directConnection
+        self.guidedSendByDefault = guidedSendByDefault
     }
 
     /// The key the live activity switch is stored under.
@@ -342,6 +364,9 @@ public struct MizarSettings: Equatable, Sendable, Codable {
 
     /// The key the direct-connection switch is stored under.
     public static let directConnectionKey = "mizar.settings.directConnection"
+
+    /// The key the guided-send switch is stored under.
+    public static let guidedSendKey = "mizar.settings.guidedSend"
 
     /// The key one notification kind is stored under.
     /// - Parameter kind: the kind.
@@ -378,6 +403,10 @@ public struct MizarSettings: Equatable, Sendable, Codable {
             localNetworkFirst: storage.bool(forKey: localNetworkFirstKey) ?? false,
             // Off by default: see ``directConnection``.
             directConnection: storage.bool(forKey: directConnectionKey) ?? false,
+            // Off by default: the host's queue has been the behaviour so far,
+            // and guidance into a running turn is a change the operator asks
+            // for. See ``guidedSendByDefault``.
+            guidedSendByDefault: storage.bool(forKey: guidedSendKey) ?? false,
         )
     }
 
@@ -387,6 +416,7 @@ public struct MizarSettings: Equatable, Sendable, Codable {
         storage.set(liveActivitiesEnabled, forKey: Self.liveActivitiesKey)
         storage.set(localNetworkFirst, forKey: Self.localNetworkFirstKey)
         storage.set(directConnection, forKey: Self.directConnectionKey)
+        storage.set(guidedSendByDefault, forKey: Self.guidedSendKey)
         for kind in NotificationKind.allCases {
             storage.set(notifications.isEnabled(kind), forKey: Self.notificationsKey(kind))
         }

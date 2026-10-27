@@ -346,7 +346,13 @@ final class AppFlowTurnLifecycleTests: AppFlowTestBase {
         // message showing up. Before this, it did not -- the app never reloaded
         // the conversation after a send, so the operator's own words were absent
         // until a pull-to-refresh.
-        let app = launch()
+        //
+        // Stopped, because this is about the send path alone. A send into a
+        // *running* turn is held above the field now (guided send off, the
+        // default), and that behaviour has its own tests below; measuring it
+        // here would make this one fail for a reason that is not about the
+        // message arriving.
+        let app = launch(pending: false, running: false)
         let field = app.textViews["composer.field"]
         expect(field, "the composer is missing")
         field.tap()
@@ -368,13 +374,15 @@ final class AppFlowTurnLifecycleTests: AppFlowTestBase {
         // words were real, they were just still sitting where they had been
         // typed. A conversation bubble is the one above the composer.
         // First: did the send succeed? The composer clears only on success and is
-        // refilled on failure, so its value says which branch ran -- and the two
-        // produce the same visible symptom ("the text is still here").
+        // refilled on failure, so what the field holds says which branch ran --
+        // and the two produce the same visible symptom ("the text is still
+        // here"). Empty and the placeholder are the same answer: an empty
+        // `UITextView` reports "" to XCUITest, and which of the two an empty
+        // field reports depends on the OS, not on the send.
         let composerField = app.textViews["composer.field"]
         expect(composerField, "the composer vanished")
-        XCTAssertEqual(
-            composerField.value as? String,
-            "Ask your agent…",
+        XCTAssertFalse(
+            fieldContains("does this reach the agent", in: app),
             "the composer still holds the text, so the send did not succeed",
         )
 
@@ -403,7 +411,205 @@ final class AppFlowTurnLifecycleTests: AppFlowTestBase {
             inConversation,
             "the message never reached the conversation (\(candidates.count) elements carry the text, none above the composer)\nHIERARCHY-START\n\(app.debugDescription)\nHIERARCHY-END",
         )
-        XCTAssertEqual(composer.value as? String, "Ask your agent…", "the composer never emptied")
+        XCTAssertFalse(
+            fieldContains("does this reach the agent", in: app),
+            "the composer never emptied",
+        )
+    }
+
+    // MARK: - A prompt held for the end of a turn
+
+    /// A message sent while the agent is working waits above the field.
+    ///
+    /// The default is guided send off, and the old behaviour was the host's
+    /// queue: the message was gone the moment it was sent and could not be taken
+    /// back. Now the phone holds it, so it can be put back or thrown away -- and
+    /// the proof that nothing has been queued is the wire, where no prompt has
+    /// arrived.
+    func testASendIntoARunningTurnWaitsInTheBar() {
+        let app = launch(pending: false)
+        let field = app.textViews["composer.field"]
+        expect(field, "the composer is missing")
+        field.tap()
+        field.typeText("hold this thought")
+        app.buttons["composer.send"].tap()
+
+        let bar = app.descendants(matching: .any).matching(identifier: "pending.bar").firstMatch
+        expect(bar, "a send into a running turn did not appear above the field")
+        let heldText = app.staticTexts["pending.text"]
+        expect(heldText, "the bar draws no text")
+        XCTAssertEqual(heldText.label, "hold this thought", "the bar is not showing what was sent")
+        XCTAssertFalse(
+            fieldContains("hold this thought", in: app),
+            "the field still holds the text, so it was never taken",
+        )
+        XCTAssertEqual(
+            Self.mockPrompts().texts,
+            [],
+            "the held prompt reached the host before the turn ended",
+        )
+
+        // Put it back: the words are the operator's again, and the bar goes.
+        app.buttons["pending.return"].tap()
+        XCTAssertTrue(
+            waitForDisappearance(bar, timeout: 5),
+            "the bar stayed after the prompt was put back",
+        )
+        XCTAssertTrue(
+            waitForField("hold this thought", in: app),
+            "the text never made it back to the field: \(app.textViews["composer.field"].value ?? "nil")",
+        )
+
+        // Hold it again and throw it away, without either send touching the wire.
+        app.buttons["composer.send"].tap()
+        expect(bar, "the second send did not put the bar back")
+        app.buttons["pending.delete"].tap()
+        XCTAssertTrue(
+            waitForDisappearance(bar, timeout: 5),
+            "the bar stayed after the prompt was deleted",
+        )
+        XCTAssertFalse(
+            fieldContains("hold this thought", in: app),
+            "deleting the held prompt left its text behind",
+        )
+        XCTAssertEqual(Self.mockPrompts().texts, [], "something was sent while no prompt was held")
+    }
+
+    /// The held prompt goes when the turn ends, with nothing tapped.
+    ///
+    /// It is sent as the next ordinary prompt, not as guidance: the turn it was
+    /// waiting for is over. The mock host's session is stopped at the control
+    /// endpoint; the app's running poll is what notices, and it asks faster while
+    /// a prompt is held, which is why this can wait less than the usual tick.
+    func testAHeldPromptGoesWhenTheTurnEnds() {
+        let app = launch(pending: false)
+        let field = app.textViews["composer.field"]
+        expect(field, "the composer is missing")
+        field.tap()
+        field.typeText("and then run the suite")
+        app.buttons["composer.send"].tap()
+
+        let bar = app.descendants(matching: .any).matching(identifier: "pending.bar").firstMatch
+        expect(bar, "the send into a running turn did not put a bar above the field")
+        XCTAssertEqual(Self.mockPrompts().texts, [], "the held prompt left before its turn ended")
+
+        // The turn the prompt was held for ends. Nothing is tapped from here.
+        Self.setMockSessionRunning(false)
+
+        XCTAssertTrue(
+            waitForDisappearance(bar, timeout: 20),
+            "the bar stayed after the turn ended",
+        )
+        let sent = Self.waitForMockPrompts(count: 1)
+        XCTAssertEqual(
+            sent.texts,
+            ["and then run the suite"],
+            "the held prompt never reached the host",
+        )
+        XCTAssertEqual(
+            sent.modes,
+            ["queue"],
+            "the end-of-turn hand-over travelled as \(sent.modes) rather than as an ordinary prompt",
+        )
+    }
+
+    /// The bar's send key is guidance: the running turn takes the message now.
+    func testAHeldPromptCanBeSentAsGuidance() {
+        let app = launch(pending: false)
+        let field = app.textViews["composer.field"]
+        expect(field, "the composer is missing")
+        field.tap()
+        field.typeText("do it this way instead")
+        app.buttons["composer.send"].tap()
+
+        let bar = app.descendants(matching: .any).matching(identifier: "pending.bar").firstMatch
+        expect(bar, "the send into a running turn did not put a bar above the field")
+        XCTAssertEqual(Self.mockPrompts().texts, [], "the held prompt left before it was asked to")
+
+        app.buttons["pending.send"].tap()
+        XCTAssertTrue(
+            waitForDisappearance(bar, timeout: 10),
+            "the bar stayed after its send key",
+        )
+        let sent = Self.waitForMockPrompts(count: 1)
+        XCTAssertEqual(sent.texts, ["do it this way instead"], "the bar's send key sent nothing")
+        XCTAssertEqual(
+            sent.modes,
+            ["steer"],
+            "the bar's send key travelled as \(sent.modes), which would interrupt the turn",
+        )
+    }
+
+    /// Guided send on: the message is handed to the running turn at once.
+    ///
+    /// The switch is the whole feature -- the bar only exists because it is off
+    /// -- so this drives the screen rather than trusting the default, and reads
+    /// the payload at the host, where guidance and a queue are indistinguishable
+    /// from the screen's side.
+    func testGuidedSendHandsTheMessageOverAtOnce() {
+        let app = launch()
+        openSettings(app)
+        let identifier = "settings.send.guidedSend"
+        let toggle = settingControl(identifier, in: app)
+        XCTAssertTrue(revealInSettings(toggle, in: app), "there is no guided-send switch")
+
+        // The simulator container outlives a test run, so "off" is established
+        // rather than assumed: a suite that insisted on the default would pass on
+        // a fresh machine and fail on the second run.
+        if settingState(identifier, in: app) == true {
+            flip(toggle, in: app)
+            XCTAssertTrue(
+                settingChanges(identifier, in: app, from: true),
+                "the guided-send switch could not be put back to its default",
+            )
+        }
+        XCTAssertEqual(
+            settingState(identifier, in: app),
+            false,
+            "guided send should start off",
+        )
+
+        flip(toggle, in: app)
+        XCTAssertTrue(
+            settingChanges(identifier, in: app, from: false),
+            "the guided-send switch did not move",
+        )
+        app.buttons["settings.done"].tap()
+        let dismiss = app.buttons["shell.dismissSidebar"]
+        if dismiss.waitForExistence(timeout: 3) { dismiss.tap() }
+        XCTAssertTrue(
+            sidebar(app.buttons["sessions.new"], isOut: false),
+            "the sidebar stayed over the conversation after the settings closed",
+        )
+
+        let field = app.textViews["composer.field"]
+        expect(field, "the conversation never came back from the settings")
+        field.tap()
+        field.typeText("guide me now")
+        app.buttons["composer.send"].tap()
+
+        let bar = app.descendants(matching: .any).matching(identifier: "pending.bar").firstMatch
+        XCTAssertFalse(
+            bar.waitForExistence(timeout: 2),
+            "guided send still held the message in the bar",
+        )
+        let sent = Self.waitForMockPrompts(count: 1)
+        XCTAssertEqual(sent.texts, ["guide me now"], "guided send sent nothing")
+        XCTAssertEqual(
+            sent.modes,
+            ["steer"],
+            "guided send travelled as \(sent.modes), which would interrupt the turn",
+        )
+
+        // And back to the default, so the rest of the suite measures what a
+        // fresh install has rather than this test's choice.
+        openSettings(app)
+        let again = settingControl(identifier, in: app)
+        XCTAssertTrue(revealInSettings(again, in: app), "the guided-send switch is gone")
+        if settingState(identifier, in: app) == true {
+            flip(again, in: app)
+            _ = settingChanges(identifier, in: app, from: true)
+        }
     }
 
     /// A running turn's clock, when the host's clock is ahead of the phone's.

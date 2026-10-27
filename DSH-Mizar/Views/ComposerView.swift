@@ -18,6 +18,14 @@
 //  meaning keeps both one tap away; it changes shape as it changes meaning, so
 //  the meaning is never a surprise.
 //
+//  What "queue something up" means is the operator's choice, and it is the
+//  guided-send switch in Settings. On, a send into a running turn travels at
+//  once with `mode: "steer"`: the host feeds it to the model inside the turn and
+//  nothing is interrupted. Off -- the default -- the phone keeps the text in a
+//  bar above this field until the turn ends, because a message the host has
+//  already queued cannot be called back, and calling it back is what the bar is
+//  for. See ``PendingPromptBar``.
+//
 //  Attachments are part of the paid feature set, which a direct link on the
 //  operator's own network also unlocks: nothing there is carried by the relay,
 //  which is the commercial reason the two go together. The buttons live in the
@@ -432,6 +440,11 @@ struct ComposerView: View {
         let drafts = attachments
         let display = AttachmentDraft.promptText(outgoing, drafts: drafts)
         guard !display.isEmpty else { return }
+        // Read once, before any suspension: a turn can end while a request is in
+        // flight, and the answer to "was this a send into a running turn?" has
+        // to be the one the operator pressed the button on.
+        let runningWhenSent = running
+        let guided = model.settings.values.guidedSendByDefault
         // The server's plan is the authority, but the phone can avoid a useless
         // upload: without the advanced feature set nothing can be attached, and
         // the account screen is where that changes. A LAN link unlocks the set
@@ -441,6 +454,22 @@ struct ComposerView: View {
         if !drafts.isEmpty, !model.advancedFeaturesUnlocked {
             attachmentError = String(localized: "Attachments need a paid account.")
             showingPaywall = true
+            return
+        }
+
+        // A text-only send into a running turn with guided send off stays on
+        // the phone. The bar above the field takes it, and it goes when the turn
+        // ends -- or sooner, by the operator's own hand, still as guidance.
+        // Attachments are the exception: their files are already on the host by
+        // the time the prompt is, and the bar only speaks for text.
+        if drafts.isEmpty, runningWhenSent, !guided {
+            sending = true
+            sends += 1
+            attachmentError = nil
+            withMizarAnimation(.mizarSmooth) { text = "" }
+            model.holdPrompt(outgoing, for: sessionId)
+            sending = false
+            focused = true
             return
         }
 
@@ -454,11 +483,14 @@ struct ComposerView: View {
         // place the progress is drawn.
         withMizarAnimation(.mizarSmooth) { text = "" }
 
+        // Guidance is only a mode for a turn that is running; a send that is
+        // about to start one is ordinary either way.
+        let mode: PromptMode = runningWhenSent && guided ? .steer : .queue
         let accepted: Bool
         if drafts.isEmpty {
-            accepted = await model.sendPrompt(outgoing, to: sessionId)
+            accepted = await model.sendPrompt(outgoing, to: sessionId, mode: mode)
         } else {
-            accepted = await uploadAndSend(drafts: drafts, text: outgoing)
+            accepted = await uploadAndSend(drafts: drafts, text: outgoing, mode: mode)
         }
 
         if accepted {
@@ -480,8 +512,11 @@ struct ComposerView: View {
     /// - Parameters:
     ///   - drafts: the attachments.
     ///   - text: the prompt text, possibly empty.
+    ///   - mode: how to hand it over when a turn is running. Attachments are
+    ///     handed over immediately either way; `.queue` is the old behaviour
+    ///     and the safe answer when the operator has not asked for guidance.
     /// - Returns: whether the host accepted the prompt.
-    private func uploadAndSend(drafts: [AttachmentDraft], text: String) async -> Bool {
+    private func uploadAndSend(drafts: [AttachmentDraft], text: String, mode: PromptMode) async -> Bool {
         uploading = true
         defer { uploading = false }
         var ids: [String] = []
@@ -503,7 +538,7 @@ struct ComposerView: View {
                 )
                 ids.append(ref.attachmentId)
             }
-            return await model.sendPrompt(text, attachmentIds: ids, to: sessionId)
+            return await model.sendPrompt(text, attachmentIds: ids, to: sessionId, mode: mode)
         } catch {
             attachmentError = Self.describeAttachmentFailure(error)
             return false

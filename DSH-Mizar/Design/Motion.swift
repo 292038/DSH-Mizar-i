@@ -151,6 +151,51 @@ extension Transition where Self == PopTransition {
     static var pop: PopTransition { PopTransition() }
 }
 
+/// Rising out of something below, and sinking back into it.
+///
+/// For the bar of a held prompt above the composer: it arrives from the field's
+/// top edge and leaves the same way, so the two surfaces are understood as one
+/// thing -- the message was typed there and the bar is where it waits. The blur
+/// does the materialising; under Reduce Motion only the fade is left, and
+/// nothing travels through the layout.
+struct FromBelowTransition: Transition {
+    var distance: CGFloat = 24
+    var scale: CGFloat = 0.94
+    var blur: CGFloat = 8
+
+    func body(content: Content, phase: TransitionPhase) -> some View {
+        FromBelowEffect(
+            identity: phase.isIdentity,
+            distance: distance,
+            scale: scale,
+            blur: blur,
+        ) { content }
+    }
+}
+
+private struct FromBelowEffect<Wrapped: View>: View {
+    let identity: Bool
+    let distance: CGFloat
+    let scale: CGFloat
+    let blur: CGFloat
+    @ViewBuilder var wrapped: Wrapped
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let still = identity || reduceMotion
+        wrapped
+            .opacity(identity ? 1 : 0)
+            .offset(y: still ? 0 : distance)
+            .scaleEffect(still ? 1 : scale, anchor: .bottom)
+            .blur(radius: still ? 0 : blur)
+    }
+}
+
+extension Transition where Self == FromBelowTransition {
+    /// A surface arriving from, and leaving into, the thing under it.
+    static var fromBelow: FromBelowTransition { FromBelowTransition() }
+}
+
 // MARK: - Haptics
 
 /// The switch every haptic in the app answers to.

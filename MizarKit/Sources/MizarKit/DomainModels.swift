@@ -725,6 +725,30 @@ public struct PromptResult: Decodable, Sendable, Equatable {
     public let requestId: String
 }
 
+/// How a prompt reaches a host that is already running a turn.
+///
+/// The wire calls this field `mode`, and the two values are the host's own
+/// (`dsh/src/bridge/sessions.ts`): ``queue`` is the old behaviour -- the host
+/// starts the prompt once the current turn ends -- and ``steer`` feeds it to the
+/// model inside the turn that is running, without interrupting anything.
+///
+/// Omitted rather than spelled out for ``queue``: a host older than the field
+/// defaults to it, and a client that always sent the default would make every
+/// ordinary send depend on a newer plugin. Known older hosts (this repository's
+/// `LocalKernel` among them) accept `steer` and treat it as `queue`, which is a
+/// queue rather than an error and the right degradation.
+public enum PromptMode: String, Sendable, Codable, CaseIterable {
+    /// Start it when the running turn ends.
+    case queue
+    /// Hand it to the running turn as guidance.
+    case steer
+
+    /// Whether the field has to travel on the wire.
+    ///
+    /// False for ``queue``: see the note above about older hosts.
+    public var isExplicitOnTheWire: Bool { self == .steer }
+}
+
 /// The host's report on a permission switch.
 public struct SetPermissionResult: Decodable, Sendable, Equatable {
     public let commandResult: CommandResult

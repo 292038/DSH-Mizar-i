@@ -4,18 +4,20 @@
 //
 //  The settings sheet: what the app does, what happened, and what it is.
 //
-//  Four sections, in the order somebody needs them: what this phone will tell
-//  you (notifications), what it shows while it is working (the Live Activity),
-//  what to send when something is wrong (the log export), and what it is
-//  (about, then where its community is, then who wrote it).
+//  The sections are in the order somebody needs them: how a message is sent
+//  (发送), what this phone will tell you (notifications), what it shows while it
+//  is working (the Live Activity), what to send when something is wrong (the log
+//  export), and what it is (about, then where its community is, then who wrote
+//  it).
 //
 //  Every switch here is wired to something that reads it, and that is the whole
-//  reason this file is not a list of preferences. 通知 asks
-//  ``NotificationKind`` what arrived and ``PushAppDelegate`` refuses what the
-//  operator switched off; 实时活动 is ``AppModel/liveActivitiesEnabled``, which
-//  the activity reads; 日志 exports what ``ActivityLog`` recorded. A switch
-//  nothing consults is worse than no switch, because it teaches the operator that
-//  this screen does not work.
+//  reason this file is not a list of preferences. 发送 asks
+//  ``MizarSettings/guidedSendByDefault``, which the composer and the held-prompt
+//  bar read; 通知 asks ``NotificationKind`` what arrived and ``PushAppDelegate``
+//  refuses what the operator switched off; 实时活动 is
+//  ``AppModel/liveActivitiesEnabled``, which the activity reads; 日志 exports what
+//  ``ActivityLog`` recorded. A switch nothing consults is worse than no switch,
+//  because it teaches the operator that this screen does not work.
 //
 //  Native throughout -- `List`, `Section`, `Toggle`, `LabeledContent`, the system
 //  share sheet -- because every one of these has an accessibility shape the
@@ -59,6 +61,7 @@ struct SettingsView: View {
                 header
                 accountSection
                 planSection
+                sendSection
                 notificationsSection
                 liveActivitySection
                 transferSection
@@ -188,6 +191,35 @@ struct SettingsView: View {
             Text("Plan")
         } footer: {
             Text("A high-bandwidth relay, paid for by the people who need it. The free server stays free.")
+        }
+    }
+
+    // MARK: - 发送
+
+    /// What happens to a message sent while the agent is still working.
+    ///
+    /// The two behaviours are one switch because they are one decision: hand it
+    /// to the running turn as guidance now, or keep it on the phone until the
+    /// turn ends. A toggle rather than a picker -- there are two answers, and the
+    /// footer says what each one does in plain words, which a picker would only
+    /// hide one level down.
+    private var sendSection: some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { model.settings.values.guidedSendByDefault },
+                set: { model.settings.values.guidedSendByDefault = $0 },
+            )) {
+                Label("Default to guided send", systemImage: "paperplane")
+            }
+            .accessibilityIdentifier("settings.send.guidedSend")
+        } header: {
+            Text("Sending")
+        } footer: {
+            Text(
+                String(
+                    localized: "On, a message sent while a turn is running is handed to the model immediately as guidance, without interrupting it. Off, it waits in a bar above the field and is sent when the turn ends; the bar can also send it as guidance now, put it back in the field, or throw it away.",
+                ),
+            )
         }
     }
 

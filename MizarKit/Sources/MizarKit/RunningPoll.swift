@@ -84,6 +84,20 @@ public struct RunningPoll: Sendable, Equatable {
     /// computer.
     public static let localInterval: Duration = .seconds(3)
 
+    /// How long between ticks while a prompt is held for the end of a turn.
+    ///
+    /// A held prompt is a message the operator has already committed to. The
+    /// only thing that sends it is a read that says the turn has ended, so the
+    /// tick is what the operator experiences as the delay between the answer
+    /// finishing and their message going. Ten seconds of that reads as a send
+    /// that did not happen; three is the same tick the app already runs on its
+    /// own network, and a turn is at most a handful of them long.
+    ///
+    /// Only while something is *also* running -- the poll's start condition is
+    /// unchanged, and a held prompt on its own does not keep a poll alive. The
+    /// app sends it from whatever read next says the turn has ended.
+    public static let heldPromptInterval: Duration = .seconds(3)
+
     /// Whether a poll task is up. Kept in step with the caller's task through
     /// ``observe(anySessionRunning:appIsActive:)``.
     public private(set) var isPolling = false

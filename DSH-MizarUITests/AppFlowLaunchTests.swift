@@ -46,6 +46,12 @@ final class AppFlowLaunchTests: AppFlowTestBase {
     func testTheSidebarOpensSettings() {
         let app = launch(session: nil)
         openSettings(app)
+        // 发送: whether a message sent into a running turn is guidance, or waits
+        // for the end of that turn above the field. It sits above 通知.
+        XCTAssertTrue(
+            revealInSettings(settingControl("settings.send.guidedSend", in: app), in: app),
+            "there is no guided-send switch",
+        )
         // 通知: the four switches, and the system permission they sit under.
         expect(settingControl("settings.notify.turn-finished", in: app), "there is no 任务完成 switch")
         expect(settingControl("settings.notify.turn-interrupted", in: app), "there is no 任务中断 switch")

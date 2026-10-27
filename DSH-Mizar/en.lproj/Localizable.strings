@@ -194,6 +194,13 @@
 " · %lld not in a workspace" = " · %lld not in a workspace";
 
 /* Settings */
+"Sending" = "Sending";
+"Default to guided send" = "Default to guided send";
+"On, a message sent while a turn is running is handed to the model immediately as guidance, without interrupting it. Off, it waits in a bar above the field and is sent when the turn ends; the bar can also send it as guidance now, put it back in the field, or throw it away." = "On, a message sent while a turn is running is handed to the model immediately as guidance, without interrupting it. Off, it waits in a bar above the field and is sent when the turn ends; the bar can also send it as guidance now, put it back in the field, or throw it away.";
+"Send now" = "Send now";
+"Hands the message to the running turn as guidance." = "Hands the message to the running turn as guidance.";
+"Put back in the field" = "Put back in the field";
+"Delete" = "Delete";
 "Notifications" = "Notifications";
 "Live Activity" = "Live Activity";
 "Logs" = "Logs";

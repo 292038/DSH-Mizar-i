@@ -67,6 +67,12 @@ final class AppSettings {
     /// Whether a reconnect may try the punched direct path.
     var directConnection: Bool { values.directConnection }
 
+    /// Whether a send into a running turn is handed over as guidance at once.
+    ///
+    /// The one place the composer asks, so the switch on the Settings screen and
+    /// the send path cannot disagree -- the failure this file exists to prevent.
+    var guidedSendByDefault: Bool { values.guidedSendByDefault }
+
     /// Write a change to the log.
     ///
     /// One line per switch that moved, and none for the ones that did not: this
@@ -86,6 +92,12 @@ final class AppSettings {
             ActivityLog.shared.add(
                 .settings,
                 "direct connection \(values.directConnection ? "on" : "off")",
+            )
+        }
+        if old.guidedSendByDefault != values.guidedSendByDefault {
+            ActivityLog.shared.add(
+                .settings,
+                "guided send \(values.guidedSendByDefault ? "on" : "off")",
             )
         }
         for kind in NotificationKind.allCases

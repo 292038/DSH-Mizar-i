@@ -166,6 +166,10 @@ struct MizarSettingsTests {
         // never been asked should reconnect on the saved route, not spend a
         // probe timeout finding out its LAN address is stale.
         #expect(!settings.localNetworkFirst)
+        // Guidance into a running turn is a behaviour the operator opts into.
+        // Off is the host's queue, which is what every build before this one
+        // did, and it is the answer a fresh store must give.
+        #expect(!settings.guidedSendByDefault)
     }
 
     @Test("round-trips every switch through a store")
@@ -175,6 +179,7 @@ struct MizarSettingsTests {
         settings.notifications.set(false, for: .approval)
         settings.notifications.set(false, for: .turnInterrupted)
         settings.localNetworkFirst = true
+        settings.guidedSendByDefault = true
         settings.save(to: storage)
 
         let reloaded = MizarSettings.load(from: storage)
@@ -184,6 +189,7 @@ struct MizarSettingsTests {
         #expect(!reloaded.notifications.isEnabled(.turnInterrupted))
         #expect(reloaded.notifications.isEnabled(.question))
         #expect(reloaded.localNetworkFirst)
+        #expect(reloaded.guidedSendByDefault)
     }
 
     @Test("survives a relaunch, which is a second load of the same store")
@@ -210,6 +216,7 @@ struct MizarSettingsTests {
         #expect(storage.bool(forKey: MizarSettings.notificationsKey(.approval)) == true)
         #expect(storage.bool(forKey: MizarSettings.liveActivitiesKey) == true)
         #expect(storage.bool(forKey: MizarSettings.localNetworkFirstKey) == false)
+        #expect(storage.bool(forKey: MizarSettings.guidedSendKey) == false)
     }
 
     @Test("writes and reads the real defaults, distinguishing absent from off")
@@ -253,6 +260,26 @@ struct MizarSettingsTests {
         settings.localNetworkFirst = false
         settings.save(to: storage)
         #expect(!MizarSettings.load(from: storage).localNetworkFirst)
+    }
+
+    @Test("the guided-send switch round-trips on its own")
+    func guidedSendRoundTrip() {
+        // The switch decides whether a send into a running turn is handed over
+        // at once or held for the end of it, so it has to survive a relaunch:
+        // coming back on its own would turn a message the operator expected to
+        // queue into one that interrupted the model.
+        let storage = MemoryStorage()
+        var settings = MizarSettings()
+        settings.guidedSendByDefault = true
+        settings.save(to: storage)
+
+        let reloaded = MizarSettings.load(from: storage)
+        #expect(reloaded.guidedSendByDefault)
+        #expect(storage.bool(forKey: MizarSettings.guidedSendKey) == true)
+
+        settings.guidedSendByDefault = false
+        settings.save(to: storage)
+        #expect(!MizarSettings.load(from: storage).guidedSendByDefault)
     }
 }
 
