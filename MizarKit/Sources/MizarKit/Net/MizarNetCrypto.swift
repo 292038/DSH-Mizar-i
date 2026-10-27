@@ -41,7 +41,7 @@ import Foundation
 #if compiler(>=6.4)
 typealias MizarNetAEAD = ChaChaPoly
 #else
-typealias MizarNetAEAD = ChaCha20Poly1305
+typealias MizarNetAEAD = ChaChaPoly
 #endif
 
 enum MizarNetCrypto {
