@@ -198,6 +198,7 @@ UIKit. Verified here rather than assumed:
 | `MizarMarkSnapshotTests.mizarMark` | `Design/MizarMark` (full, partial fill) | 2 PNGs | 136×92 |
 | `AccountAvatarSnapshotTests.accountAvatar` | `Account/AccountScreen.AccountAvatarView` (signed out, Apple monogram, server palette) | 3 PNGs | 88×88 |
 | `SettingsAccountRowSnapshotTests.settingsAccountRow` | settings account row: `AccountAvatarView` + name/plan copy (signed out, paid) | 2 PNGs | 780×128 |
+| `MarkdownTableSnapshotTests.longCellsWrapInsideTheirColumn` | `Conversation/MarkdownMessage.MarkdownTableGrid` — long Latin + CJK cells | 1 PNG | 1008×1040 |
 | `ComposerControlsSnapshotTests.composerControls` | `ModelPill` + `ContextRing` (labelled, compact) | 2 PNGs | 520×80 |
 | `ConnectionDotSnapshotTests.connectionDotOffline` | `Shell/ConnectionPanel.ConnectionDot`, offline | 1 PNG | 68×68 |
 | `AttachmentStripSnapshotTests` | `Composer/AttachmentStrip` — identifier contract only | — | — |
@@ -208,6 +209,12 @@ The settings row's layout itself is a private computed property inside
 copy literals against `SettingsView.swift`. It covers what
 `AccountUITests.testSignedOutSettingsShowsBlankAccountRow` asserts except the
 `List` chrome; it is **not** a full replacement until the row is extracted.
+
+The Markdown table is snapshotted as its grid, without the horizontal
+`ScrollView` the conversation puts around it: the scroller is UIKit-backed, and
+the truncation it caused (a scroller proposes an unspecified width, so the grid
+measured one line) was precisely why the wrapping bug had no reference. The
+grid is the layout under test; the scroller is unchanged around it.
 
 ## Migrating the UI suite
 

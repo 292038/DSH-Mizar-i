@@ -69,7 +69,6 @@ struct SessionSidePlane: View {
     /// Called once a turn has been chosen, so the phone's drawer can close.
     var onPick: () -> Void = {}
 
-    @Environment(TurnIndex.self) private var index
     /// The page the operator asked for, and the page a tap on a delivered file
     /// can ask for from outside this view. Drives the segmented control and the
     /// plane's destination; the plane's position itself is ``planeOffset``,
@@ -110,12 +109,11 @@ struct SessionSidePlane: View {
         // viewport, so all three segments show and the pages slide beneath
         // its glass.
         .overlay(alignment: .top) {
-            PageSwitcher(
+            PageSwitcherHost(
                 selection: Binding(
                     get: { selection },
                     set: { select($0) },
                 ),
-                turnsTitle: turnsTitle,
             )
             .padding(.horizontal, FloatingTab.horizontalInset)
             .padding(.top, FloatingTab.topInset)
@@ -155,11 +153,6 @@ struct SessionSidePlane: View {
         // page ends at the drawer's edge on both devices, which is where the
         // occluding surface sits on each.
         .clipped()
-    }
-
-    /// The turns segment's title, which carries the live count.
-    private var turnsTitle: String {
-        String(localized: "Turns \(index.turns.count)", table: SidePlaneTable.name)
     }
 
     #if DEBUG
@@ -229,6 +222,28 @@ struct SessionSidePlane: View {
 
 // MARK: - The control
 
+/// The switcher's live titles, and nothing else.
+///
+/// A view of its own so that the session list and the turn index are read here
+/// rather than in ``SessionSidePlane``'s body: every list read while a turn runs
+/// would otherwise invalidate all three pages, and only these two strings move.
+private struct PageSwitcherHost: View {
+    @Binding var selection: SidePlanePage
+    @Environment(TurnIndex.self) private var index
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        PageSwitcher(
+            selection: $selection,
+            turnsTitle: String(localized: "Turns \(index.turns.count)", table: SidePlaneTable.name),
+            subagentsTitle: String(
+                localized: "Subagents \(model.subagents(of: index.sessionId).count)",
+                table: SidePlaneTable.name,
+            ),
+        )
+    }
+}
+
 /// The drawer's page switcher: Apple's own `UISegmentedControl`, configured
 /// on the instance so the chosen segment's ground is the accent.
 ///
@@ -246,6 +261,8 @@ private struct PageSwitcher: UIViewRepresentable {
     @Binding var selection: SidePlanePage
     /// The turns segment's title, which carries the live count.
     let turnsTitle: String
+    /// The subagents segment's title, which carries the live count.
+    let subagentsTitle: String
 
     func makeCoordinator() -> Coordinator {
         Coordinator(selection: $selection)
@@ -254,7 +271,7 @@ private struct PageSwitcher: UIViewRepresentable {
     func makeUIView(context: Context) -> UISegmentedControl {
         let control = UISegmentedControl(items: [
             turnsTitle,
-            String(localized: "Subagents", table: SidePlaneTable.name),
+            subagentsTitle,
             String(localized: "Preview", table: SidePlaneTable.name),
         ])
         // The chosen segment's ground is the accent, and its ink is whatever
@@ -271,9 +288,16 @@ private struct PageSwitcher: UIViewRepresentable {
     }
 
     func updateUIView(_ control: UISegmentedControl, context: Context) {
-        // The count in the first title moves without the operator touching
-        // the control.
-        control.setTitle(turnsTitle, forSegmentAt: 0)
+        // The counts in the first two titles move without the operator touching
+        // the control. Guarded because `setTitle` relayouts the control even
+        // when the string is the one it already holds, and a running turn polls
+        // a list every few seconds.
+        if control.titleForSegment(at: 0) != turnsTitle {
+            control.setTitle(turnsTitle, forSegmentAt: 0)
+        }
+        if control.titleForSegment(at: 1) != subagentsTitle {
+            control.setTitle(subagentsTitle, forSegmentAt: 1)
+        }
         // The selection can also have moved from outside -- the debug launch
         // argument lands here. Inside the control it is already right where
         // the tap put it, so this is a no-op on the ordinary path.

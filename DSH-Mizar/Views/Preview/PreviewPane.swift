@@ -39,7 +39,10 @@ struct PreviewPane: View {
         .task(id: model.selectedSessionId) {
             await preview.restore(sessionId: model.selectedSessionId)
         }
-        .accessibilityIdentifier("side.preview")
+        // No identifier on this container: SwiftUI propagates a container's
+        // accessibility identifier to every element below it, which would
+        // replace the viewers' own `preview.code` / `preview.image` /
+        // `preview.markdown` identifiers with one name for the whole page.
     }
 
     // MARK: - Header
@@ -134,6 +137,10 @@ struct PreviewPane: View {
             PDFPreview(url: url)
         case .word:
             DocumentPreview(url: url)
+        case .source:
+            SourcePreview(url: url)
+        case .image:
+            ImagePreview(url: url)
         case .other:
             // Unreachable: a file with no viewer never reaches `ready`. Kept
             // exhaustive so a new kind is a compile error here rather than a
@@ -281,7 +288,7 @@ struct DeliveredFileIcon: View {
         ZStack {
             RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
                 .fill(Color.accentColor.opacity(0.14))
-            Image(systemName: "doc.fill")
+            Image(systemName: symbol)
                 .font(.system(size: size * 0.52, weight: .regular))
                 .foregroundStyle(Color.accentColor)
             Text(kind.badge)
@@ -294,5 +301,13 @@ struct DeliveredFileIcon: View {
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+
+    /// An image gets the photo glyph; everything else keeps the page.
+    private var symbol: String {
+        switch kind {
+        case .image: "photo.fill"
+        default: "doc.fill"
+        }
     }
 }

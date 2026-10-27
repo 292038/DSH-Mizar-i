@@ -300,6 +300,24 @@ public struct SessionRow: Codable, Sendable, Equatable, Identifiable {
     /// the island like any other. This property exists so the distinction can be
     /// named where it matters rather than re-derived from the two fields.
     public var isFork: Bool { parentSessionId != nil && !isSubagent }
+
+    /// Whether this row is a delegated child of the named session.
+    ///
+    /// The session list is the only census of delegated work: a conversation's
+    /// turns carry no subagent mark, and the host does not address a child as a
+    /// session for the ordinary reads. The count on the drawer's Subagents
+    /// segment and the rows on its page therefore come from this one predicate.
+    ///
+    /// A nil session is never a match, deliberately. The drawer's plane stays
+    /// mounted while no conversation is open, and a row with no parent must not
+    /// be counted as somebody's child.
+    ///
+    /// - Parameter sessionId: the parent conversation, or `nil` when none is open.
+    /// - Returns: whether this row is its delegated child.
+    public func isSubagent(of sessionId: String?) -> Bool {
+        guard let sessionId, isSubagent else { return false }
+        return parentSessionId == sessionId
+    }
 }
 
 // MARK: - Usage

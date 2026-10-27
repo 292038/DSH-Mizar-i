@@ -472,11 +472,40 @@ const SUBAGENT_SESSION = {
  * and a fixture whose content is longer than a phone screen would make that
  * assertion depend on scrolling.
  */
-const DELIVERED_FILE = {
-  path: 'docs/delivered.md',
-  description: 'A delivered report',
-  body: '# Delivered report\n\nThis file was read from the computer.\n',
-  mediaType: 'text/markdown',
+const DELIVERED_FILES = {
+  md: {
+    path: 'docs/delivered.md',
+    description: 'A delivered report',
+    body: Buffer.from('# Delivered report\n\nThis file was read from the computer.\n', 'utf8'),
+    mediaType: 'text/markdown',
+  },
+  code: {
+    path: 'src/demo.swift',
+    description: 'A source file',
+    body: Buffer.from('import Foundation\n\nstruct Demo {\n    // MIZAR_SOURCE_MARKER\n    let value = 42\n}\n', 'utf8'),
+    mediaType: 'text/plain',
+  },
+  image: {
+    path: 'shots/chart.png',
+    description: 'A chart',
+    // A 64x64 gradient. The real bytes matter: the app decides what to draw
+    // from the extension, then ImageIO reads this header and pixels.
+    body: Buffer.from('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', 'base64'),
+    mediaType: 'image/png',
+  },
+}
+
+/** Which delivered file the fixture's first turn declares. */
+let deliveredVariant = 'md'
+
+/** The delivered file the fixture currently names. */
+function deliveredFile() {
+  return DELIVERED_FILES[deliveredVariant] ?? DELIVERED_FILES.md
+}
+
+/** The fixture file a path names, whichever variant is selected. */
+function deliveredFileByPath(path) {
+  return Object.values(DELIVERED_FILES).find((file) => file.path === path) ?? null
 }
 
 /** The extra sessions the list reports while `/forked?on=1` is set. */
@@ -866,7 +895,8 @@ function answer(frame) {
       // for a document's bytes. Only the delivered fixture answers; anything
       // else is refused exactly as the real host refuses a path outside the
       // session's workspace.
-      if (frame.payload?.path !== DELIVERED_FILE.path) {
+      const statFile = deliveredFileByPath(frame.payload?.path)
+      if (statFile === null) {
         return {
           v: 1,
           type: 'error',
@@ -879,16 +909,17 @@ function answer(frame) {
         type: 'ok',
         id,
         result: {
-          path: DELIVERED_FILE.path,
-          name: 'delivered.md',
-          byteSize: Buffer.byteLength(DELIVERED_FILE.body),
+          path: statFile.path,
+          name: statFile.path.split('/').pop(),
+          byteSize: statFile.body.length,
           modifiedAt: 1_760_000_000_000,
-          mediaType: DELIVERED_FILE.mediaType,
+          mediaType: statFile.mediaType,
           previewable: true,
         },
       }
     case 'file.read': {
-      if (frame.payload?.path !== DELIVERED_FILE.path) {
+      const readFile = deliveredFileByPath(frame.payload?.path)
+      if (readFile === null) {
         return {
           v: 1,
           type: 'error',
@@ -896,7 +927,7 @@ function answer(frame) {
           error: { code: 'FILE_UNKNOWN', message: 'no such file in this fixture' },
         }
       }
-      const body = Buffer.from(DELIVERED_FILE.body, 'utf8')
+      const body = readFile.body
       const offset = Math.max(0, Number(frame.payload?.offset ?? 0))
       const length = Math.max(0, Math.min(Number(frame.payload?.length ?? 0), body.length - offset))
       const slice = body.subarray(offset, offset + length)
@@ -1656,8 +1687,8 @@ function answer(frame) {
               reason: { kind: 'completed' },
               ...(deliverablesPresent ? {
                 mizarDeliverables: [{
-                  path: DELIVERED_FILE.path,
-                  description: DELIVERED_FILE.description,
+                  path: deliveredFile().path,
+                  description: deliveredFile().description,
                 }],
               } : {}),
             }),
@@ -2288,6 +2319,7 @@ const server = createServer((request, response) => {
     // `/reset` restores the whole fixture, the delivered file included: a test
     // that leaves it on would put a card under every later test's answer.
     deliverablesPresent = false
+    deliveredVariant = 'md'
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify({ ok: true, sessionRunning }))
     return
@@ -2359,8 +2391,13 @@ const server = createServer((request, response) => {
     // Turn the fixture's delivered file on or off. Off is the default so the
     // suites that predate previews keep measuring the screen they measured.
     deliverablesPresent = request.url.includes('on=1')
+    // Which file the card should name: `md` (the default), `code`, or `image`.
+    const requested = /file=([A-Za-z]+)/.exec(request.url ?? '')?.[1]
+    if (requested !== undefined && DELIVERED_FILES[requested] !== undefined) {
+      deliveredVariant = requested
+    }
     response.writeHead(200, { 'content-type': 'application/json' })
-    response.end(JSON.stringify({ ok: true, deliverables: deliverablesPresent }))
+    response.end(JSON.stringify({ ok: true, deliverables: deliverablesPresent, file: deliveredVariant }))
     return
   }
   if (request.url?.startsWith('/fail')) {

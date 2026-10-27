@@ -176,7 +176,7 @@ struct SubagentBoard: View {
     /// and a child whose activity touches is moved by the same hand that
     /// moves every other row in this app.
     private var subagents: [SessionRow] {
-        model.sessions.filter { $0.isSubagent && $0.parentSessionId == index.sessionId }
+        model.subagents(of: index.sessionId)
     }
 
     /// Air between the drawer's floating control and the first row: the

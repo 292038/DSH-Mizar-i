@@ -542,6 +542,12 @@
 "This computer's Mizar plugin is too old to send files. Update it to preview delivered files." = "这台电脑的 Mizar 插件版本过旧，无法发送文件。更新插件后即可预览交付的文件。";
 "This computer's plugin answered a preview request in a way this app does not understand. Update both." = "这台电脑的插件返回了应用看不懂的预览响应，请两端都更新到最新版本。";
 "This file is not text this app can read." = "这个文件不是应用可以读取的文本。";
+"This image could not be read." = "这张图片无法读取。";
+"This image is too large to preview." = "这张图片太大，无法预览。";
+"1 line" = "1 行";
+"%lld lines" = "%lld 行";
+"Showing the first 1 MB." = "仅显示前 1 MB。";
+"Opened as %@" = "以 %@ 打开";
 "The saved copy of this file could not be read." = "这份文件的本地副本无法读取。";
 "Previewed files" = "已预览的文件";
 "Clear file cache" = "清理文件缓存";

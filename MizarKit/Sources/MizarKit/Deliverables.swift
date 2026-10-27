@@ -71,14 +71,20 @@ public struct DeliveredFile: Sendable, Equatable, Hashable, Codable, Identifiabl
 
 /// The kinds of file the preview page can draw.
 ///
-/// Deliberately small: the first release of the preview draws Markdown, PDF and
-/// Word. Everything else is still *delivered* — the card appears, because the
-/// operator should see that a file exists — but opening it says so rather than
+/// Everything else is still *delivered* -- the card appears, because the
+/// operator should see that a file exists -- but opening it says so rather than
 /// pretending a viewer exists.
+///
+/// The list grows by what a phone can actually draw, not by what a computer can
+/// store. Source code and images are the two additions that need no host
+/// change: `file.read` already carries arbitrary bytes, and the extension is
+/// what decides.
 public enum PreviewKind: String, Sendable, Equatable, CaseIterable, Codable {
     case markdown
     case pdf
     case word
+    case source
+    case image
     case other
 
     /// The kind a file name implies, by extension.
@@ -95,6 +101,15 @@ public enum PreviewKind: String, Sendable, Equatable, CaseIterable, Codable {
             self = .pdf
         case "docx":
             self = .word
+        case "png", "jpg", "jpeg", "jpe":
+            self = .image
+        case "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx",
+             "java", "py", "pyw", "swift", "kt", "kts",
+             "html", "htm", "css", "scss", "js", "mjs", "cjs", "jsx",
+             "ts", "tsx", "json", "jsonc", "xml",
+             "yaml", "yml", "toml", "sh", "bash", "zsh", "sql",
+             "go", "rs", "rb", "php":
+            self = .source
         default:
             self = .other
         }
@@ -109,6 +124,8 @@ public enum PreviewKind: String, Sendable, Equatable, CaseIterable, Codable {
         case .markdown: return "MD"
         case .pdf: return "PDF"
         case .word: return "DOC"
+        case .source: return "SRC"
+        case .image: return "IMG"
         case .other: return "FILE"
         }
     }

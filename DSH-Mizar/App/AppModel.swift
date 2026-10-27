@@ -2020,6 +2020,21 @@ final class AppModel {
         pendingPrompts[sessionId]
     }
 
+    /// The delegated children of one session, as the host lists them.
+    ///
+    /// The drawer's Subagents page and the count on its tab must be the same
+    /// census, or the tab can say three while the page lists two. Both read
+    /// this, and neither invents a number while the session list is unknown:
+    /// an empty list is "not read yet" as much as it is "none", which is the
+    /// same answer the turns segment gives for a conversation with no turns.
+    ///
+    /// - Parameter sessionId: the parent conversation, or `nil` when none is open.
+    /// - Returns: the child rows, in the host's own order.
+    func subagents(of sessionId: String?) -> [SessionRow] {
+        guard let sessionId else { return [] }
+        return sessions.filter { $0.isSubagent(of: sessionId) }
+    }
+
     /// Keep a prompt back until the turn the session is running ends.
     ///
     /// Called by the composer for a text-only send while a turn is running and

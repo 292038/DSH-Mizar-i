@@ -4,6 +4,7 @@
    新文案放这里，键与主表同等对待。 */
 
 "Subagents" = "子代理";
+"Subagents %lld" = "子代理 %lld";
 "Turns %lld" = "轮次 %lld";
 "Preview" = "预览";
 "Running" = "正在运行";

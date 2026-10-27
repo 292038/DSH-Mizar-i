@@ -80,6 +80,34 @@ struct SessionLineageTests {
         #expect(row.isSubagent)
     }
 
+    @Test("a child is counted only under its own parent")
+    func countedOnlyUnderItsParent() throws {
+        // The drawer's Subagents tab counts with this predicate and the page
+        // lists with it too, so "which parent" has to be part of the answer.
+        // The plane stays mounted while no conversation is open, which is why a
+        // nil parent is a miss rather than "no parent on either side".
+        let child = try row(#"""
+        {"sessionId":"child-1","updatedAt":3000,"running":false,"blank":false,
+         "agentAvailable":true,"parentSessionId":"session-source-1","origin":"subagent"}
+        """#)
+        #expect(child.isSubagent(of: "session-source-1"))
+        #expect(!child.isSubagent(of: "session-source-2"))
+        #expect(!child.isSubagent(of: nil))
+
+        let fork = try row(#"""
+        {"sessionId":"fork-1","updatedAt":2000,"running":false,"blank":false,
+         "agentAvailable":true,"parentSessionId":"session-source-1"}
+        """#)
+        #expect(!fork.isSubagent(of: "session-source-1"))
+
+        let top = try row(#"""
+        {"sessionId":"s1","updatedAt":1000,"running":false,"blank":false,
+         "agentAvailable":true}
+        """#)
+        #expect(!top.isSubagent(of: nil))
+        #expect(!top.isSubagent(of: "session-source-1"))
+    }
+
     @Test("unknown future origins are not subagents")
     func unknownOriginIsNotAChild() throws {
         // `origin` is a product classification the host may grow. An unknown

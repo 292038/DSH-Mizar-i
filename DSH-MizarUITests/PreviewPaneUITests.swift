@@ -91,6 +91,52 @@ final class PreviewPaneUITests: XCTestCase {
         )
     }
 
+    /// A delivered source file opens as text, with every line read.
+    func testATappedSourceFileIsDrawnAsText() {
+        Self.setMockDeliverables(true, file: "code")
+        let app = launch()
+        openSessionIfNeeded(app)
+
+        let card = app.buttons["turn.1.deliverable.0"]
+        XCTAssertTrue(card.waitForExistence(timeout: Self.patience), "the source file has no card under the answer")
+        XCTAssertTrue(
+            card.label.contains("demo.swift"),
+            "the card does not name the source file: \(card.label)",
+        )
+        card.tap()
+
+        let code = app.textViews["preview.code"]
+        XCTAssertTrue(
+            code.waitForExistence(timeout: Self.patience),
+            "the source preview never appeared. \(app.debugDescription)",
+        )
+        XCTAssertTrue(
+            (code.value as? String)?.contains("MIZAR_SOURCE_MARKER") == true,
+            "the source preview does not hold the file's text: \(String(describing: code.value))",
+        )
+    }
+
+    /// A delivered PNG opens in the image viewer.
+    func testATappedImageIsDrawn() {
+        Self.setMockDeliverables(true, file: "image")
+        let app = launch()
+        openSessionIfNeeded(app)
+
+        let card = app.buttons["turn.1.deliverable.0"]
+        XCTAssertTrue(card.waitForExistence(timeout: Self.patience), "the image has no card under the answer")
+        XCTAssertTrue(
+            card.label.contains("chart.png"),
+            "the card does not name the image: \(card.label)",
+        )
+        card.tap()
+
+        let image = app.descendants(matching: .any)["preview.image"]
+        XCTAssertTrue(
+            image.waitForExistence(timeout: Self.patience),
+            "the image preview never appeared. \(app.debugDescription)",
+        )
+    }
+
     /// A second look at the same file does not ask the computer again.
     ///
     /// The evidence is the mock's own method counter: one `file.stat` per open
@@ -159,6 +205,11 @@ final class PreviewPaneUITests: XCTestCase {
             "-mizarFreshStart",
             "-mizarSkipPermissionPrompts", "-mizarSkipLoginGate", "-mizarCreditsFixture",
             "-mizarAccountFreshStart",
+            // The fixture is on 127.0.0.1, which the real rule excludes from
+            // "local"; without this the preview page correctly says the plan
+            // is needed, and every test here measures the locked card. The
+            // flag is Debug-only and is the LAN-unlocked UI's way in.
+            "-mizarLocalNetwork",
             "-mizarAccountURL", Self.mockBaseURL,
             "-mizarSelectSession", "first",
             // Every test here measures a first look at a file, so the cache has
@@ -244,8 +295,11 @@ final class PreviewPaneUITests: XCTestCase {
     /// Turn the fixture's delivered file on or off.
     ///
     /// - Parameter on: whether the first turn should declare a file.
-    private static func setMockDeliverables(_ on: Bool) {
-        _ = get("/deliverables?on=\(on ? 1 : 0)")
+    /// - Parameters:
+    ///   - on: whether the first turn declares a file.
+    ///   - file: which fixture: `md`, `code`, or `image`.
+    private static func setMockDeliverables(_ on: Bool, file: String = "md") {
+        _ = get("/deliverables?on=\(on ? 1 : 0)&file=\(file)")
     }
 
     /// Put the mock host's conversation back to its fixture.

@@ -19,6 +19,7 @@
 
 import SwiftUI
 import MizarKit
+import UIKit
 
 /// What to do when a link in a message points at a file on the computer.
 ///
@@ -174,13 +175,7 @@ struct MarkdownBlocksView: View {
     /// styled, and every newline inside the run stays a newline. A string the
     /// system parser refuses is drawn verbatim rather than dropped.
     private func inline(_ string: String) -> Text {
-        if let attributed = try? AttributedString(
-            markdown: string,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace),
-        ) {
-            return Text(attributed)
-        }
-        return Text(string)
+        inlineMarkdown(string)
     }
 
     private func headingFont(_ level: Int) -> Font {
@@ -223,54 +218,126 @@ struct MarkdownBlocksView: View {
 
     /// A GFM table, as a grid that scrolls sideways when it is wider than the
     /// column of text it sits in.
+    ///
+    /// The grid is split out into ``MarkdownTableGrid`` because the horizontal
+    /// scroller is what made cells truncate: a `ScrollView` proposes an
+    /// unspecified width, `Grid` measured every cell as one line, and the
+    /// `maxWidth` clamp then left the text with a single line to draw in. The
+    /// grid measures its own columns and gives each a definite width, so a cell
+    /// that does not fit wraps and its row grows.
     private func tableView(_ table: MarkdownTable) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
-                GridRow {
-                    ForEach(table.header.indices, id: \.self) { column in
-                        tableCell(
-                            table.header[column],
-                            alignment: table.alignment(at: column),
-                            isHeader: true,
-                            fill: Color.primary.opacity(0.06),
-                        )
-                    }
-                }
-                ForEach(table.rows.indices, id: \.self) { row in
-                    GridRow {
-                        ForEach(table.header.indices, id: \.self) { column in
-                            tableCell(
-                                table.rows[row][column],
-                                alignment: table.alignment(at: column),
-                                isHeader: false,
-                                fill: row.isMultiple(of: 2) ? .clear : Color.primary.opacity(0.03),
-                            )
-                        }
-                    }
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5),
-            )
+            MarkdownTableGrid(table: table)
         }
         // Same reason as the code block: a horizontal scroll view left to
         // itself takes the height it is offered, which in a conversation row is
         // the rest of the screen.
         .fixedSize(horizontal: false, vertical: true)
     }
+}
+
+// MARK: - The table grid
+
+/// A GFM table's grid, without the scroller around it.
+///
+/// Inside a horizontal `ScrollView` the grid is measured with an unspecified
+/// width, and a `Text` given one reports its single-line size. Clamping that
+/// with a flexible frame left every row one line tall, so a long cell was cut
+/// off with an ellipsis. A definite width per column is what makes the text
+/// wrap instead: the width its own text asks for, clamped to the band the
+/// flexible frame used to express, so short tables keep the widths they had.
+///
+/// Split out from the view above for the snapshot suite as well:
+/// `ImageRenderer` draws a `Grid` and draws nothing inside a `ScrollView`, so
+/// this is the largest piece of the table that can be pinned as a reference.
+struct MarkdownTableGrid: View {
+    let table: MarkdownTable
+
+    /// The band a column may occupy. The same numbers the old flexible frame
+    /// used, so a short table does not change size.
+    private static let minWidth: CGFloat = 84
+    private static let maxWidth: CGFloat = 220
+
+    var body: some View {
+        let widths = Self.columnWidths(for: table)
+        Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+            GridRow {
+                ForEach(table.header.indices, id: \.self) { column in
+                    tableCell(
+                        table.header[column],
+                        alignment: table.alignment(at: column),
+                        isHeader: true,
+                        fill: Color.primary.opacity(0.06),
+                        width: widths[column],
+                    )
+                }
+            }
+            ForEach(table.rows.indices, id: \.self) { row in
+                GridRow {
+                    ForEach(table.header.indices, id: \.self) { column in
+                        tableCell(
+                            table.rows[row][column],
+                            alignment: table.alignment(at: column),
+                            isHeader: false,
+                            fill: row.isMultiple(of: 2) ? .clear : Color.primary.opacity(0.03),
+                            width: widths[column],
+                        )
+                    }
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5),
+        )
+    }
+
+    // MARK: - Measuring
+
+    /// How wide each column is, from the widest thing it has to hold.
+    ///
+    /// Measured with the same text style the cells are drawn in, so Dynamic
+    /// Type and CJK widths are the layout engine's answer rather than a count
+    /// of characters. Inline markup is stripped exactly as ``inlineMarkdown``
+    /// strips it; bold runs measure a hair narrow, which only wraps a line
+    /// earlier and never truncates one.
+    ///
+    /// - Parameter table: the table.
+    /// - Returns: one width per column, in the 84...220 band.
+    static func columnWidths(for table: MarkdownTable) -> [CGFloat] {
+        let body = UIFont.preferredFont(forTextStyle: .callout)
+        let header = UIFont.systemFont(ofSize: body.pointSize, weight: .semibold)
+        return table.header.indices.map { column in
+            var widest = measuredWidth(of: table.header[column], font: header)
+            for row in table.rows where column < row.count {
+                widest = max(widest, measuredWidth(of: row[column], font: body))
+            }
+            return min(max((widest + 2).rounded(.up), minWidth), maxWidth)
+        }
+    }
+
+    private static func measuredWidth(of markdown: String, font: UIFont) -> CGFloat {
+        let plain = (try? AttributedString(
+            markdown: markdown,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace),
+        )).map { String($0.characters) } ?? markdown
+        return (plain as NSString).size(withAttributes: [.font: font]).width
+    }
+
+    // MARK: - One cell
 
     private func tableCell(
         _ text: String,
         alignment: MarkdownTableAlignment,
         isHeader: Bool,
         fill: Color,
+        width: CGFloat,
     ) -> some View {
-        inline(text)
+        inlineMarkdown(text)
             .font(isHeader ? .callout.weight(.semibold) : .callout)
-            .multilineTextAlignment(textAlignment(alignment))
-            .frame(minWidth: 84, maxWidth: 220, alignment: alignmentValue(alignment))
+            .multilineTextAlignment(alignment.tableTextAlignment)
+            .frame(width: width, alignment: alignment.tableAlignment)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(fill)
@@ -287,17 +354,37 @@ struct MarkdownBlocksView: View {
                     .frame(width: 0.5)
             }
     }
+}
 
-    private func alignmentValue(_ alignment: MarkdownTableAlignment) -> Alignment {
-        switch alignment {
+// MARK: - Inline Markdown
+
+/// One line (or paragraph) of inline Markdown.
+///
+/// Shared by the block renderer and the table grid. Inline-only, preserving
+/// whitespace: emphasis, code spans and links are styled, and every newline
+/// inside the run stays a newline. A string the system parser refuses is drawn
+/// verbatim rather than dropped.
+private func inlineMarkdown(_ string: String) -> Text {
+    if let attributed = try? AttributedString(
+        markdown: string,
+        options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace),
+    ) {
+        return Text(attributed)
+    }
+    return Text(string)
+}
+
+private extension MarkdownTableAlignment {
+    var tableAlignment: Alignment {
+        switch self {
         case .leading: .leading
         case .center: .center
         case .trailing: .trailing
         }
     }
 
-    private func textAlignment(_ alignment: MarkdownTableAlignment) -> TextAlignment {
-        switch alignment {
+    var tableTextAlignment: TextAlignment {
+        switch self {
         case .leading: .leading
         case .center: .center
         case .trailing: .trailing

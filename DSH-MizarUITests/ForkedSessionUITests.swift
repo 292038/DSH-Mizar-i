@@ -158,6 +158,47 @@ final class ForkedSessionUITests: XCTestCase {
         )
     }
 
+    // MARK: - The subagent census
+
+    /// The drawer's Subagents tab says how many children this session has.
+    ///
+    /// The count and the page come from the same session-list filter, so the
+    /// test checks both halves: a tab that says "Subagents 1" over a page that
+    /// lists the child, not a number invented for the control. `/forked?on=1`
+    /// in `setUp` is what puts one delegated child in the list next to the
+    /// forked session, which must not be counted.
+    func testTheSubagentsTabCountsTheDelegatedChildren() {
+        let app = launch(extra: [
+            "-mizarSelectSession", "first",
+            "-mizarOpenTurnIndex",
+        ])
+
+        let control = app.descendants(matching: .any)["side.tab.bar"]
+        XCTAssertTrue(control.waitForExistence(timeout: Self.patience), "the drawer's page control never arrived")
+        let segment = control.buttons
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Subagents"))
+            .firstMatch
+        XCTAssertTrue(segment.waitForExistence(timeout: Self.patience), "there is no Subagents segment")
+        XCTAssertTrue(
+            segment.label.contains("1"),
+            "the Subagents segment does not count the fixture's child: \(segment.label)",
+        )
+        // Tap the segment rather than asking the launch argument for the page:
+        // the argument is applied when the plane has a measured width, which is
+        // not guaranteed before the drawer opens. A tap is also the thing the
+        // operator does.
+        segment.tap()
+
+        // The page it opens is the same census: one row, for the child the
+        // fixture delegated. A count with no row under it would be a number
+        // about nothing.
+        let child = app.descendants(matching: .any)["subagent.row.mock-subagent-session-0001"]
+        XCTAssertTrue(
+            child.waitForExistence(timeout: Self.patience),
+            "the Subagents page did not list the delegated child. \(app.debugDescription)",
+        )
+    }
+
     // MARK: - Launching
 
     /// Launch the app against the mock, with a clean install and a forced
@@ -166,7 +207,7 @@ final class ForkedSessionUITests: XCTestCase {
     /// The fixture is prepared in `setUp`, before the first list read.
     ///
     /// - Returns: the running application.
-    private func launch() -> XCUIApplication {
+    private func launch(extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         // Terminate anything left from an earlier run before launching. A
         // suspended instance can make `launch()` attach to the old process
@@ -180,7 +221,7 @@ final class ForkedSessionUITests: XCTestCase {
             "-mizarAccountURL", Self.mockBaseURL,
             "-AppleLanguages", "(en)",
             "-AppleLocale", "en_US",
-        ]
+        ] + extra
         app.launch()
         dismissNamingIfPresented(app)
         return app

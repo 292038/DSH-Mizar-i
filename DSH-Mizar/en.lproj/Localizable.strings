@@ -542,6 +542,12 @@
 "This computer's Mizar plugin is too old to send files. Update it to preview delivered files." = "This computer's Mizar plugin is too old to send files. Update it to preview delivered files.";
 "This computer's plugin answered a preview request in a way this app does not understand. Update both." = "This computer's plugin answered a preview request in a way this app does not understand. Update both.";
 "This file is not text this app can read." = "This file is not text this app can read.";
+"This image could not be read." = "This image could not be read.";
+"This image is too large to preview." = "This image is too large to preview.";
+"1 line" = "1 line";
+"%lld lines" = "%lld lines";
+"Showing the first 1 MB." = "Showing the first 1 MB.";
+"Opened as %@" = "Opened as %@";
 "The saved copy of this file could not be read." = "The saved copy of this file could not be read.";
 "Previewed files" = "Previewed files";
 "Clear file cache" = "Clear file cache";

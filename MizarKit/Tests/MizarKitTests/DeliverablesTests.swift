@@ -95,20 +95,38 @@ struct PreviewKindTests {
         ("manual.pdf", .pdf),
         ("MANUAL.PDF", .pdf),
         ("plan.docx", .word),
+        ("photo.png", .image),
+        ("photo.JPG", .image),
+        ("camera.jpeg", .image),
+        ("main.c", .source),
+        ("main.cpp", .source),
+        ("Widget.hpp", .source),
+        ("Main.java", .source),
+        ("tool.py", .source),
+        ("MarkdownMessage.swift", .source),
+        ("Main.kt", .source),
+        ("index.html", .source),
+        ("style.css", .source),
+        ("app.js", .source),
+        ("app.tsx", .source),
+        ("data.json", .source),
+        ("layout.xml", .source),
         ("sheet.xlsx", .other),
-        ("photo.png", .other),
         ("no-extension", .other),
         (".hidden", .other),
+        ("report.", .other),
     ])
     func kindFollowsTheExtension(name: String, expected: PreviewKind) {
         #expect(PreviewKind(fileName: name) == expected)
     }
 
     @Test
-    func onlyThreeKindsHaveAViewer() {
-        #expect(PreviewKind.markdown.isPreviewable)
-        #expect(PreviewKind.pdf.isPreviewable)
-        #expect(PreviewKind.word.isPreviewable)
+    func everyKindWithAViewerSaysSo() {
+        // The list is the gate `PreviewCenter` reads before it reads a byte.
+        // A kind added with a badge but left out here never opens.
+        for kind in PreviewKind.allCases where kind != .other {
+            #expect(kind.isPreviewable, "\(kind) has a badge but no viewer")
+        }
         #expect(!PreviewKind.other.isPreviewable)
     }
 }
@@ -155,7 +173,9 @@ struct LocalFileLinkTests {
     @Test
     func onlyPreviewableTargetsOpenThePreview() {
         #expect(LocalFileLink.isPreviewable(URL(fileURLWithPath: "/tmp/a.pdf")))
-        #expect(!LocalFileLink.isPreviewable(URL(fileURLWithPath: "/tmp/a.png")))
+        #expect(LocalFileLink.isPreviewable(URL(fileURLWithPath: "/tmp/a.png")))
+        #expect(LocalFileLink.isPreviewable(URL(fileURLWithPath: "/tmp/a.swift")))
+        #expect(!LocalFileLink.isPreviewable(URL(fileURLWithPath: "/tmp/a.xlsx")))
         #expect(!LocalFileLink.isPreviewable(URL(string: "https://example.com")!))
     }
 }
