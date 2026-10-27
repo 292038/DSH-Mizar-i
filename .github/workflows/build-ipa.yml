@@ -1,14 +1,16 @@
 name: Build unsigned IPA
 
-# 鏀捐繘浣?fork 閲岀殑 .github/workflows/build-ipa.yml
-# 瑙﹀彂鏂瑰紡锛氫粨搴?Actions 椤甸潰 -> 宸︿晶 "Build unsigned IPA" -> Run workflow
+# 放进你 fork 里的 .github/workflows/build-ipa.yml
+# 触发方式：仓库 Actions 页面 -> 左侧 "Build unsigned IPA" -> Run workflow
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    # 鍏抽敭锛歩OS 26 SDK 闇€瑕?Xcode 26銆俶acos-26 闀滃儚鑷甫 Xcode 26.6 + iPhoneOS 26.5 SDK銆?    # 鐢?macos-14 / macos-15 浼氭嬁鍒?Xcode 16锛孌SH-Mizar 鐨?IPHONEOS_DEPLOYMENT_TARGET=26.0 鐩存帴缂栦笉杩囥€?    runs-on: macos-26
+    # 关键：iOS 26 SDK 需要 Xcode 26。macos-26 镜像自带 Xcode 26.6 + iPhoneOS 26.5 SDK。
+    # 用 macos-14 / macos-15 会拿到 Xcode 16，DSH-Mizar 的 IPHONEOS_DEPLOYMENT_TARGET=26.0 直接编不过。
+    runs-on: macos-26
     timeout-minutes: 60
 
     steps:
@@ -47,11 +49,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pkg/Payload"
           cp -R "$APP" "$RUNNER_TEMP/pkg/Payload/"
           cd "$RUNNER_TEMP/pkg"
-          # .ipa = 涓€涓?zip锛岄噷闈㈡槸 Payload/<App>.app
+          # .ipa = 一个 zip，里面是 Payload/<App>.app
           zip -qry "$RUNNER_TEMP/DSH-Mizar-unsigned.ipa" Payload
           ls -lh "$RUNNER_TEMP/DSH-Mizar-unsigned.ipa"
           shasum -a 256 "$RUNNER_TEMP/DSH-Mizar-unsigned.ipa"
-          echo "--- 棰勬湡锛氫笅闈㈣繖鏉?codesign 妫€鏌ュ簲褰撴姤閿欙紙鏈鍚嶏級锛屾姤閿欐墠姝ｅ父 ---"
+          echo "--- 预期：下面这条 codesign 检查应当报错（未签名），报错才正常 ---"
           codesign -dv "$APP" 2>&1 || true
 
       - name: Upload IPA artifact
